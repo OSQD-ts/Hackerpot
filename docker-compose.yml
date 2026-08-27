@@ -1,0 +1,50 @@
+services:
+  honeypot:
+    build: .
+    image: hackerpot
+    restart: unless-stopped
+    ports:
+      - "4004:4004" # HTTP honeypot
+      # Decoy TCP ports for the port-scan sentinel (must match SCAN_PORTS).
+      # Adjust the host side if any of these are already in use on your machine.
+      - "8022:8022"
+      - "9200:9200"
+      - "7001:7001"
+    environment:
+      PORT: "4004"
+      HOST: "0.0.0.0"
+      # OFF: this compose file publishes 4004 straight to the host, so there is no
+      # trusted proxy overwriting X-Forwarded-For. Turning it on here would let any
+      # client forge its own source IP. Set it to "true" only when you put a reverse
+      # proxy you control in front (see nginx/ and README "nginx edge capture").
+      TRUST_PROXY: "false"
+      LOG_FORMAT: "json"
+      SCAN_PORTS: "8022,9200,7001"
+      SCAN_BANNER: "SSH-2.0-OpenSSH_8.4"
+      # Share scores across replicas + keep a durable audit log.
+      REDIS_URL: "redis://redis:6379"
+      REDIS_SCORE_TTL: "3600"
+      HIT_LOG: "/data/hits.jsonl"
+      # Seed the exact fake credentials you planted in decoys (comma-separated).
+      HONEYTOKENS: "AKIA_HACKERPOT_HONEYTOKEN_DEMO"
+    volumes:
+      - hitlog:/data
+      # Your own settings, replacing the default config baked into the image.
+      # Environment variables above still override whatever the file says.
+      # - ./hackerpot.toml:/app/hackerpot.toml:ro
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--save", "\"\"", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  hitlog:

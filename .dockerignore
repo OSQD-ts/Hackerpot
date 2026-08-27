@@ -1,0 +1,14 @@
+node_modules
+dist
+coverage
+nginx
+.git
+.gitignore
+*.log
+.DS_Store
+npm-debug.log*
+Dockerfile
+.dockerignore
+docker-compose.yml
+README.md
+data

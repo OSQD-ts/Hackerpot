@@ -1,0 +1,52 @@
+export { ConfigError, Section, toRegExp } from "./reader.js";
+export { defaultConfig, parseConfig } from "./schema.js";
+export type {
+  DecoyPathConfig,
+  DetectorsConfig,
+  ElasticStoreConfig,
+  EngineConfig,
+  IntelConfig,
+  FileStoreConfig,
+  HackerpotConfig,
+  LoggingConfig,
+  MemoryStoreConfig,
+  ManagementApiConfig,
+  PolicyConfig,
+  PortScanConfig,
+  RedisStoreConfig,
+  ResponsesConfig,
+  BlocklistConfig,
+  EnforcerConfig,
+  ServerConfig,
+  SmtpConfig,
+  SshConfig,
+  StoreConfig,
+  Toggle,
+} from "./schema.js";
+export {
+  buildDetectors,
+  buildHoneypotConfig,
+  buildPolicy,
+  buildResponseActions,
+  createBlocklist,
+  createManagementServer,
+  createPortScanSentinel,
+  createSmtpHoneypot,
+  createSshHoneypot,
+  createStore,
+} from "./build.js";
+export type { BuiltBlocklist, BuiltEngineConfig, BuiltErrorSource, BuiltStore } from "./build.js";
+export { applyEnvOverrides } from "./env.js";
+export { planReload } from "./reload.js";
+export type { ReloadPlan } from "./reload.js";
+export {
+  CONFIG_PATH_ENV,
+  CONFIG_SEARCH_PATHS,
+  SYSTEM_CONFIG_PATH,
+  describeConfig,
+  discoverConfigPath,
+  loadConfig,
+  loadConfigFile,
+  parseConfigText,
+} from "./load.js";
+export type { LoadConfigOptions } from "./load.js";

@@ -1,0 +1,819 @@
+# hackerpot — default standalone configuration
+#
+# Every value below is the built-in default, so deleting this file changes
+# nothing. Copy it, edit what you need, and point the service at it:
+#
+#   node dist/standalone.js --config /etc/hackerpot/hackerpot.toml
+#   HACKERPOT_CONFIG=/etc/hackerpot/hackerpot.toml node dist/standalone.js
+#
+# With no --config flag the first of these that exists is used:
+#   ./hackerpot.toml, ./hackerpot.config.toml, ./config/hackerpot.toml,
+#   /etc/hackerpot/hackerpot.toml
+#
+# Precedence: built-in defaults < this file < environment variables.
+# Validate a file without starting the service:
+#   node dist/standalone.js --config ./hackerpot.toml --print-config
+#
+# Reloading: send SIGHUP to re-read this file without restarting. Detectors,
+# responses, policy, allowlist, and logging are applied live. Listener, store,
+# blocklist, and management settings cannot be — they are already bound or hold
+# live state — so a change to those is reported by name in the log as needing a
+# restart, never silently ignored. A file that fails validation is logged and the
+# running configuration is kept, so a bad edit can't take the honeypot down.
+#
+# Unknown keys are a hard error — a typo can never silently leave a detector off.
+# Keys marked "regex" accept either a bare pattern (compiled case-insensitively)
+# or a /pattern/flags literal when you need explicit flags.
+
+
+# ── The attacker-facing HTTP listener ────────────────────────────────────────
+[server]
+host = "0.0.0.0"
+port = 4004
+# Resolve the client IP from X-Forwarded-For. Off by default, and only safe to turn
+# on behind a proxy or load balancer you control that OVERWRITES the header (one that
+# merely appends leaves the leftmost value attacker-controlled). If anything untrusted
+# reaches this listener directly, a forged header lets a client pick its own source IP
+# — escaping its suspicion score, impersonating an allowlisted source to bypass
+# detection entirely, or getting an arbitrary victim blocked (and firewalled, if
+# [blocklist.enforcer] is on).
+trust_proxy = false
+
+
+# ── Logging ──────────────────────────────────────────────────────────────────
+[logging]
+# "json" — one object per event, for log aggregation. "text" — key=value lines.
+format = "json"
+# Emit the one-line startup summary (listener, store, active detectors).
+startup = true
+# Attacker-controlled and noisy, so both are off by default. Turn them on when
+# you want full forensic detail in the log rather than only in the hit store.
+include_headers = false
+include_body = false
+
+
+# ── Engine ───────────────────────────────────────────────────────────────────
+[engine]
+# Sliding-window length the stateful detectors read, in ms. This bounds how far
+# back path-bruteforce, credential-bruteforce, and rate-spike can see, so it
+# must be at least as large as the largest detector window below.
+activity_window_ms = 60000
+# How long the actor registry remembers which IPs a fingerprint attacked from.
+# Bounds repeat-actor's correlation horizon and the registry's memory footprint.
+fingerprint_window_ms = 3600000
+
+
+# ── Escalation policy ────────────────────────────────────────────────────────
+# Cumulative per-IP score decides the response: at or above block_threshold the
+# IP is blocked outright; otherwise the detector's own choice wins (so decoys
+# keep serving bait); otherwise at or above tarpit_threshold the request is
+# tarpitted; below that it gets a plain 404.
+[policy]
+block_threshold = 40
+tarpit_threshold = 15
+
+
+# ── Where hits and per-IP scores are stored ──────────────────────────────────
+# With neither backend enabled, an in-memory store is used and state is lost on
+# restart. Enable both to score against Redis while keeping a local audit log.
+[store.memory]
+# The default store when no backend below is enabled. It is a bounded ring buffer:
+# only the most recent max_hits incidents are retained, so a flood of distinct
+# requests can't grow memory without limit. Per-IP SCORES are kept separately and
+# are unaffected, so blocking still works on incidents that have aged out.
+#
+# Raise it for a longer forensic window, lower it on a memory-constrained host.
+# The management API, dashboard, and IOC feed all read from here, so this is also
+# how far back those can see when no durable store is configured.
+max_hits = 10000
+# Cap on per-IP scores retained, evicting least-recently-updated first. Separate from
+# max_hits: scores are what blocking reads, and they outlive the incidents they came from.
+max_score_entries = 100000
+
+[store.file]
+# Append-only JSONL audit log. Setting a path enables it.
+#
+# Writes are batched and asynchronous — the request path never blocks on the disk.
+enabled = false
+path = ""
+# Replay the file on startup so scores survive a restart. The whole file is streamed
+# (never loaded whole), so this stays cheap however large the log has grown.
+load_on_start = true
+
+# Rotation. One record is written per malicious request, headers and body included, so
+# the attacker sets how fast this file grows — without a roll point it fills the volume,
+# which takes down considerably more than the honeypot. At max_bytes the live file is
+# renamed with a timestamp, gzipped, and a fresh one started.
+#
+# max_bytes = 0 disables rotation entirely. That is only sane when something else is
+# rotating the file for you (logrotate, a sidecar); the config will refuse it if you
+# also ask for archives, since nothing would ever create or prune one.
+max_bytes = 134217728          # 128 MB
+# Compressed archives kept beside the live file. 0 keeps every one — unbounded disk.
+max_archives = 10
+# Also delete an archive older than this, whatever the count. 0 = age-based pruning off.
+max_archive_age_seconds = 0
+compress_archives = true
+
+# Per-IP cumulative scores are cached in memory for fast lookups. One entry per distinct
+# source ever seen is unbounded on an internet-facing service, so the cache is capped and
+# sheds least-recently-updated first — an IP actively attacking is never the one dropped,
+# and the records themselves are still on disk regardless.
+max_score_entries = 100000
+
+[store.redis]
+# Share scores across replicas behind a load balancer. Setting a url enables it.
+enabled = false
+url = ""
+key_prefix = "hackerpot:"
+# Seconds before an idle IP's score expires, so suspicion decays. 0 = never.
+score_ttl_seconds = 0
+# Cap on the retained hit log.
+max_hits = 10000
+
+
+[store.elastic]
+# Ship hits to Elasticsearch or OpenSearch for dashboards and long-term search.
+# Zero dependencies — plain fetch. Setting a node enables it.
+#
+# record() never throws: a cluster that is down or unreachable can't take the
+# honeypot offline, failures go to the error log instead. That means a silently
+# misconfigured cluster looks exactly like a healthy one from the outside, so
+# check the logs for `store-error` after changing these.
+enabled = false
+node = ""
+# node = "http://localhost:9200"
+index = "hackerpot-hits"
+# Auth — an api_key, or BOTH username and password (setting only one is an error,
+# since it would send no Authorization header and every write would 401).
+api_key = ""
+username = ""
+password = ""
+max_hits = 1000
+# Make each write immediately searchable. Slower — leave off in production.
+refresh = false
+
+
+# ── Threat-intel ingest (off by default) ─────────────────────────────────────
+# Periodically pull peer honeypots' /ioc.txt feeds and block what they report, so
+# an attacker burned on one host is already blocked on the rest of your fleet.
+#
+# ⚠️ A FEED DECIDES WHICH IPs YOU BLOCK. Treat one as you would a root-trusted
+# input. The concrete risk: a peer running trust_proxy = true takes its source IP
+# from X-Forwarded-For, so anyone who can send it a few probes with a forged
+# header can push an arbitrary victim IP into its feed — and from there into every
+# subscriber. Only subscribe to feeds you control.
+#
+# Three things make that survivable by default, none of which you can switch off:
+#   - Your [allowlist] is checked before EVERY ingested block, always. A poisoned
+#     feed can never take out your own monitoring or office ranges.
+#   - Ingested blocks do NOT reach the firewall enforcer (see `enforce` below).
+#     They short-circuit requests here and nothing more. Locally-observed attacks
+#     are first-hand evidence; a feed is hearsay, and only evidence gets a
+#     firewall rule.
+#   - Entries are capped per refresh and expire after ttl_seconds, so stale or
+#     runaway hearsay ages out on its own.
+#
+# Feeds must be https (plaintext is allowed only for a loopback peer).
+[intel]
+enabled = false
+feeds = []
+# feeds = ["https://peer-1.internal.example/ioc.txt", "https://peer-2.internal.example/ioc.txt"]
+# Poll interval. Minimum 30 — a typo here becomes a hammer on someone else's host.
+refresh_seconds = 300
+# Only pull offenders at or above this cumulative score (sent as ?min_score=).
+min_score = 0
+# Bearer token, if the peer's management API requires one.
+api_key = ""
+# How long an ingested block lasts. Hearsay must expire; 0 is rejected.
+ttl_seconds = 3600
+# Hard cap on entries applied per refresh.
+max_entries = 10000
+# Send ingested entries to the ENFORCING blocklist, letting a feed drive your OS
+# firewall. Off by default and worth leaving off: it is the one setting that turns
+# someone else's judgement into iptables rules on your host. Enabling it logs a
+# warning at startup.
+enforce = false
+
+
+# ── Allowlist ────────────────────────────────────────────────────────────────
+# IPs and CIDR ranges (IPv4 or IPv6) that are exempt from EVERYTHING: no
+# detection, no scoring, never blocked, no incident recorded. This is the single
+# most effective false-positive control — put your uptime monitors, health
+# checkers, CI runners, and office/VPC ranges here.
+#
+# Entries are validated at startup: a malformed address or /prefix is a hard
+# error rather than a range that silently exempts nothing.
+[allowlist]
+ips = []
+# ips = ["127.0.0.1", "::1", "10.0.0.0/8", "192.168.0.0/16", "2001:db8::/32"]
+
+
+# ── Blocklist ────────────────────────────────────────────────────────────────
+# Where "this IP is blocked until T" lives, i.e. what the `block` response writes.
+#
+#   memory  (default) per-instance, lost on restart. Self-contained.
+#   redis   blocks survive restarts and apply across every replica at once.
+#
+# The redis backend reuses the [store.redis] connection, so setting it without a
+# [store.redis] url is a startup error rather than a silent fall back to memory.
+[blocklist]
+backend = "memory"
+key_prefix = "hackerpot:block:"
+
+# ── External block enforcement (off by default) ──────────────────────────────
+# Push every block out to the OS firewall or your own automation, so a confirmed
+# attacker is dropped before their packets reach this process at all. Every block
+# flows through the blocklist, so this catches all of them, not just the ones the
+# `block` response action produced.
+#
+# ⚠️ READ BEFORE ENABLING. Enforcement acts on the RESOLVED client IP, which with
+# trust_proxy = true is whatever X-Forwarded-For said. If anything untrusted can
+# reach this honeypot directly, an attacker can spoof that header and make you
+# firewall-block an arbitrary victim — a denial-of-service you inflict on someone
+# else, on request. Only enable this with a trusted proxy in front and
+# trust_proxy set correctly, or with trust_proxy = false.
+#
+# Safe by construction: `args` is a real array, not a command line, so the
+# command runs via execFile with no shell — no pipeline or metacharacter is ever
+# interpreted. The library validates the IP before substituting it, so a spoofed
+# "--flush" or "1.2.3.4; curl evil" is refused rather than passed to the command.
+#
+# Set `command` or `webhook` — one or the other, not both.
+[blocklist.enforcer]
+enabled = false
+# Milliseconds before the command is killed. Note the block response awaits this,
+# so a slow enforcer delays that one attacker's 403 (harmless — they're already
+# being blocked) but also holds a process slot; keep it short under heavy floods.
+timeout_ms = 5000
+# Ceiling on external enforcement actions per window — the fork-bomb guard.
+# It matters because ONE attacker can drive it: with trust_proxy = true the source
+# IP comes from X-Forwarded-For, so a single host can mint unlimited distinct
+# "IPs", each crossing the block threshold in ~3 requests and each otherwise
+# spawning a firewall process. Beyond the cap, external enforcement is DROPPED,
+# not queued — the in-process block still holds, so the honeypot stays protected
+# and only the firewall rule is skipped. Drops are logged, never silent.
+# Defaults (unset here): 50/second for a command, 100/second for a webhook.
+# max_per_window = 50
+# window_ms = 1000
+
+# --- local command -----------------------------------------------------------
+# `{ip}` is replaced with the validated client IP. Requires whatever privileges
+# the command needs (CAP_NET_ADMIN or root for iptables), which is a good reason
+# to prefer the webhook form and let a small privileged helper do the dropping.
+# command = "iptables"
+# args = ["-w", "-A", "INPUT", "-s", "{ip}", "-j", "DROP"]
+#
+# nftables:      command = "nft"
+#                args = ["add", "element", "inet", "filter", "blocked", "{ ip }"]
+# fail2ban:      command = "fail2ban-client"
+#                args = ["set", "hackerpot", "banip", "{ip}"]
+
+# --- or a webhook ------------------------------------------------------------
+# POSTs {"type":"block","ip":...,"blockedUntil":...}. With `secret` set the body
+# is HMAC-SHA256 signed in X-Hackerpot-Signature, same as management webhooks.
+# The URL is yours, so point it somewhere you trust — this process will call it.
+# webhook = "https://waf.internal.example/block"
+# secret = "shared-signing-secret"
+# [blocklist.enforcer.headers]
+# X-Team = "security"
+
+
+# ── Detectors ────────────────────────────────────────────────────────────────
+# Each section takes `enabled`, plus `score` and `respond_with` overrides
+# (`respond_with` names a response action: decoy-content, not-found, redirect,
+# block, tarpit, drip-feed, large-payload).
+
+# Bait paths only an attacker would know. Scores and responses are per-decoy,
+# so `score` and `respond_with` are not accepted here.
+[detectors.decoy-path]
+enabled = true
+# Use only the [[detectors.decoy-path.decoys]] below, ignoring the built-in set.
+replace_defaults = false
+# Ids of built-in decoys to drop, e.g. ["swagger"] if you serve a real spec.
+disabled = []
+
+# Add your own bait. Use `path` for an exact match or `pattern` for a regex —
+# one or the other, not both. A custom decoy sharing an id with a built-in one
+# takes precedence over it.
+# [[detectors.decoy-path.decoys]]
+# id = "internal-backup"
+# description = "Fake internal backup endpoint"
+# path = "/internal/backup.sql"
+# score = 9
+# respond_with = "large-payload"
+#
+# [[detectors.decoy-path.decoys]]
+# id = "jenkins"
+# description = "Jenkins script console probe"
+# pattern = "^/(jenkins|script)(/.*)?$"
+# score = 8
+# respond_with = "decoy-content"
+# [detectors.decoy-path.decoys.payload]
+# status = 200
+# content_type = "text/html; charset=utf-8"
+# body = "<html><body><h1>Jenkins</h1></body></html>"
+
+# Exploitation payloads: traversal, SQLi, XSS, command/template injection,
+# Log4Shell, XXE — in the path, query, listed headers, and body.
+[detectors.payload-injection]
+enabled = true
+score = 10
+inspect_body = true
+# Setting this REPLACES the built-in list, which is currently:
+# inspect_headers = ["user-agent", "referer", "x-forwarded-for", "x-api-version", "cookie"]
+
+# Server-Side Request Forgery probing: a parameter, header, or body value pointing
+# the server at cloud metadata (169.254.169.254), loopback, or an RFC1918 address,
+# or at a non-HTTP scheme (file://, gopher://, ...).
+[detectors.ssrf-probe]
+enabled = true
+score = 9
+inspect_body = true
+# Setting this REPLACES the built-in list, which is currently:
+# inspect_headers = ["referer", "destination", "x-original-url", "x-rewrite-url"]
+# Note what is deliberately absent: the X-Forwarded-*/Forwarded family. A proxy
+# legitimately puts internal addresses there, so scanning it flags every proxied
+# request. Re-add them only if nothing trusted sits in front of the honeypot.
+
+# NoSQL (MongoDB) operator injection: a query parameter smuggling an operator via
+# the `param[$ne]=` bracket form, or a JSON body with a `"$ne"`/`"$where"`/
+# `"$regex"` operator key. The classic case is the auth bypass
+# {"username":"admin","password":{"$ne":null}}. Matched precisely — the operator
+# must appear as a bracketed key or a JSON key, never as bare text — so an
+# ordinary value containing a `$` does not trip it.
+[detectors.nosql-injection]
+enabled = true
+score = 9
+inspect_body = true
+
+# Prototype pollution: a `__proto__` key, or `constructor` reaching for
+# `prototype`, in the path, query, or body — the shapes that corrupt Object's
+# prototype through a naive deep-merge and escalate to RCE in some stacks.
+# `__proto__` never appears in legitimate user input.
+[detectors.prototype-pollution]
+enabled = true
+score = 8
+inspect_body = true
+
+# Insecure deserialization: a serialized object blob presented as input — Java
+# (rO0AB…), PHP object (O:<len>:"Class":), Python pickle, .NET ViewState. These
+# are the payloads that turn a deserialize() call into remote code execution, and
+# they often ride in cookies rather than the body.
+[detectors.insecure-deserialization]
+enabled = true
+score = 9
+inspect_body = true
+# Setting this REPLACES the built-in header list, which is currently:
+# inspect_headers = ["cookie", "x-serialized", "viewstate", "__viewstate"]
+
+# GraphQL abuse: schema introspection (__schema / IntrospectionQuery — how an
+# attacker dumps your entire API surface) and deeply-nested queries used for
+# resource exhaustion. max_depth is the brace-nesting depth a document may reach
+# before it counts as an exhaustion attempt; raise it if you legitimately serve
+# deeply-nested queries, and disable the detector entirely if you expose a public
+# GraphQL API where introspection is a supported feature.
+[detectors.graphql-abuse]
+enabled = true
+score = 7
+max_depth = 12
+inspect_body = true
+
+# JWT forgery probing: a token whose header declares alg:"none" (an unsigned token
+# crafted to impersonate anyone), or one presented with an empty signature. A real
+# token is always signed, so this is high-confidence and near-zero false positive.
+[detectors.jwt-weakness]
+enabled = true
+score = 9
+# Setting this REPLACES the built-in header list, which is currently:
+# inspect_headers = ["authorization", "cookie", "x-access-token"]
+
+# CRLF injection / HTTP response splitting: a carriage-return + line-feed smuggled
+# into the path, a query value, or a header to inject response headers or poison
+# a cache.
+[detectors.crlf-injection]
+enabled = true
+score = 8
+# Setting this REPLACES the built-in list, which is currently:
+# inspect_headers = ["referer", "x-forwarded-for", "user-agent"]
+# X-Forwarded-For is safe to scan here: a normal XFF never contains a CRLF.
+
+# Web-shell activity — post-exploitation, not recon: a known shell filename, an
+# executable script served from an upload/temp directory, or a script URL carrying
+# a command-execution parameter. Setting `patterns` replaces the built-in list.
+[detectors.web-shell]
+enabled = true
+score = 9
+# patterns = ["/(c99|r57|wso)\\w*\\.php$"]
+
+# Protocol-level abnormalities: absolute-form request target, Shellshock in a
+# header, Content-Length + Transfer-Encoding smuggling, missing Host. The
+# highest-confidence cases carry their own higher scores; `score` sets the floor.
+[detectors.header-anomaly]
+enabled = true
+score = 7
+flag_missing_host = true
+
+# Host-header injection: a manipulated Host (or X-Forwarded-Host) used to poison
+# password-reset links, absolute URLs, or a web cache.
+#
+# With no expected_hosts, only structural problems are flagged: a duplicated Host
+# header, or one containing characters a valid host never has. The
+# X-Forwarded-Host check is deliberately NOT done without the list — a differing
+# X-Forwarded-Host is normal behind a proxy and flagging it would fire on every
+# proxied request.
+#
+# Set expected_hosts to your canonical hostnames and anything off the list is
+# flagged too. Hostnames only, no port — the incoming Host's port is stripped
+# before comparison, so an entry with one could never match and every real
+# request would then look unexpected. A port in the list is a startup error.
+[detectors.host-header-injection]
+enabled = true
+score = 6
+# expected_hosts = ["example.com", "www.example.com"]
+
+# Risky file types anywhere in the path: backups, dumps, source copies, VCS/IDE
+# metadata. Setting `patterns` replaces the built-in list entirely.
+[detectors.sensitive-file]
+enabled = true
+score = 6
+# patterns = ["\\.(bak|old|orig)$", "/\\.(svn|hg)(/|$)"]
+
+# Open-redirect probing: a ?redirect=/?next=/?url=-style parameter carrying an
+# off-site target (//evil.com, https://evil.com, or an @/backslash trick), used to
+# bounce victims off a trusted domain. Setting `params` replaces the built-in list.
+[detectors.open-redirect]
+enabled = true
+score = 5
+# Setting this REPLACES the built-in parameter list, which is currently:
+# params = ["redirect", "redirect_uri", "next", "url", "goto", "dest", "target", "continue", ...]
+#
+# Which hosts count as "same site", i.e. a legitimate self-redirect. Unset, the
+# request's own Host header is used — convenient, but a client controls Host, so
+# a spoofed one could pass an off-site target off as same-site. Pin your real
+# hostnames here and that allowlist becomes authoritative instead.
+# trusted_hosts = ["app.example.com", "www.example.com"]
+
+# HTTP verbs no browser or normal API client sends. Setting `methods` replaces
+# the built-in list.
+[detectors.suspicious-method]
+enabled = true
+score = 6
+# methods = ["TRACE", "TRACK", "DEBUG", "CONNECT", "PROPFIND", "PROPPATCH", "MKCOL", "COPY", "MOVE", "LOCK", "UNLOCK", "SEARCH"]
+
+# Repeated auth attempts against one endpoint from one IP (credential stuffing,
+# password spraying). Only POST/PUT/PATCH to paths matching auth_paths (regex).
+[detectors.credential-bruteforce]
+enabled = true
+score = 9
+window_ms = 60000
+attempt_threshold = 8
+# auth_paths = "(login|signin|sign-in|auth|token|oauth|session|password|wp-login\\.php)"
+
+# One IP walking a wordlist: many *distinct* paths in a short window, so a busy
+# client polling a single endpoint never trips it.
+[detectors.path-bruteforce]
+enabled = true
+score = 8
+window_ms = 30000
+unique_path_threshold = 15
+
+# Scanner and bare-scripting-client User-Agents. Trivially spoofed, so it scores
+# modestly. extra_patterns (regex) are appended to the built-in list; a missing
+# User-Agent scores half of `score`.
+[detectors.scanner-signature]
+enabled = true
+score = 6
+flag_missing_user_agent = true
+# extra_patterns = ["my-internal-scanner", "/HeadlessChrome/"]
+
+# Client fingerprint anomaly: a User-Agent claiming a mainstream browser while
+# omitting headers every real browser sends unconditionally. A "Chrome" with no
+# Accept-Language is a script wearing a browser's name. Note this only fires on a
+# UA that CLAIMS to be a browser — an honest API client or curl never trips it.
+# Weak and easily evaded by a careful attacker, so it scores low and is worth
+# having only as corroboration for a stronger signal.
+[detectors.client-anomaly]
+enabled = true
+score = 4
+# Setting this REPLACES the built-in list, which is currently:
+# required_browser_headers = ["accept", "accept-language", "accept-encoding"]
+
+# Raw request-rate flood. The noisiest signal, so it scores low on its own and
+# mainly matters when it stacks with something more specific.
+[detectors.rate-spike]
+enabled = true
+score = 4
+window_ms = 10000
+request_threshold = 60
+
+# Cross-IP actor correlation: one actor fingerprint (header ordering + UA family)
+# seen attacking from several distinct IPs in a short window — i.e. someone
+# rotating addresses to dodge per-IP blocking.
+#
+# The registry it reads is populated ONLY by requests that already scored, so it
+# holds attackers and nothing else. That matters most in middleware mode, mounted
+# in front of a real app: three ordinary users on the same browser build share a
+# fingerprint but trip nothing, so they never enter the registry and can never be
+# correlated into a phantom "rotating actor". This detector confirms two
+# suspicious IPs are one actor; it never manufactures suspicion on its own.
+[detectors.repeat-actor]
+enabled = true
+score = 7
+distinct_ip_threshold = 3
+window_ms = 600000
+
+# Fake credentials you deliberately planted (in a decoy .env, a fake admin page,
+# a seeded config). No legitimate client ever holds one, so a replay is the
+# highest-confidence breach signal there is. Off until you list tokens; listing
+# any turns it on. Values must match what you planted, exactly.
+[detectors.honeytoken]
+score = 15
+tokens = []
+# tokens = ["AKIA_HACKERPOT_HONEYTOKEN_DEMO"]
+#
+# Or label each one so the log says where it leaked from:
+# [[detectors.honeytoken.tokens]]
+# value = "AKIAIOSFODNN7EXAMPLE"
+# label = "decoy-env-aws-key"
+
+
+# ── Response actions ─────────────────────────────────────────────────────────
+# Disabling an action removes it from the registry; make sure nothing still
+# names it via respond_with, or those requests fall through unanswered.
+
+# Serves the fake content attached to a decoy (a fake .env, a fake login page).
+[responses.decoy-content]
+enabled = true
+
+# Flat 404 — the probe itself was the signal.
+[responses.not-found]
+enabled = true
+
+# Bounces the attacker toward another decoy.
+[responses.redirect]
+enabled = true
+
+# Marks the IP blocked; further requests are short-circuited before any detector
+# runs, so a confirmed attacker costs almost nothing to serve.
+[responses.block]
+enabled = true
+duration_ms = 900000
+status = 403
+body = "Forbidden"
+send_retry_after = true
+
+# Holds the response open to burn the attacker's time and pin a slot in their
+# scanner's connection pool. delay_ms takes a number or a [min, max] range.
+[responses.tarpit]
+enabled = true
+delay_ms = [2000, 8000]
+status = 404
+body = "Not Found"
+# Scale the delay with the IP's cumulative score, up to 4x.
+escalate = true
+# Held connections are cheap but not free. Past this many concurrent tarpits the
+# action degrades to an immediate response, so a flood can't turn our own
+# retaliation into a self-inflicted DoS. Same idea for drip-feed/large-payload.
+max_concurrent = 1000
+
+# Trickles a never-finished response out byte by byte.
+[responses.drip-feed]
+enabled = true
+chunk_bytes = 1
+interval_ms = 1000
+max_duration_ms = 120000
+status = 200
+max_concurrent = 256
+
+# Streams a large response to soak up the attacker's bandwidth and storage.
+# Generated from a reused buffer, so total_bytes costs us nothing in memory.
+[responses.large-payload]
+enabled = true
+total_bytes = 52428800
+chunk_bytes = 65536
+throttle_ms = 0
+content_type = "application/octet-stream"
+# Lower than the others: each of these streams real bandwidth, not just an idle socket.
+max_concurrent = 64
+
+
+# Pretends the exploit or login worked — a plausible success with a fake session
+# token — so the attacker believes they are in and keeps going. Nothing real is
+# granted; the token is noise. Leave `body` unset for the default fake auth JSON.
+[responses.fake-success]
+enabled = true
+status = 200
+content_type = "application/json"
+set_session_cookie = true
+# body = "{\"ok\":true}"
+
+# Serves freshly-synthesized fake secrets tailored to the requested path — a fake
+# .env, an AWS credentials file, a user table with bcrypt-shaped hashes, or a
+# generic config blob. Values are randomized per hit, so responses are undiffable
+# and anything an attacker exfiltrates is noise they cannot tell from a real leak.
+#
+# Nothing here is real, and nothing should be: keep `domain` pointed at an
+# internal-looking name you do not own, and do NOT put real employee names in
+# `names` — plausibility is the goal, not identity.
+[responses.fake-data]
+enabled = true
+# Setting these REPLACES the built-in defaults, which are currently:
+# names = ["alice", "bob", "carol", "dave", ...]
+domain = "corp.internal"
+rows = 8
+
+# A few KB on the wire that inflates to `decompressed_bytes` in a naive scraper's
+# memory. The payload is built once and cached, so serving it costs us nothing.
+[responses.gzip-bomb]
+enabled = true
+decompressed_bytes = 10485760
+content_type = "text/html; charset=utf-8"
+
+# Answers unpredictably — a random 5xx, or random bytes — to break the assumptions
+# of automated tooling. garbage_chance is a probability between 0 and 1.
+[responses.chaos]
+enabled = true
+statuses = [500, 502, 503, 504]
+garbage_chance = 0.5
+max_garbage_bytes = 4096
+
+# A polite 429 + Retry-After. Looks like ordinary rate limiting, so it reveals
+# nothing about the honeypot while telling well-behaved clients to back off.
+[responses.rate-limit]
+enabled = true
+retry_after_seconds = 60
+status = 429
+body = "Too Many Requests"
+
+
+# ── TCP port-scan sentinel ───────────────────────────────────────────────────
+# Listens on ports nothing legitimate should touch, so every inbound connection
+# is unsolicited by definition. Runs below HTTP, independent of the detectors.
+# Listing any port enables it — pick ports your real services do not use.
+[port-scan]
+enabled = false
+ports = []
+# ports = [2222, 8022, 9200]
+host = "0.0.0.0"
+# Distinct ports one IP must touch before it is reported as a sweep.
+scan_threshold = 2
+# Fake service banner sent on connect. Empty string stays silent.
+banner = "SSH-2.0-OpenSSH_8.4"
+
+
+# ── SMTP honeypot ────────────────────────────────────────────────────────────
+# A low-interaction mail server that speaks just enough SMTP to keep an attacker
+# talking, recognizing the four things that only ever come from abuse: AUTH
+# brute-force, open-relay attempts, spam delivery, and VRFY/EXPN user enumeration.
+# Nothing is ever relayed or authenticated. Incidents share the store with HTTP
+# hits, so they score against the same IP and reach the management API.
+#
+# Off by default — binding a mail port is a deliberate choice. Port 25 is the real
+# SMTP port and needs privileges the container does not have; 2525 is the usual
+# unprivileged stand-in (map 25 -> 2525 at the edge if you want real traffic).
+[smtp]
+enabled = false
+port = 2525
+host = "0.0.0.0"
+# Shown after the 220 code. A realistic banner draws more interaction.
+banner = "Postfix"
+# Hostname advertised in EHLO/HELO responses.
+hostname = "mail"
+# Domains this server would legitimately accept mail for. Anything outside them
+# (with an external MAIL FROM) is an open-relay attempt. Empty accepts nothing as
+# local, so every external recipient looks like relay abuse.
+local_domains = []
+# Refuse and drop connections from IPs at or above this cumulative score. 0 = never.
+drop_above_score = 0
+# Cap on simultaneous open connections, so a flood can't exhaust our sockets.
+max_connections = 256
+# Store the raw DATA body of captured mail. Turning this OFF still records the
+# parsed Subject and the byte count, which is usually enough to classify the
+# campaign — worth considering, since a captured body may carry live malware or
+# somebody else's personal data that you then own and must handle.
+capture_body = true
+max_body_chars = 2000
+
+
+# ── SSH honeypot ─────────────────────────────────────────────────────────────
+# A medium-interaction SSH server: it completes the real transport handshake (via
+# ssh2, so the crypto is battle-tested) and captures what attackers send at the
+# auth layer — brute-forced username/password pairs, offered public keys, and bare
+# version-grab scans — while rejecting every attempt. Nothing is authenticated and
+# no shell is ever granted. Incidents share the store with HTTP hits.
+#
+# Off by default. Port 22 is the real SSH port and needs privileges the container
+# does not have; 2222 is the usual unprivileged stand-in. If you also enable the
+# port-scan sentinel, keep 2222 out of its port list — two listeners cannot share
+# a port, and startup fails with a clear error if they collide.
+[ssh]
+enabled = false
+port = 2222
+host = "0.0.0.0"
+# The client sees "SSH-2.0-<ident>". A realistic value draws more brute-force.
+ident = "OpenSSH_8.4"
+# Close the connection after this many credential attempts.
+max_auth_attempts = 6
+# Refuse connections from IPs at or above this cumulative score. 0 = never.
+drop_above_score = 0
+
+# Interactive mode: after `accept_on_attempt` credential attempts the honeypot
+# ACCEPTS the login and drops the attacker into a fake shell, capturing every
+# command they type. This is the highest-value capture the honeypot offers —
+# post-authentication intent, in the attacker's own words.
+#
+# Nothing is executed. The shell is a scripted stream with no PTY and no path to
+# a real process, so there is no command→host route. What it does change is what
+# you STORE: commands are attacker-controlled text that lands in your logs, your
+# store, and any webhook you forward to. Length is capped below; the standalone
+# text log escapes newlines and control characters so a captured command cannot
+# forge log lines.
+#
+# Off by default — it is a deliberate step up in interaction level.
+interactive = false
+# Accept on this attempt number; earlier attempts are captured and rejected, so
+# you still collect credentials before letting them "in". Must not exceed
+# max_auth_attempts, or the connection closes before a shell is ever reached.
+accept_on_attempt = 1
+# Hostname in the fake prompt. Cosmetic, but a plausible one sustains the illusion.
+shell_hostname = "srv01"
+max_commands = 100
+max_command_length = 4096
+# Hard lifetime for a single SSH connection. Without it an attacker can open a
+# session (or a fake shell) and simply sit on it, holding a slot against
+# max_connections indefinitely. Raise it if you want longer interactive
+# transcripts — capturing what they do is the point — but not to 0, which is
+# rejected: an uncapped session is the exhaustion this exists to bound.
+max_session_ms = 120000
+# Cap on simultaneous open connections, so a flood can't exhaust our sockets.
+max_connections = 256
+# Host keys. Omit both and an ephemeral RSA key is generated at startup, which is
+# all a honeypot needs — a stable identity buys you nothing here. Use one or the
+# other: `host_key_files` are read at startup, `host_keys` are inline PEM.
+host_key_files = []
+host_keys = []
+# host_key_files = ["/etc/hackerpot/ssh_host_rsa_key"]
+
+
+# ── Operator API ─────────────────────────────────────────────────────────────
+# REST + WebSocket feed over the captured incidents, on its own listener. This
+# exposes attacker data and must never be reachable by the attackers themselves:
+# keep it on loopback or a private address, never the public interface. Setting
+# api_keys enables it; with none set every request is denied.
+[management]
+enabled = false
+host = "127.0.0.1"
+port = 9500
+api_keys = []
+# api_keys = ["replace-me-with-a-long-random-string"]
+websocket = true
+# The API also serves Prometheus metrics at GET /metrics (authenticated, like
+# every other endpoint here except /health). Standalone adds live active_blocks
+# and tracked_ips gauges on top of the store-derived counters.
+
+# Push every incident to your own endpoint as JSON. With `secret` set, the body
+# is signed HMAC-SHA256 and the hex digest sent in X-Hackerpot-Signature.
+# [[management.webhooks]]
+# url = "https://hooks.example.com/hackerpot"
+# secret = "shared-signing-secret"
+# max_retries = 3
+#
+# --- turning a firehose into an alert ---
+# Only deliver incidents at or above this cumulative score — the "danger" gate.
+# min_score = 20
+# Suppress repeats from the same IP for this long, so one persistent attacker is
+# one alert rather than hundreds.
+# dedupe_window_seconds = 300
+# Hard rate limit: at most max_per_window deliveries per throttle_window_seconds;
+# beyond that incidents are dropped, not queued. BOTH keys are required — setting
+# one alone is a startup error, because on its own it would do nothing.
+# throttle_window_seconds = 60
+# max_per_window = 10
+#
+# --- bounds that are always on (these need no opt-in) ---
+# The throttle above shapes how many ALERTS your destination gets. These two bound
+# what THIS process spends delivering them, and apply whether or not you set it.
+#
+# Deliveries are attacker-driven — one incident, one POST — so a receiver that is
+# slow, rate-limiting, or simply accepting-and-stalling would otherwise leave an
+# unbounded number of concurrent requests in the air. Past max_in_flight a delivery
+# is dropped (never queued) and reported through the error log; a queue in front of
+# a stuck consumer is just the same unbounded growth somewhere less visible.
+# max_in_flight = 32
+# Per-attempt deadline. fetch has no useful timeout of its own, so without this a
+# receiver that goes quiet after accepting the connection pins the attempt for
+# minutes, times max_retries.
+# timeout_ms = 10000
+# Omit the attacker-controlled request body from the payload. Worth setting for
+# any destination that RENDERS what it receives — Slack, Teams, a ticket system —
+# where attacker-supplied markup reaching a chat client is its own problem. Score,
+# detectors, IP, and path still go through.
+#
+# It strips the BODY only. Detection `reason` strings quote slices of the request
+# (a malformed Host, a matched payload), and captured headers are attacker-set
+# too, so alert text is never fully attacker-free. Render it as plain text rather
+# than markup in whatever receives it.
+# omit_body = true
+# [management.webhooks.headers]
+# X-Team = "security"

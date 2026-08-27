@@ -1,0 +1,94 @@
+{
+  "name": "hackerpot",
+  "version": "0.1.0",
+  "description": "Customizable honeypot library — mount alongside an existing TypeScript server or run standalone to catch and log attacker probes.",
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "files": [
+    "dist",
+    "hackerpot.toml"
+  ],
+  "scripts": {
+    "build": "tsup && tsc --emitDeclarationOnly",
+    "build:watch": "tsup --watch",
+    "start": "node dist/standalone.js",
+    "dev": "tsx scripts/dev-server.ts",
+    "dashboard": "tsx scripts/dashboard.ts",
+    "serve": "tsx src/standalone.ts",
+    "config:check": "tsx src/standalone.ts --print-config",
+    "docker:build": "docker build -t hackerpot .",
+    "docker:run": "docker run --rm -p 4004:4004 hackerpot",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.typecheck.json",
+    "attack": "tsx scripts/attack.ts",
+    "attack:all": "tsx scripts/attack.ts all",
+    "attack:decoys": "tsx scripts/attack.ts decoys",
+    "attack:path-bruteforce": "tsx scripts/attack.ts path-bruteforce",
+    "attack:credential-bruteforce": "tsx scripts/attack.ts credential-bruteforce",
+    "attack:rate-spike": "tsx scripts/attack.ts rate-spike",
+    "attack:scanner-signature": "tsx scripts/attack.ts scanner-signature",
+    "attack:payload-injection": "tsx scripts/attack.ts payload-injection",
+    "attack:suspicious-method": "tsx scripts/attack.ts suspicious-method",
+    "attack:sensitive-file": "tsx scripts/attack.ts sensitive-file",
+    "attack:header-anomaly": "tsx scripts/attack.ts header-anomaly",
+    "attack:ssrf-probe": "tsx scripts/attack.ts ssrf-probe",
+    "attack:open-redirect": "tsx scripts/attack.ts open-redirect",
+    "attack:crlf-injection": "tsx scripts/attack.ts crlf-injection",
+    "attack:web-shell": "tsx scripts/attack.ts web-shell",
+    "attack:honeytoken": "tsx scripts/attack.ts honeytoken",
+    "attack:port-scan": "tsx scripts/attack.ts port-scan",
+    "attack:smtp": "tsx scripts/attack.ts smtp",
+    "generate:nginx": "tsx scripts/generate-nginx.ts",
+    "attack:ssh": "tsx scripts/attack.ts ssh",
+    "attack:nosql-injection": "tsx scripts/attack.ts nosql-injection",
+    "attack:graphql-abuse": "tsx scripts/attack.ts graphql-abuse",
+    "attack:jwt-weakness": "tsx scripts/attack.ts jwt-weakness",
+    "attack:client-anomaly": "tsx scripts/attack.ts client-anomaly",
+    "example": "tsx examples/basic-server.ts",
+    "prepublishOnly": "npm run build",
+    "prepack": "npm run build",
+    "attack:prototype-pollution": "tsx scripts/attack.ts prototype-pollution",
+    "attack:insecure-deserialization": "tsx scripts/attack.ts insecure-deserialization",
+    "attack:host-header-injection": "tsx scripts/attack.ts host-header-injection"
+  },
+  "keywords": [
+    "honeypot",
+    "security",
+    "canary",
+    "decoy",
+    "intrusion-detection"
+  ],
+  "author": "Michał Płatosz <platosz.michal@gmail.com>",
+  "license": "SEE LICENSE IN LICENSE",
+  "devDependencies": {
+    "@types/node": "^26.3.0",
+    "@types/ssh2": "^1.15.5",
+    "@types/ws": "^8.18.1",
+    "tsup": "^8.5.1",
+    "tsx": "^4.23.12",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.11"
+  },
+  "dependencies": {
+    "ioredis": "^6.0.0",
+    "smol-toml": "^1.8.0",
+    "ssh2": "^1.17.0",
+    "ws": "^8.21.3"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "sideEffects": "false",
+  "bin": {
+    "hackerpot": "./dist/standalone.js"
+  }
+}

@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+
+# Least privilege: this workflow only builds and tests, so the token it hands to every
+# step (including anything a dependency's install script runs on a fork's PR) needs
+# nothing beyond reading the checkout. Without this the job inherits the repository
+# default, which on many repos is still read/write for the whole token.
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [20, 22]
+    name: node ${{ matrix.node }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+
+      # A fresh checkout of the commit is the archive-verify: it runs against the
+      # committed tree, not a working directory, so a stale staged state can't hide.
+      - run: npm ci
+
+      - name: Type-check (src + tests + examples)
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
+      # Guard the published surface: the build must emit dist/index + dist/standalone
+      # and no test declarations.
+      - name: Verify build output
+        run: |
+          test -f dist/index.js && test -f dist/index.cjs && test -f dist/index.d.ts
+          test -f dist/standalone.js
+          if ls dist/**/*.test.d.ts dist/*.test.d.ts 2>/dev/null; then
+            echo "test declarations leaked into dist" && exit 1
+          fi
+
+      - name: Pack (dry run)
+        run: npm pack --dry-run
