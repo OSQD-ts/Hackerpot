@@ -85,7 +85,7 @@ the config file (which wins) then runs the old behavior.
 
 ## Licensing of contributions
 
-hackerpot is under the [hackerpot Non-Resale License](LICENSE) — free to use and
+hackerpot is under the [OSQD Non-Resale License](LICENSE) — free to use and
 modify, but not to sell — and the copyright is held by Michał Płatosz rather than by
 "the contributors" collectively. That is deliberate: a single holder is what makes it
 possible to grant separate commercial terms to someone who asks, and to change the
