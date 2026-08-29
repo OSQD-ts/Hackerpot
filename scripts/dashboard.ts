@@ -13,7 +13,27 @@ const MGMT_URL = (process.env.MGMT_URL ?? "http://127.0.0.1:9500").replace(/\/$/
 const HOST = process.env.DASHBOARD_HOST ?? "127.0.0.1";
 const PORT = Number(process.env.DASHBOARD_PORT ?? 8080);
 
-const html = readFileSync(new URL("./dashboard.html", import.meta.url), "utf8").replace(/\{\{MGMT_URL\}\}/g, MGMT_URL);
+/**
+ * Optional API key baked into the page so `npm run dev:gui` / `start:gui` land on a
+ * working dashboard with no copy/paste step.
+ *
+ * Served ONLY when this listener is bound to loopback. The key is a management-API
+ * credential and the page is handed to whoever connects, so on any other interface
+ * embedding it would publish the credential to the network — the launcher passes it
+ * unconditionally, and this is the check that decides whether it is safe to honour.
+ * A stored key in the browser still wins, so it never overwrites one you typed.
+ */
+const LOOPBACK = new Set(["127.0.0.1", "::1", "localhost"]);
+const bootstrapKey = LOOPBACK.has(HOST.toLowerCase()) ? (process.env.DASHBOARD_API_KEY ?? "") : "";
+if (process.env.DASHBOARD_API_KEY && !bootstrapKey) {
+  console.warn(`refusing to embed DASHBOARD_API_KEY in a page served on ${HOST} — enter the key in the UI instead`);
+}
+
+const html = readFileSync(new URL("./dashboard.html", import.meta.url), "utf8")
+  .replace(/\{\{MGMT_URL\}\}/g, MGMT_URL)
+  // JSON-encoded so the value lands as a proper JS string literal and cannot break out
+  // of it, whatever the key contains.
+  .replace(/"\{\{API_KEY\}\}"/g, JSON.stringify(bootstrapKey));
 
 function forwardedAuth(req: http.IncomingMessage): Record<string, string> {
   const headers: Record<string, string> = {};

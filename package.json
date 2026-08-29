@@ -19,9 +19,13 @@
   ],
   "scripts": {
     "build": "tsup && tsc --emitDeclarationOnly",
+    "build:start": "npm run build && npm run start",
+    "build:gui": "npm run build && npm run start:gui",
     "build:watch": "tsup --watch",
     "start": "node dist/standalone.js",
+    "start:gui": "tsx scripts/launch.ts start",
     "dev": "tsx scripts/dev-server.ts",
+    "dev:gui": "tsx scripts/launch.ts dev",
     "dashboard": "tsx scripts/dashboard.ts",
     "serve": "tsx src/standalone.ts",
     "config:check": "tsx src/standalone.ts --print-config",

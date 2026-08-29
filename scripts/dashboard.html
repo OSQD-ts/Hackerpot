@@ -511,7 +511,9 @@
   const $$ = (sel, root) => Array.from((root || document).querySelectorAll(sel));
 
   const state = {
-    key: localStorage.getItem("hackerpot_api_key") || "",
+    // A key you have already entered wins; "{{API_KEY}}" is substituted by the server
+    // with the launcher's key (loopback only) so a one-command start needs no paste.
+    key: localStorage.getItem("hackerpot_api_key") || "{{API_KEY}}",
     ws: null,
     incidents: [],   // the filtered list backing the Incidents tab
     all: [],         // the analytics corpus (up to 1000 most recent, unfiltered)

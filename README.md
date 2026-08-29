@@ -11,10 +11,9 @@ decoupled and individually configurable, and the operator API that exposes captu
 data runs on its own private listener, never mixed with the attacker-facing port.
 
 ```bash
-npm install && npm run build       # build it
-npm run dev                        # honeypot :4004 + management API :9500
-npm run attack:all                 # simulate every attack type against it
-npm run dashboard                  # watch it happen at http://127.0.0.1:8080
+npm install                        # get set up
+npm run dev:gui                    # honeypot :4004 + management API :9500 + GUI :8080
+npm run attack:all                 # simulate every attack type against it (2nd terminal)
 ```
 
 ---
@@ -83,17 +82,29 @@ Prerequisites: **Node.js ≥ 20** and npm.
 ```bash
 git clone <this-repo> hackerpot && cd hackerpot
 npm install
-npm run build
 ```
 
-Run the full local playground — the honeypot, the port-scan sentinel, and the
-management API — in one process:
+No build step: the dev commands below run straight from the TypeScript sources via
+`tsx`. Build only when you want the compiled service or the library — `npm run build`,
+or `npm run build:gui` to compile and launch in one go.
+
+Start everything — the honeypot, the port-scan sentinel, the SMTP and SSH honeypots,
+the management API, and the web dashboard — with one command:
 
 ```bash
-npm run dev
-# hackerpot dev server listening on http://localhost:4004
-# management API on http://127.0.0.1:9500  (API key: "dev-key")
+npm run dev:gui
+#
+#   hackerpot is up
+#
+#   dashboard   http://127.0.0.1:8080
+#   honeypot    http://localhost:4004
+#   management  http://127.0.0.1:9500
+#   API key     dev-key  (pre-filled)
 ```
+
+The banner appears only once the management API actually answers, so the dashboard URL
+is live the moment you see it, and the API key is already filled in — open the link and
+it is connected. `Ctrl-C` stops both halves together.
 
 In a second terminal, throw the whole attack catalogue at it:
 
@@ -101,13 +112,11 @@ In a second terminal, throw the whole attack catalogue at it:
 npm run attack:all
 ```
 
-In a third, open the dashboard and watch detections stream in live:
-
-```bash
-npm run dashboard          # → http://127.0.0.1:8080  (enter the key "dev-key")
-```
-
 That's the entire loop: bait → detect → score → respond → observe.
+
+Prefer the two halves in separate terminals (independent restarts, separate logs)?
+`npm run dev` and `npm run dashboard` still do exactly that — you just enter the key
+`dev-key` in the GUI yourself.
 
 ---
 
@@ -139,9 +148,14 @@ The npm scripts you'll use most:
 
 | Script | What it does |
 | --- | --- |
+| `npm run dev:gui` | **everything at once** — honeypot + management API + dashboard, from source |
 | `npm run build` | compile `dist/` (ESM + CJS + `.d.ts`) |
+| `npm run build:start` | compile, then run the built service |
+| `npm run build:gui` | compile, then run the built service + dashboard |
+| `npm start` | run the built service (`dist/standalone.js`) — no `tsx`, the production entry point |
+| `npm run start:gui` | run the built service + dashboard together |
 | `npm run dev` | run the local honeypot + management API via `tsx` (no build needed) |
-| `npm run dashboard` | serve the management-API test GUI |
+| `npm run dashboard` | serve the management-API test GUI on its own |
 | `npm run attack:all` | fire the whole attack simulator at a running honeypot |
 | `npm run config:check` | validate a TOML config and print the resolved settings |
 | `npm run generate:nginx` | emit includable nginx edge-capture config files |
