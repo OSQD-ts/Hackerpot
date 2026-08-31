@@ -1,5 +1,6 @@
 import net from "node:net";
 import { randomUUID } from "node:crypto";
+import { StringDecoder } from "node:string_decoder";
 import type { HoneypotHit } from "../types.js";
 import type { SmtpFinding, SmtpHoneypotOptions, SmtpIncident } from "./types.js";
 
@@ -51,7 +52,7 @@ function b64decode(s: string): string {
  * management API and dashboard.
  */
 export class SmtpHoneypot {
-  private server?: net.Server;
+  private server: net.Server | undefined;
   private readonly opts: SmtpHoneypotOptions;
   private readonly hostname: string;
   private readonly localDomains: Set<string>;
@@ -69,9 +70,30 @@ export class SmtpHoneypot {
     this.maxBodyChars = options.maxBodyChars ?? 2000;
   }
 
+  /**
+   * Binds the listener, **rejecting** if the bind fails.
+   *
+   * `listen()`'s callback only fires on success; a failure (EADDRINUSE, or EACCES on
+   * port 25 — which is precisely the port an SMTP honeypot wants and precisely the one
+   * that needs privileges) arrives as an `error` event instead. With no listener for it
+   * Node rethrows it as an uncaughtException, past the caller's `await` and past the
+   * standalone entrypoint's error reporting, so a routine misconfiguration surfaced as a
+   * raw stack trace. The SSH honeypot and the port-scan sentinel already bind this way.
+   */
   listen(): Promise<void> {
-    this.server = net.createServer((socket) => this.handleConnection(socket));
-    return new Promise((resolve) => this.server!.listen(this.opts.port, this.opts.host, resolve));
+    const server = net.createServer((socket) => void this.handleConnection(socket));
+    this.server = server;
+    return new Promise((resolve, reject) => {
+      const onError = (err: Error): void => {
+        this.server = undefined;
+        reject(err);
+      };
+      server.once("error", onError);
+      server.listen(this.opts.port, this.opts.host, () => {
+        server.removeListener("error", onError);
+        resolve();
+      });
+    });
   }
 
   close(): Promise<void> {
@@ -130,8 +152,12 @@ export class SmtpHoneypot {
 
     write(`220 ${this.hostname} ESMTP ${this.opts.banner ?? "Postfix"}`);
 
+    // Incremental decode: a UTF-8 character split across TCP segments would otherwise
+    // decode to replacement characters, corrupting the very command/credential text
+    // this honeypot exists to capture.
+    const decoder = new StringDecoder("utf8");
     socket.on("data", (chunk: Buffer) => {
-      buffer += chunk.toString("utf8");
+      buffer += decoder.write(chunk);
       if (buffer.length > MAX_LINE + MAX_MESSAGE) {
         socket.destroy();
         return;

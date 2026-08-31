@@ -1,45 +1,11 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { HoneypotEngine } from "./core.js";
 import type { RequestFacts } from "./detectors/types.js";
+import { mayHaveBody, parseQuery, pathOf, readBody } from "./http-request.js";
 import type { ResponseContext } from "./responses/types.js";
 
 export type NextFn = (err?: unknown) => void;
 export type HoneypotMiddleware = (req: IncomingMessage, res: ServerResponse, next: NextFn) => Promise<void>;
-
-const MAX_BODY_BYTES = 64 * 1024;
-
-function readBody(req: IncomingMessage): Promise<string | undefined> {
-  const method = (req.method ?? "GET").toUpperCase();
-  if (method === "GET" || method === "HEAD") return Promise.resolve(undefined);
-
-  return new Promise((resolve) => {
-    let data = "";
-    let bytes = 0;
-    let truncated = false;
-    req.on("data", (chunk: Buffer) => {
-      bytes += chunk.length;
-      if (bytes > MAX_BODY_BYTES) {
-        truncated = true;
-        return;
-      }
-      data += chunk.toString("utf8");
-    });
-    req.on("end", () => resolve(truncated ? `${data}…[truncated]` : data));
-    req.on("error", () => resolve(undefined));
-  });
-}
-
-function parseQuery(url: string): Record<string, string> {
-  // Null-prototype bag: a literal `?__proto__=…` param becomes an ordinary own key
-  // (a plain object silently discards it via the __proto__ setter), so detectors can
-  // actually see a prototype-pollution probe — and the honeypot itself can never be
-  // prototype-polluted through query parsing.
-  const query: Record<string, string> = Object.create(null);
-  const queryStart = url.indexOf("?");
-  if (queryStart === -1) return query;
-  for (const [key, value] of new URLSearchParams(url.slice(queryStart)).entries()) query[key] = value;
-  return query;
-}
 
 /**
  * Builds Express/Connect-compatible middleware. Mount it ahead of your real
@@ -50,42 +16,76 @@ function parseQuery(url: string): Record<string, string> {
  */
 export function createMiddleware(engine: HoneypotEngine): HoneypotMiddleware {
   return async function honeypotMiddleware(req, res, next) {
-    const method = req.method ?? "GET";
-    const url = req.url ?? "/";
-    const path = url.split("?")[0] ?? "/";
-    const ip = engine.resolveIp(req.socket.remoteAddress, req.headers);
-
-    // Allowlisted known-good sources bypass everything, including the block check.
-    if (engine.isAllowlisted(ip)) {
-      next();
-      return;
+    // Nothing below may reject into the host application. This middleware sits in
+    // front of someone else's routes, and an async middleware that rejects is not
+    // caught by Express 4 — the request simply hangs until it times out. The engine
+    // already isolates a throwing detector and a failing store, but the blocklist
+    // check is a live backend call (Redis) and a response action writes to a socket
+    // that can die mid-write, so both can still throw here. A honeypot that can take
+    // the host app down with it is worse than no honeypot.
+    try {
+      await handle(engine, req, res, next);
+    } catch (err) {
+      // Once we have started answering, the host app cannot render an error page over
+      // the top of it — close the response ourselves rather than hand Express a
+      // half-written stream.
+      if (res.headersSent || res.writableEnded) {
+        if (!res.writableEnded) res.end();
+        return;
+      }
+      next(err);
     }
-
-    if (await engine.isBlocked(ip)) {
-      res.statusCode = 403;
-      res.setHeader("Content-Type", "text/plain; charset=utf-8");
-      res.end("Forbidden");
-      return;
-    }
-
-    const baseFacts: RequestFacts = { method, path, query: parseQuery(url), headers: req.headers, rawHeaders: req.rawHeaders, ip };
-
-    let result = await engine.evaluate(baseFacts);
-
-    // Second phase: something fired and a body-inspecting detector exists — read
-    // the body and re-evaluate so injection payloads in the body are caught too.
-    if (result.detections.length > 0 && engine.needsBodyPhase && baseFacts.body === undefined) {
-      const body = await readBody(req);
-      if (body !== undefined) result = await engine.evaluate({ ...baseFacts, body });
-    }
-
-    if (result.detections.length === 0) {
-      next();
-      return;
-    }
-
-    await dispatch(engine, res, result, ip, path);
   };
+}
+
+async function handle(engine: HoneypotEngine, req: IncomingMessage, res: ServerResponse, next: NextFn): Promise<void> {
+  const method = req.method ?? "GET";
+  const url = req.url ?? "/";
+  const path = pathOf(url);
+  const ip = engine.resolveIp(req.socket.remoteAddress, req.headers);
+
+  // Allowlisted known-good sources bypass everything, including the block check.
+  if (engine.isAllowlisted(ip)) {
+    next();
+    return;
+  }
+
+  if (await engine.isBlocked(ip)) {
+    res.statusCode = 403;
+    res.setHeader("Content-Type", "text/plain; charset=utf-8");
+    res.end("Forbidden");
+    return;
+  }
+
+  const baseFacts: RequestFacts = { method, path, query: parseQuery(url), headers: req.headers, rawHeaders: req.rawHeaders, ip };
+
+  // A second, body-inspecting pass is only possible when some detector wants the body
+  // AND this method can carry one. When it is, the first pass DEFERS recording: it is
+  // the same request, and committing both passes counts it twice (see `EvaluateOptions`).
+  const bodyPhase = engine.needsBodyPhase && mayHaveBody(method);
+  let result = await engine.evaluate(baseFacts, bodyPhase ? { recordHit: false } : {});
+
+  if (bodyPhase && result.detections.length > 0) {
+    // Something fired, so this request is ours to handle — reading the body can no
+    // longer disturb a downstream route. Re-evaluate with it, and commit exactly once:
+    // the activity window already counted this request on the first pass.
+    //
+    // The second pass sees a superset of the first's inputs (same facts, same tracker
+    // contents, plus the body), so it re-derives everything the first pass found and may
+    // add more. The one way it can find less is a sliding window ageing out an event in
+    // the microseconds between the two passes — a borderline request then falls through
+    // unrecorded, which is the same outcome it would have had a moment later anyway.
+    const body = await readBody(req);
+    const facts = body !== undefined ? { ...baseFacts, body } : baseFacts;
+    result = await engine.evaluate(facts, { trackActivity: false });
+  }
+
+  if (result.detections.length === 0) {
+    next();
+    return;
+  }
+
+  await dispatch(engine, res, result, ip, path);
 }
 
 export async function dispatch(

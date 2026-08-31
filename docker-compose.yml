@@ -1,6 +1,10 @@
 services:
   honeypot:
     build: .
+    # `build:` and `image:` together mean compose REUSES an existing image with this
+    # tag instead of building — and `npm run docker:build` tags exactly this name. After
+    # changing any source, run `docker compose up -d --build`, or you will silently keep
+    # running the old build.
     image: hackerpot
     restart: unless-stopped
     ports:
@@ -32,6 +36,27 @@ services:
       # Your own settings, replacing the default config baked into the image.
       # Environment variables above still override whatever the file says.
       # - ./hackerpot.toml:/app/hackerpot.toml:ro
+
+    # --- containment -------------------------------------------------------
+    # This is the one container on the host whose job is to be attacked, so it gets
+    # the outer boundary that matches the bounds the code keeps internally (every
+    # per-IP map in the engine is capped for the same reason). If something here is
+    # ever wrong, this is what decides whether it stays a container problem.
+    #
+    # The process binds only ports above 1024 and runs as uid 1000, so it needs no
+    # capabilities at all, and writes nothing outside /data — verified by running the
+    # image with exactly these settings.
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m
+    # Memory is the resource an attacker can most directly inflate. The engine caps
+    # every map it owns, but a cap the kernel enforces is the one that holds if a
+    # future detector forgets to. Raise it if you raise the store retention limits.
+    mem_limit: 512m
+    pids_limit: 256
     depends_on:
       redis:
         condition: service_healthy
@@ -39,7 +64,19 @@ services:
   redis:
     image: redis:7-alpine
     restart: unless-stopped
+    # No published ports: reachable only on the compose network, by the honeypot.
     command: ["redis-server", "--save", "\"\"", "--appendonly", "no"]
+    # Start AS the redis user rather than letting the entrypoint drop from root. The
+    # image's entrypoint uses setpriv to step down, which needs SETUID/SETGID back —
+    # starting unprivileged means the container is never root and still needs no
+    # capabilities. Persistence is off above, so it writes nothing.
+    user: redis
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    mem_limit: 256m
+    pids_limit: 128
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s

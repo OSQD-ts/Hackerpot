@@ -1,5 +1,6 @@
 import { ScoreLedger } from "./scores.js";
-import type { HitStore, HoneypotHit } from "../types.js";
+import { matchesQuery } from "./query.js";
+import type { HitQuery, HitStore, HoneypotHit } from "../types.js";
 
 export interface MemoryStoreOptions {
   /**
@@ -37,6 +38,22 @@ export class MemoryStore implements HitStore {
 
   list(): HoneypotHit[] {
     return [...this.hits];
+  }
+
+  /**
+   * Walks backwards from the newest hit and stops as soon as `limit` matches are
+   * found, so a `?limit=10` read touches ten records rather than copying the whole
+   * ring buffer (up to `maxHits`, 10 000 by default) and discarding almost all of it.
+   */
+  query(query: HitQuery): HoneypotHit[] {
+    const limit = query.limit !== undefined && query.limit >= 0 ? query.limit : Infinity;
+    const found: HoneypotHit[] = [];
+    for (let i = this.hits.length - 1; i >= 0 && found.length < limit; i -= 1) {
+      const hit = this.hits[i]!;
+      if (matchesQuery(hit, query)) found.push(hit);
+    }
+    // Collected newest-first; `list()`'s contract is oldest-first.
+    return found.reverse();
   }
 
   scoreFor(ip: string): number {

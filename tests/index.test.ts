@@ -11,6 +11,7 @@ import {
   decoyPathDetector,
 } from "../src/index.js";
 import type { RequestFacts } from "../src/index.js";
+import type { EvaluationResult } from "../src/index.js";
 
 function request(port: number, path: string, method = "GET", headers: Record<string, string> = {}, body?: string): Promise<{ status: number; body: string }> {
   return new Promise((resolve, reject) => {
@@ -46,14 +47,14 @@ describe("detectors", () => {
 
   it("path bruteforce detector flags many distinct paths from one IP", async () => {
     const engine = new HoneypotEngine({ detectors: [pathBruteforceDetector({ uniquePathThreshold: 5, windowMs: 10_000 })] });
-    let last;
+    let last: EvaluationResult | undefined;
     for (let i = 0; i < 6; i++) last = await engine.evaluate(facts({ path: `/dir-${i}` }));
     expect(last?.detections[0]?.detectorId).toBe("path-bruteforce");
   });
 
   it("credential bruteforce detector flags repeated auth POSTs", async () => {
     const engine = new HoneypotEngine({ detectors: [credentialBruteforceDetector({ attemptThreshold: 3, windowMs: 10_000 })] });
-    let last;
+    let last: EvaluationResult | undefined;
     for (let i = 0; i < 3; i++) last = await engine.evaluate(facts({ method: "POST", path: "/login", body: "u=a&p=b" }));
     expect(last?.detections[0]?.detectorId).toBe("credential-bruteforce");
   });
@@ -69,7 +70,7 @@ describe("scoring", () => {
   it("accumulates score per IP and escalates the response action", async () => {
     const store = new MemoryStore();
     const engine = new HoneypotEngine({ store, detectors: [decoyPathDetector()] });
-    let last;
+    let last: EvaluationResult | undefined;
     for (let i = 0; i < 6; i++) last = await engine.evaluate(facts({ path: "/.git/config" }));
     expect(await store.scoreFor("10.0.0.1")).toBeGreaterThanOrEqual(40);
     expect(last?.actionId).toBe("block"); // policy escalates past the block threshold

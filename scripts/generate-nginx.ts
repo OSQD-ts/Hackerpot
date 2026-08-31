@@ -418,6 +418,18 @@ function buildServerFile(opts: Options): string {
       "",
       `REQUIRES ${HTTP_FILE} loaded in the http context (it defines the upstream and`,
       "the $hp_flagged variable this file reads).",
+      "",
+      "ALSO REQUIRES, on the honeypot side: [server] trust_proxy = true (or TRUST_PROXY=true).",
+      "",
+      "This half of the pair is easy to miss because nothing looks broken without it.",
+      "The X-Forwarded-For set below is IGNORED unless the honeypot trusts it, so every",
+      "diverted request is attributed to nginx's own address instead of the attacker's.",
+      "Hits are still recorded and the dashboard still fills up — but every attacker",
+      "shares ONE score bucket, so per-IP scoring is meaningless, the IOC feed exports",
+      "the proxy's address, and once that shared score crosses the block threshold the",
+      "honeypot blocks the proxy — i.e. answers 403 to every diverted request from",
+      "everyone, including first-time probes. Turn it on only with this proxy in front:",
+      "trust_proxy with nothing overwriting the header lets a client forge its own IP.",
     ]),
   );
   lines.push("");
@@ -562,6 +574,11 @@ Install (Debian/Ubuntu):
 
   3. Check and reload:
        sudo nginx -t && sudo systemctl reload nginx
+
+  4. On the HONEYPOT side, trust the header this config sets — without it every
+     diverted request is attributed to nginx, not the attacker:
+       [server] trust_proxy = true      # in hackerpot.toml
+       TRUST_PROXY=true                 # or as an environment variable
 
   ${join(dir, SITE_FILE)} is a complete vhost with both includes already wired in.
 

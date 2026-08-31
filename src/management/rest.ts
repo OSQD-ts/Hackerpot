@@ -1,4 +1,5 @@
-import type { HitStore } from "../types.js";
+import { queryHits } from "../stores/query.js";
+import type { HitQuery, HitStore } from "../types.js";
 import type { Incident } from "./types.js";
 
 export interface IncidentQuery {
@@ -37,20 +38,20 @@ function parseQuery(search: URLSearchParams): IncidentQuery {
 
 export async function listIncidents(store: HitStore, search: URLSearchParams): Promise<Incident[]> {
   const query = parseQuery(search);
-  const all = await store.list();
   const limit = Math.min(Math.max(1, query.limit ?? 100), 1000);
   const sinceMs = query.since ? Date.parse(query.since) : undefined;
 
-  const filtered = all.filter((hit) => {
-    if (query.ip && hit.ip !== query.ip) return false;
-    if (query.detector && !hit.detections.some((d) => d.detectorId === query.detector)) return false;
-    if (sinceMs !== undefined && Date.parse(hit.timestamp) < sinceMs) return false;
-    return true;
-  });
+  // Pushed into the store when it can do it: this endpoint asks for a bounded, filtered
+  // slice, and reading the entire corpus to answer with at most 1000 rows was the most
+  // expensive thing the management API did.
+  const hitQuery: HitQuery = { limit };
+  if (query.ip !== undefined) hitQuery.ip = query.ip;
+  if (query.detector !== undefined) hitQuery.detector = query.detector;
+  if (sinceMs !== undefined && !Number.isNaN(sinceMs)) hitQuery.sinceMs = sinceMs;
 
-  // Most recent first.
-  filtered.sort((a, b) => Date.parse(b.timestamp) - Date.parse(a.timestamp));
-  return filtered.slice(0, limit);
+  const matched = await queryHits(store, hitQuery);
+  // Stores return oldest-first; this endpoint has always answered most-recent-first.
+  return [...matched].sort((a, b) => Date.parse(b.timestamp) - Date.parse(a.timestamp));
 }
 
 export async function getIncident(store: HitStore, id: string): Promise<Incident | undefined> {
@@ -75,7 +76,16 @@ export async function computeStats(store: HitStore): Promise<StatsSummary> {
     perIp.set(hit.ip, entry);
   }
 
-  const timestamps = all.map((hit) => hit.timestamp).sort();
+  // First/last in one pass. Sorting every timestamp to read two of them was O(n log n)
+  // plus a full copy of the log, on a path `/stats` and `/metrics` hit on every scrape.
+  // ISO-8601 UTC strings compare correctly as strings, which is what the sort relied on.
+  let firstSeen: string | undefined;
+  let lastSeen: string | undefined;
+  for (const hit of all) {
+    if (firstSeen === undefined || hit.timestamp < firstSeen) firstSeen = hit.timestamp;
+    if (lastSeen === undefined || hit.timestamp > lastSeen) lastSeen = hit.timestamp;
+  }
+
   const topOffenders = [...perIp.entries()]
     .map(([ip, v]) => ({ ip, score: v.score, incidents: v.incidents }))
     .sort((a, b) => b.score - a.score)
@@ -88,9 +98,9 @@ export async function computeStats(store: HitStore): Promise<StatsSummary> {
     byResponse,
     topOffenders,
   };
-  if (timestamps.length > 0) {
-    summary.firstSeen = timestamps[0]!;
-    summary.lastSeen = timestamps[timestamps.length - 1]!;
+  if (firstSeen !== undefined && lastSeen !== undefined) {
+    summary.firstSeen = firstSeen;
+    summary.lastSeen = lastSeen;
   }
   return summary;
 }
@@ -146,7 +156,9 @@ export interface AttackSession {
  * a single detailed session; omit it for every IP's session, newest activity first.
  */
 export async function computeSessions(store: HitStore, ip?: string): Promise<AttackSession[]> {
-  const all = (await store.list()).filter((h) => (ip ? h.ip === ip : true));
+  // A single-IP session is a filtered read the store can answer directly; the all-IPs
+  // view genuinely needs the corpus.
+  const all = ip !== undefined ? await queryHits(store, { ip }) : await store.list();
   const byIp = new Map<string, Incident[]>();
   for (const hit of all) {
     const list = byIp.get(hit.ip) ?? [];
@@ -196,7 +208,8 @@ export interface ActorGroup {
  * Pass a `fingerprint` for one actor; omit it for all, most IPs first (the rotators).
  */
 export async function computeActors(store: HitStore, fingerprint?: string): Promise<ActorGroup[]> {
-  const all = (await store.list()).filter((h) => h.fingerprint && (fingerprint ? h.fingerprint === fingerprint : true));
+  const source = fingerprint !== undefined ? await queryHits(store, { fingerprint }) : await store.list();
+  const all = source.filter((h) => h.fingerprint && (fingerprint ? h.fingerprint === fingerprint : true));
   const byFp = new Map<string, { ips: Set<string>; score: number; incidents: number; detectors: Set<string>; first: string; last: string }>();
   for (const hit of all) {
     const fp = hit.fingerprint!;

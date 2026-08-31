@@ -1,18 +1,47 @@
 import type { HoneypotHit } from "./types.js";
+import { VERSION } from "./version.js";
 
 const PRODUCT = "hackerpot";
-const PRODUCT_VERSION = "0.1.0";
+const PRODUCT_VERSION = VERSION;
 
 /** CEF severity 0–10, derived from the IP's cumulative score (block ≈ 10, tarpit range ≈ 7). */
 function severity(hit: HoneypotHit): number {
   return Math.max(1, Math.min(10, Math.round(hit.totalScore / 5)));
 }
 
+/**
+ * Neutralizes the line-structure characters in a value bound for a CEF field.
+ *
+ * Every value that reaches this formatter is attacker-chosen: the request path, the
+ * User-Agent, and the detector `reason` strings that quote them back (`sensitive-file`
+ * emits the path verbatim, `scanner-signature` the UA, `header-anomaly` the request
+ * target). CEF is a **line-oriented** format — a SIEM splits its input on newlines and
+ * reads each line as one event — so a raw CR or LF anywhere in the line lets the
+ * attacker close our event and open one of their own: `GET /a\r\nCEF:0|…|src=9.9.9.9`
+ * forges a whole second incident, with a source IP of their choosing, in the operator's
+ * SIEM. Nothing downstream can tell it from a real detection.
+ *
+ * Only `\n` was escaped, and only in the extension half — so a bare `\r` passed through
+ * both halves, and the header half (which carries the detector id and the reason)
+ * escaped neither. Both are handled here, in one pass, along with the remaining C0
+ * control characters, which corrupt a log line just as effectively without carrying any
+ * information worth keeping.
+ */
+function cefEscapeControl(value: string): string {
+  // eslint-disable-next-line no-control-regex -- matching control characters is the point
+  return value.replace(/[\u0000-\u001f\u007f]/g, (ch) => {
+    if (ch === "\n") return "\\n";
+    if (ch === "\r") return "\\r";
+    if (ch === "\t") return "\\t";
+    return "";
+  });
+}
+
 function cefEscapeHeader(value: string): string {
-  return value.replace(/\\/g, "\\\\").replace(/\|/g, "\\|");
+  return cefEscapeControl(value.replace(/\\/g, "\\\\").replace(/\|/g, "\\|"));
 }
 function cefEscapeExt(value: string): string {
-  return value.replace(/\\/g, "\\\\").replace(/=/g, "\\=").replace(/\n/g, "\\n");
+  return cefEscapeControl(value.replace(/\\/g, "\\\\").replace(/=/g, "\\="));
 }
 
 /**

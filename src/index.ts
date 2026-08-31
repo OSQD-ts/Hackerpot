@@ -1,5 +1,5 @@
 export { HoneypotEngine } from "./core.js";
-export type { EvaluationResult } from "./core.js";
+export type { EvaluateOptions, EvaluationResult } from "./core.js";
 export { createMiddleware, dispatch } from "./middleware.js";
 export type { HoneypotMiddleware, NextFn } from "./middleware.js";
 export { HoneypotServer } from "./server.js";
@@ -8,7 +8,7 @@ export { ActivityRegistry, FingerprintRegistry, IpTracker } from "./state.js";
 export type { RequestEvent } from "./state.js";
 export { IpAllowlist } from "./allowlist.js";
 export { MemoryBlocklist, RedisBlocklist, CompositeBlocklist } from "./blocklist.js";
-export type { Blocklist, RedisBlocklistOptions } from "./blocklist.js";
+export type { Blocklist, MemoryBlocklistOptions, RedisBlocklistOptions } from "./blocklist.js";
 export * from "./intel/index.js";
 export { EnforcingBlocklist, commandEnforcer, webhookEnforcer } from "./firewall.js";
 export type { BlockEnforcer, CommandEnforcerOptions, WebhookEnforcerOptions } from "./firewall.js";
@@ -17,10 +17,20 @@ export { generateRobotsTxt } from "./robots.js";
 export type { RobotsTxtOptions } from "./robots.js";
 export { cefFormat, syslogLine } from "./formats.js";
 export type { SyslogOptions } from "./formats.js";
+// Log rendering, so a custom `onHit` can emit the same injection-safe text lines the
+// standalone service does rather than re-deriving the escaping rules.
+export { formatTextLine, formatValue } from "./logfmt.js";
+// Request parsing, for mounting the engine behind a front end that is neither the
+// bundled server nor Connect-style middleware. These enforce the body cap and the
+// null-prototype query bag the built-in entrypoints rely on.
+export { MAX_BODY_BYTES, mayHaveBody, parseQuery, pathOf, readBody } from "./http-request.js";
+// Delay helpers, for custom response actions that want the built-in `[min, max]` shape.
+export { randomBetween, resolveDelay, sleep } from "./utils.js";
+export { VERSION } from "./version.js";
 export { computeFingerprint, headerOrder, uaClass } from "./fingerprint.js";
 export { defaultIpEnricher } from "./enrichment.js";
 export type { IpEnricher, IpEnrichment } from "./enrichment.js";
-export type { HitStore, HoneypotConfig, HoneypotHit } from "./types.js";
+export type { HitQuery, HitStore, HoneypotConfig, HoneypotHit } from "./types.js";
 
 export * from "./detectors/index.js";
 export * from "./responses/index.js";

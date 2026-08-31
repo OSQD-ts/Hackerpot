@@ -1,8 +1,21 @@
 import type { HitStore } from "../types.js";
 import { computeStats } from "./rest.js";
 
+/**
+ * Escapes a Prometheus label value.
+ *
+ * The exposition format is line-oriented, so an unescaped CR or LF ends the sample and
+ * lets whatever follows be read as another one. `\n` was handled and `\r` was not — and
+ * these ids come out of the *store*, which this codebase already assumes can hold
+ * records it did not write (both `RedisStore.list` and `FileStore.list` are hardened
+ * against a foreign writer to the same key/path). The remaining control characters
+ * carry nothing worth keeping and corrupt a scrape just as well, so they go too.
+ */
 function escapeLabel(value: string): string {
-  return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/\n/g, "\\n");
+  return value
+    .replace(/\\/g, "\\\\")
+    .replace(/"/g, '\\"')
+    .replace(/[\u0000-\u001f\u007f]/g, (ch) => (ch === "\n" ? "\\n" : ch === "\r" ? "\\r" : ch === "\t" ? "\\t" : ""));
 }
 
 /**

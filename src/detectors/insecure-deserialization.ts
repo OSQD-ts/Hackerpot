@@ -27,8 +27,18 @@ const SIGNATURES: Signature[] = [
   { kind: "python-pickle", pattern: /(c__builtin__\n|cposix\nsystem|cos\nsystem|__reduce__)/ },
   // Ruby Marshal — version bytes \x04\x08, base64 "BAg".
   { kind: "ruby-marshal", pattern: /\bBAg[A-Za-z0-9+/]{8,}=*(?:$|[&;"'\s])/ },
-  // Node node-serialize RCE marker — an immediately-invoked function in the JSON.
-  { kind: "node-serialize", pattern: /_\$\$ND_FUNC\$\$_|\}\(\)\s*"/ },
+  // Node node-serialize RCE marker.
+  //
+  // ONLY the marker. This also carried a bare `\}\(\)\s*"` alternative — any `}()` at
+  // the end of a JSON string — which could not indicate the attack it names: the
+  // `node-serialize` exploit works because `unserialize()` evals the payload that
+  // FOLLOWS `_$$ND_FUNC$$_`, so a value without the marker is not a node-serialize
+  // payload at all. It did fire on ordinary content, at score 9 — near enough the
+  // block threshold that a handful of requests blocks the client. A template or
+  // config API storing `{"transform":"function(v){return v*2}()"}` is the whole
+  // pattern, and in middleware mode that is a real user being blocked by a signature
+  // that had no true positives of its own to lose.
+  { kind: "node-serialize", pattern: /_\$\$ND_FUNC\$\$_/ },
 ];
 
 function scan(raw: string): Signature | undefined {

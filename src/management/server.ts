@@ -82,20 +82,40 @@ export class ManagementServer {
       this.webhooks.attach(this.broker);
     }
 
-    await new Promise<void>((resolve) => this.server!.listen(this.port, this.host, resolve));
+    // Reject on a failed bind rather than letting the `error` event surface as an
+    // uncaughtException past the caller's `await` — same rail as `HoneypotServer.listen`.
+    const server = this.server;
+    await new Promise<void>((resolve, reject) => {
+      const onError = (err: Error): void => reject(err);
+      server.once("error", onError);
+      server.listen(this.port, this.host, () => {
+        server.removeListener("error", onError);
+        resolve();
+      });
+    });
+  }
+
+  /** This peer's failures inside the current window, pruning what has aged out. */
+  private recentAuthFailures(ip: string, now: number): number[] {
+    const recorded = this.authFailures.get(ip);
+    if (!recorded) return [];
+    const recent = recorded.filter((t) => now - t < ManagementServer.AUTH_WINDOW_MS);
+    // Write the pruned list back so a peer that stops failing shrinks instead of
+    // being re-filtered from its full history on every subsequent request.
+    if (recent.length === 0) this.authFailures.delete(ip);
+    else if (recent.length !== recorded.length) this.authFailures.set(ip, recent);
+    return recent;
   }
 
   /** True if this peer IP has exceeded the failed-auth budget in the current window. */
   private tooManyAuthFailures(ip: string): boolean {
-    const now = Date.now();
-    const recent = (this.authFailures.get(ip) ?? []).filter((t) => now - t < ManagementServer.AUTH_WINDOW_MS);
-    return recent.length >= ManagementServer.AUTH_MAX_FAILURES;
+    return this.recentAuthFailures(ip, Date.now()).length >= ManagementServer.AUTH_MAX_FAILURES;
   }
 
   /** Record a failed auth for a peer IP (windowed), keeping the map bounded. */
   private recordAuthFailure(ip: string): void {
     const now = Date.now();
-    const recent = (this.authFailures.get(ip) ?? []).filter((t) => now - t < ManagementServer.AUTH_WINDOW_MS);
+    const recent = this.recentAuthFailures(ip, now);
     recent.push(now);
     this.authFailures.set(ip, recent);
     // Bound the map: drop entries whose most recent failure has aged out of the window.
@@ -116,6 +136,15 @@ export class ManagementServer {
   }
 
   private sendJson(res: http.ServerResponse, status: number, body: unknown): void {
+    // The catch-all in `handleHttp` calls this after a handler has already begun
+    // writing (`/metrics` streams its body before it can fail). Setting a status or a
+    // header then throws ERR_HTTP_HEADERS_SENT, which replaces the real error with a
+    // second one and leaves the socket open until it times out.
+    if (res.writableEnded) return;
+    if (res.headersSent) {
+      res.end();
+      return;
+    }
     const payload = JSON.stringify(body);
     res.statusCode = status;
     res.setHeader("Content-Type", "application/json");

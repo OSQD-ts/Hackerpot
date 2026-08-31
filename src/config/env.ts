@@ -28,13 +28,20 @@ function asInteger(name: string, value: string): number {
   return parsed;
 }
 
+/** Same range rail the config file gets — an override must not smuggle past it. */
+function asPort(name: string, value: string): number {
+  const parsed = asInteger(name, value);
+  if (parsed > 65535) throw new ConfigError(`${name}: must be a TCP port between 0 and 65535, got "${value}"`);
+  return parsed;
+}
+
 function asList(value: string): string[] {
   return value.split(",").map((entry) => entry.trim()).filter(Boolean);
 }
 
 export function applyEnvOverrides(config: HackerpotConfig, env: NodeJS.ProcessEnv = process.env): HackerpotConfig {
   const port = read(env, "PORT");
-  if (port !== undefined) config.server.port = asInteger("PORT", port);
+  if (port !== undefined) config.server.port = asPort("PORT", port);
 
   const host = read(env, "HOST");
   if (host !== undefined) config.server.host = host;
@@ -51,7 +58,7 @@ export function applyEnvOverrides(config: HackerpotConfig, env: NodeJS.ProcessEn
 
   const scanPorts = read(env, "SCAN_PORTS");
   if (scanPorts !== undefined) {
-    config.portScan.ports = asList(scanPorts).map((entry) => asInteger("SCAN_PORTS", entry));
+    config.portScan.ports = asList(scanPorts).map((entry) => asPort("SCAN_PORTS", entry));
     config.portScan.enabled = config.portScan.ports.length > 0;
   }
 
@@ -90,7 +97,7 @@ export function applyEnvOverrides(config: HackerpotConfig, env: NodeJS.ProcessEn
   if (managementHost !== undefined) config.management.host = managementHost;
 
   const managementPort = read(env, "MANAGEMENT_PORT");
-  if (managementPort !== undefined) config.management.port = asInteger("MANAGEMENT_PORT", managementPort);
+  if (managementPort !== undefined) config.management.port = asPort("MANAGEMENT_PORT", managementPort);
 
   if (config.management.enabled && config.management.apiKeys.length === 0) {
     throw new ConfigError("MANAGEMENT_API_KEYS: is required when the management API is enabled");

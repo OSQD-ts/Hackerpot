@@ -1,4 +1,5 @@
-import type { HitStore, HoneypotHit } from "../types.js";
+import { applyQuery } from "./query.js";
+import type { HitQuery, HitStore, HoneypotHit } from "../types.js";
 
 export interface ElasticStoreOptions {
   /** Base URL of the cluster, e.g. "http://localhost:9200" (Elasticsearch or OpenSearch). */
@@ -116,6 +117,16 @@ export class ElasticStore implements HitStore {
     }
   }
 
+  /**
+   * The most recent `maxHits` hits, **oldest first** — the same order every other
+   * store returns, so a caller can rely on one contract regardless of backend.
+   *
+   * The query itself must stay `sort: desc`: paired with `size` that is what selects
+   * *which* documents come back (the newest N rather than an arbitrary N), so the
+   * ordering is reversed here rather than asked for from Elasticsearch. Sorting
+   * ascending server-side would return the N oldest documents in the index, which is
+   * the opposite of what every caller wants.
+   */
   async list(): Promise<HoneypotHit[]> {
     try {
       await this.ensureIndex();
@@ -125,7 +136,49 @@ export class ElasticStore implements HitStore {
       });
       if (!res.ok) throw new Error(`search failed: ${res.status} ${await res.text()}`);
       const json = (await res.json()) as { hits?: { hits?: Array<{ _source: HoneypotHit }> } };
-      return (json.hits?.hits ?? []).map((h) => h._source);
+      return (json.hits?.hits ?? []).map((h) => h._source).reverse();
+    } catch (err) {
+      this.onError?.(err instanceof Error ? err : new Error(String(err)));
+      return [];
+    }
+  }
+
+  /**
+   * A filtered read, pushed into the search request rather than done here.
+   *
+   * Only `ip` and `sinceMs` are pushed down: they are the fields this store's own
+   * mapping declares (`ip` as a keyword, `timestamp` as a date), so a term/range query
+   * on them is exact. `detector` and `fingerprint` are left to dynamic mapping — their
+   * queryable form depends on cluster settings this store does not control — so they
+   * are matched here instead, over whatever the pushed-down filters already narrowed.
+   * The answer is identical either way; only the volume moved over HTTP changes.
+   *
+   * That volume was the point: every management read previously pulled `maxHits`
+   * documents (1000 by default) and filtered them in JS, so `/incidents?ip=X&limit=10`
+   * transferred a thousand documents to return ten.
+   */
+  async query(query: HitQuery): Promise<HoneypotHit[]> {
+    try {
+      await this.ensureIndex();
+      const filters: unknown[] = [];
+      if (query.ip !== undefined) filters.push({ term: { ip: query.ip } });
+      if (query.sinceMs !== undefined) filters.push({ range: { timestamp: { gte: new Date(query.sinceMs).toISOString() } } });
+      // Only a limit that needs no local filtering can be applied server-side: with a
+      // client-side filter still to run, `size` would cap the candidates rather than
+      // the results, and the newest N matches could fall outside the newest N documents.
+      const localFilter = query.detector !== undefined || query.fingerprint !== undefined;
+      const size = !localFilter && query.limit !== undefined && query.limit >= 0 ? Math.min(query.limit, this.maxHits) : this.maxHits;
+
+      const res = await this.request("POST", `/${this.index}/_search`, {
+        size,
+        sort: [{ timestamp: "desc" }],
+        ...(filters.length > 0 ? { query: { bool: { filter: filters } } } : {}),
+      });
+      if (!res.ok) throw new Error(`search failed: ${res.status} ${await res.text()}`);
+      const json = (await res.json()) as { hits?: { hits?: Array<{ _source: HoneypotHit }> } };
+      // Descending from the cluster (that is what `size` selects on), ascending out.
+      const hits = (json.hits?.hits ?? []).map((h) => h._source).reverse();
+      return applyQuery(hits, query);
     } catch (err) {
       this.onError?.(err instanceof Error ? err : new Error(String(err)));
       return [];

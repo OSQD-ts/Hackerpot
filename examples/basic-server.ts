@@ -14,7 +14,7 @@
  *   app.use(createMiddleware(engine));   // mount ahead of your routes
  */
 import http from "node:http";
-import { HoneypotEngine, createMiddleware, generateRobotsTxt, honeytokenDetector } from "../src/index.js";
+import { HoneypotEngine, createMiddleware, generateRobotsTxt, hardenHttpServer, honeytokenDetector } from "../src/index.js";
 
 const PORT = Number(process.env.PORT ?? 3000);
 
@@ -37,7 +37,12 @@ const robotsTxt = generateRobotsTxt({ sitemap: "https://example.com/sitemap.xml"
 
 const server = http.createServer((req, res) => {
   // 1. hackerpot first: it handles anything a detector flags and calls next() otherwise.
-  void honeypot(req, res, () => {
+  //    `next` receives an error if the honeypot's own machinery failed (e.g. an
+  //    unreachable blocklist backend) — it never rejects into your server. Handle it
+  //    the way your framework does; here we fail OPEN to the real app, because a
+  //    honeypot being down must not take the application with it.
+  void honeypot(req, res, (err) => {
+    if (err) console.error("[honeypot] degraded, serving the app anyway:", (err as Error).message);
     // 2. Your real application below — reached only for traffic the honeypot didn't flag.
     const path = (req.url ?? "/").split("?")[0];
 
@@ -60,6 +65,11 @@ const server = http.createServer((req, res) => {
     res.end("Not Found");
   });
 });
+
+// Node's listener defaults are permissive (no connection cap, a 5-minute request
+// timeout). In middleware mode the server is yours, so the hardening is your call —
+// this is the same one HoneypotServer applies to itself.
+hardenHttpServer(server);
 
 server.listen(PORT, () => {
   console.log(`example app + hackerpot on http://localhost:${PORT}`);

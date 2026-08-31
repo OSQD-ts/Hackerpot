@@ -708,7 +708,7 @@ describe("building from config", () => {
     // toMatchObject, not toEqual: this section grows (it gained `enforcer`), and
     // the point of the assertion is the backend default, not the exact shape.
     expect(defaultConfig().blocklist).toMatchObject({ backend: "memory", keyPrefix: "hackerpot:block:" });
-    expect(createBlocklist(defaultConfig()).describe).toBe("memory");
+    expect(createBlocklist(defaultConfig()).describe).toBe("memory(max 100000)");
     // Selecting redis without a configured store connection is a startup error,
     // not a silent fall back to a per-instance blocklist.
     expect(() => parse('[blocklist]\nbackend = "redis"\n')).toThrow(/no \[store\.redis\] url is configured/);
@@ -719,7 +719,7 @@ describe("building from config", () => {
   it("leaves external block enforcement off unless configured", () => {
     const config = defaultConfig();
     expect(config.blocklist.enforcer.enabled).toBe(false);
-    expect(createBlocklist(config).describe).toBe("memory");
+    expect(createBlocklist(config).describe).toBe("memory(max 100000)");
   });
 
   it("builds a command enforcer from a real argv array", () => {
@@ -731,16 +731,16 @@ describe("building from config", () => {
     // Writing a command is itself the opt-in; no separate flag needed.
     expect(config.blocklist.enforcer.enabled).toBe(true);
     expect(config.blocklist.enforcer.args).toEqual(["-w", "-A", "INPUT", "-s", "{ip}", "-j", "DROP"]);
-    expect(createBlocklist(config).describe).toBe("memory + enforce(command:iptables)");
+    expect(createBlocklist(config).describe).toBe("memory(max 100000) + enforce(command:iptables)");
 
     // ...and `enabled = false` switches it off without deleting the command.
     const off = parse('[blocklist.enforcer]\nenabled = false\ncommand = "iptables"\nargs = ["{ip}"]\n');
-    expect(createBlocklist(off).describe).toBe("memory");
+    expect(createBlocklist(off).describe).toBe("memory(max 100000)");
   });
 
   it("builds a webhook enforcer, and refuses a non-http url", () => {
     const config = parse('[blocklist.enforcer]\nwebhook = "https://waf.example/block"\nsecret = "s3cret"\n');
-    expect(createBlocklist(config).describe).toBe("memory + enforce(webhook)");
+    expect(createBlocklist(config).describe).toBe("memory(max 100000) + enforce(webhook)");
     expect(() => parse('[blocklist.enforcer]\nwebhook = "ftp://nope"\n')).toThrow(/must be an http\(s\) URL/);
   });
 

@@ -14,7 +14,14 @@ export function uaClass(userAgent: string | undefined): string {
     const m = ua.match(/\b(curl|wget|libwww|python|go-http-client|java|okhttp|axios|node-fetch|got|httpie|postman)\b/);
     return m ? `tool:${m[1]}` : "tool";
   }
-  if (/\bbot|crawl|spider|scan|nikto|sqlmap|nmap|masscan|zgrab\b/.test(ua)) return "bot";
+  // Grouped, and deliberately without word boundaries. Written as
+  // `/\bbot|crawl|…|zgrab\b/`, the alternation bound `\b` to only the FIRST and LAST
+  // branch — so `\bbot` demanded a word boundary before "bot" and `zgrab\b` one after,
+  // which is exactly backwards for the names this is looking for. Every mainstream
+  // crawler ("googlebot", "bingbot", "AhrefsBot") failed the leading boundary and was
+  // classified "other", i.e. the branch never matched the traffic it names. These are
+  // distinctive substrings; substring matching is the intent.
+  if (/(bot|crawl|spider|scan|nikto|sqlmap|nmap|masscan|zgrab)/.test(ua)) return "bot";
   if (ua.includes("edg/")) return "browser:edge";
   if (ua.includes("firefox/")) return "browser:firefox";
   if (ua.includes("chrome/")) return "browser:chrome";

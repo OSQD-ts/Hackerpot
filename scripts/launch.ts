@@ -185,6 +185,14 @@ if (shuttingDown) {
       line("API key", apiKey === "dev-key" ? `${apiKey}  (pre-filled)` : `${apiKey}  (generated, pre-filled)`),
       "",
       line("traffic", "npm run attack:all"),
+      // `start` runs the real standalone service, which leaves trust_proxy off (as it
+      // should). The simulator spoofs a source IP per scenario to keep their scores
+      // apart, so against this target every scenario lands on one address, that address
+      // is blocked during the first one, and the rest of the run is 403s. Flag it here
+      // rather than letting a demo look broken; the simulator also says so if it happens.
+      ...(mode === "start"
+        ? [line("", "for per-scenario source IPs, restart with TRUST_PROXY=true (local demo only)")]
+        : []),
       line("stop", "Ctrl-C"),
       "",
     ].join("\n"),

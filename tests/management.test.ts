@@ -210,7 +210,9 @@ describe("ManagementServer", () => {
     const hookPort = (receiver.address() as { port: number }).port;
 
     const secret = "sign-me";
-    const port = await start(new MemoryStore(), { webhooks: [{ url: `http://127.0.0.1:${hookPort}/hook`, secret }] });
+    // Started for its side effect only — these assertions drive the broker directly
+    // via `server.publish`, so the honeypot port is never dialled.
+    await start(new MemoryStore(), { webhooks: [{ url: `http://127.0.0.1:${hookPort}/hook`, secret }] });
 
     server!.publish(hit({ id: "hook-1" }));
     await new Promise((r) => setTimeout(r, 100));
@@ -233,7 +235,7 @@ describe("ManagementServer", () => {
     await new Promise<void>((r) => receiver.listen(0, "127.0.0.1", r));
     const hookPort = (receiver.address() as { port: number }).port;
 
-    const port = await start(new MemoryStore(), {
+    await start(new MemoryStore(), {
       webhooks: [{ url: `http://127.0.0.1:${hookPort}/alert`, minScore: 40, dedupeWindowSeconds: 60, omitBody: true }],
     });
 

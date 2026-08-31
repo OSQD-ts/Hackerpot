@@ -1,5 +1,6 @@
 import { Redis, type RedisOptions } from "ioredis";
-import type { HitStore, HoneypotHit } from "../types.js";
+import { applyQuery } from "./query.js";
+import type { HitQuery, HitStore, HoneypotHit } from "../types.js";
 
 export interface RedisStoreOptions {
   /** An existing ioredis client to reuse. If omitted, one is created from `redisOptions`. */
@@ -70,7 +71,30 @@ export class RedisStore implements HitStore {
    * hardened against precisely this; Redis was not.
    */
   async list(): Promise<HoneypotHit[]> {
-    const raw = await this.redis.lrange(this.hitsKey, 0, -1);
+    return this.parse(await this.redis.lrange(this.hitsKey, 0, -1));
+  }
+
+  /**
+   * Redis holds the hit log as an opaque list of JSON strings, so it cannot filter
+   * server-side — but it CAN slice. A plain `?limit=N` read therefore asks for only
+   * the last N entries instead of transferring the whole retained log (up to
+   * `maxHits`, 10 000 by default) to return a screenful.
+   *
+   * When a filter is present the candidates still have to be fetched and matched
+   * here; the slice is skipped in that case, because trimming before filtering would
+   * silently answer from the newest N *records* rather than the newest N *matches*.
+   */
+  async query(query: HitQuery): Promise<HoneypotHit[]> {
+    const filtered = query.ip !== undefined || query.detector !== undefined || query.fingerprint !== undefined || query.sinceMs !== undefined;
+    const raw =
+      !filtered && query.limit !== undefined && query.limit >= 0
+        ? await this.redis.lrange(this.hitsKey, -query.limit, -1)
+        : await this.redis.lrange(this.hitsKey, 0, -1);
+    return applyQuery(this.parse(raw), query);
+  }
+
+  /** Parse a batch of stored records, skipping any that will not parse. See `list()`. */
+  private parse(raw: string[]): HoneypotHit[] {
     const hits: HoneypotHit[] = [];
     for (const line of raw) {
       try {

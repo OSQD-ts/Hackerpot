@@ -116,6 +116,34 @@ export class Section {
     return value;
   }
 
+  /**
+   * A TCP port number.
+   *
+   * `integer()` alone accepts any non-negative value, so `port = 70000` — the single
+   * most commonly mistyped setting in a config file — validated cleanly, printed
+   * cleanly from `--print-config`, and then failed at bind time with a `RangeError`
+   * from deep inside Node. This layer exists to catch that class of mistake while the
+   * operator is still looking at the file; the duplicate-port check already does for
+   * *collisions* exactly what this does for *range*.
+   *
+   * 0 stays legal: the schema uses it as "unset" for the optional listeners (each has
+   * its own "required when enabled" check), and Node reads it as "any free port".
+   */
+  port(key: string, fallback: number): number {
+    const value = this.integer(key, fallback);
+    if (value > 65535) this.fail(key, `must be a TCP port between 0 and 65535, got ${value}`);
+    return value;
+  }
+
+  /** Ports for a listener set — each must be a real, bindable port (0 is not useful here). */
+  portArray(key: string, fallback: number[]): number[] {
+    const values = this.integerArray(key, fallback);
+    for (const value of values) {
+      if (value < 1 || value > 65535) this.fail(key, `entry ${value} is not a TCP port between 1 and 65535`);
+    }
+    return values;
+  }
+
   boolean(key: string): boolean | undefined;
   boolean(key: string, fallback: boolean): boolean;
   boolean(key: string, fallback?: boolean): boolean | undefined {

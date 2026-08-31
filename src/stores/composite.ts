@@ -1,4 +1,5 @@
-import type { HitStore, HoneypotHit } from "../types.js";
+import { queryHits } from "./query.js";
+import type { HitQuery, HitStore, HoneypotHit } from "../types.js";
 
 /**
  * Fans every hit out to several stores at once, reading back from the first
@@ -22,6 +23,11 @@ export class CompositeStore implements HitStore {
 
   list(): HoneypotHit[] | Promise<HoneypotHit[]> {
     return this.primary.list();
+  }
+
+  /** Same source as `list()` — the primary — using its native query when it has one. */
+  query(query: HitQuery): Promise<HoneypotHit[]> {
+    return queryHits(this.primary, query);
   }
 
   scoreFor(ip: string): number | Promise<number> {

@@ -174,6 +174,12 @@ export interface BlocklistConfig {
   backend: "memory" | "redis";
   /** Key namespace for the redis backend. */
   keyPrefix: string;
+  /**
+   * Hard ceiling on tracked blocks for the memory backend. Expired entries are swept
+   * first; past that the soonest-to-expire live blocks are shed. Ignored by redis,
+   * where expiry is the server's job.
+   */
+  maxEntries: number;
   /** Optional external enforcement — an OS firewall command or a webhook. */
   enforcer: EnforcerConfig;
 }
@@ -289,6 +295,10 @@ export interface PortScanConfig {
   scanThreshold: number;
   /** Fake service banner sent on connect; empty string stays silent. */
   banner: string;
+  /** Max source IPs whose touched-port sets are remembered; least-recently-seen are shed past this. */
+  maxTrackedIps: number;
+  /** How long an IP's touched-port set is remembered, in ms. */
+  retentionMs: number;
 }
 
 export interface HackerpotConfig {
@@ -701,20 +711,24 @@ function parseResponses(section: Section): ResponsesConfig {
 }
 
 function parsePortScan(section: Section): PortScanConfig {
-  const ports = section.integerArray("ports", []);
+  const ports = section.portArray("ports", []);
   const config: PortScanConfig = {
     enabled: section.boolean("enabled", ports.length > 0),
     ports,
     host: section.string("host", "0.0.0.0"),
     scanThreshold: section.integer("scan_threshold", 2),
     banner: section.string("banner", "SSH-2.0-OpenSSH_8.4"),
+    maxTrackedIps: section.integer("max_tracked_ips", 10_000),
+    retentionMs: section.integer("retention_ms", 3_600_000),
   };
+  if (config.maxTrackedIps === 0) section.fail("max_tracked_ips", "must be greater than 0 — 0 would remember no IP long enough to ever see a second port, so no sweep is ever reported");
+  if (config.retentionMs === 0) section.fail("retention_ms", "must be greater than 0 — an IP's touched ports would be forgotten immediately and no sweep could be correlated");
   section.done();
   return config;
 }
 
 function parseSmtp(section: Section): SmtpConfig {
-  const port = section.integer("port", 2525);
+  const port = section.port("port", 2525);
   const config: SmtpConfig = {
     // Off unless asked for: binding a mail port is a deliberate choice, and port
     // 25 needs privileges the container deliberately does not have.
@@ -742,7 +756,7 @@ function parseSsh(section: Section): SshConfig {
     // Off unless asked for, like the SMTP honeypot: binding a service port is a
     // deliberate choice, and 22 needs privileges the container does not have.
     enabled: section.boolean("enabled", false),
-    port: section.integer("port", 2222),
+    port: section.port("port", 2222),
     host: section.string("host", "0.0.0.0"),
     ident: section.string("ident", "OpenSSH_8.4"),
     hostKeys: section.stringArray("host_keys", []),
@@ -819,7 +833,7 @@ function parseManagement(section: Section): ManagementApiConfig {
   const config: ManagementApiConfig = {
     enabled: section.boolean("enabled", apiKeys.length > 0),
     host: section.string("host", "127.0.0.1"),
-    port: section.integer("port", 9500),
+    port: section.port("port", 9500),
     apiKeys,
     websocket: section.boolean("websocket", true),
     webhooks: (section.sections("webhooks") ?? []).map(parseWebhook),
@@ -838,7 +852,7 @@ export function parseConfig(raw: Record<string, unknown>, source: string): Hacke
   const server = root.section("server");
   const serverConfig: ServerConfig = {
     host: server.string("host", "0.0.0.0"),
-    port: server.integer("port", 4004),
+    port: server.port("port", 4004),
     // Defaults to FALSE, and must stay that way. When this is on, the client IP comes
     // from an attacker-supplied header, and that IP is what the allowlist exempts, the
     // blocklist blocks, and the firewall enforcer acts on — so trusting it without a
@@ -993,6 +1007,7 @@ export function parseConfig(raw: Record<string, unknown>, source: string): Hacke
   const blocklistConfig: BlocklistConfig = {
     backend: blocklistSection.enum("backend", ["memory", "redis"] as const, "memory"),
     keyPrefix: blocklistSection.string("key_prefix", "hackerpot:block:"),
+    maxEntries: blocklistSection.integer("max_entries", 100_000),
     enforcer,
   };
   if (blocklistConfig.backend === "redis" && !redisConfig.enabled) {

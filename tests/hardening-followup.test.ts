@@ -14,6 +14,26 @@ import type { DetectionContext } from "../src/detectors/types.js";
 const ctxFor = (value: string): DetectionContext =>
   ({ method: "POST", path: "/", query: {}, headers: {}, rawHeaders: [], ip: "1.2.3.4", body: value }) as unknown as DetectionContext;
 
+/**
+ * Fastest of `runs` timings, in ms.
+ *
+ * These are ReDoS regression guards, so they assert on wall-clock cost — but a single
+ * sample measures the machine as much as the regex. Vitest runs suites in parallel, and
+ * one preempted sample against a 25ms bound is enough to fail a run with nothing wrong
+ * (it did). The minimum discards scheduling spikes without weakening the guard: the
+ * behaviour these tests exist to catch is ~100ms on *every* pass, so its minimum is
+ * still far over the bound.
+ */
+function fastestMs(work: () => void, runs = 5): number {
+  let best = Infinity;
+  for (let i = 0; i < runs; i += 1) {
+    const started = process.hrtime.bigint();
+    work();
+    best = Math.min(best, Number(process.hrtime.bigint() - started) / 1e6);
+  }
+  return best;
+}
+
 describe("the template-injection signature is linear, not a CPU amplifier", () => {
   // With `.*?` inner spans this signature re-scanned to end-of-string from every `{{`
   // in the value. A 16 KB body of `{{` cost ~100ms per value / ~200ms per request, so
@@ -23,10 +43,8 @@ describe("the template-injection signature is linear, not a CPU amplifier", () =
 
   it("scans a pathological brace payload in well under the old cost", () => {
     for (const payload of ["{{".repeat(8192), "${".repeat(8192), "{".repeat(16384), "{{a".repeat(5461)]) {
-      const started = process.hrtime.bigint();
-      detector.inspect(ctxFor(payload));
-      const ms = Number(process.hrtime.bigint() - started) / 1e6;
-      expect(ms).toBeLessThan(25);
+      const ctx = ctxFor(payload);
+      expect(fastestMs(() => void detector.inspect(ctx))).toBeLessThan(25);
     }
   });
 
@@ -82,10 +100,7 @@ describe("the template-injection signature is linear, not a CPU amplifier", () =
     ];
     for (const { kind, pattern } of injectionSignatures) {
       for (const value of adversarial) {
-        const started = process.hrtime.bigint();
-        pattern.test(value);
-        const ms = Number(process.hrtime.bigint() - started) / 1e6;
-        expect(ms, `signature ${kind} was slow`).toBeLessThan(25);
+        expect(fastestMs(() => void pattern.test(value)), `signature ${kind} was slow`).toBeLessThan(25);
       }
     }
   });

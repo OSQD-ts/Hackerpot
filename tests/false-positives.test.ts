@@ -2,6 +2,7 @@ import http from "node:http";
 import { describe, expect, it } from "vitest";
 import { HoneypotEngine, HoneypotServer, honeytokenDetector } from "../src/index.js";
 import type { HoneypotHit, RequestFacts } from "../src/index.js";
+import type { EvaluationResult } from "../src/index.js";
 
 /**
  * False-positive suite. It runs a corpus of *legitimate* traffic — real browser
@@ -95,6 +96,11 @@ const CORPUS: Array<Partial<RequestFacts> & Pick<RequestFacts, "path"> & { label
   { label: "search discussing constructor/prototype (prose, not key access)", path: "/api/v1/search", query: { q: "how does the constructor and prototype chain work in javascript" } },
   { label: "legit base64 value (not a serialization magic)", path: "/api/v1/asset", query: { data: "eyJ0aGVtZSI6ImRhcmsiLCJsYW5nIjoiZW4ifQ==" } },
   { label: "POST with JSON Schema $ref/$schema", method: "POST", path: "/api/v1/validate", body: JSON.stringify({ $schema: "https://json-schema.org/draft/2020-12/schema", properties: { name: { $ref: "#/defs/name" } } }), headers: { "content-type": "application/json" } },
+  // A JSON string that merely ends in `}()` is ordinary content for a template or
+  // config API — and is not a node-serialize payload, which only executes via the
+  // `_$$ND_FUNC$$_` marker. This used to score 9 for insecure-deserialization.
+  { label: "template config holding an IIFE string", method: "POST", path: "/api/v1/templates", body: JSON.stringify({ transform: "function(v){return v*2}()" }), headers: { "content-type": "application/json" } },
+  { label: "CMS field holding an analytics snippet", method: "POST", path: "/api/v1/pages", body: JSON.stringify({ html: "<div></div>", init: "(function(){window.dataLayer=[]})()" }), headers: { "content-type": "application/json" } },
 
   // Redirect params — legitimate same-site / relative targets
   { label: "relative next", path: "/login", query: { next: "/dashboard" } },
@@ -145,7 +151,7 @@ describe("no false positives on legitimate traffic", () => {
     const engine = buildEngine();
     const ip = "203.0.113.50";
     const pages = ["/", "/about", "/pricing", "/blog", "/docs", "/features", "/contact", "/login", "/dashboard", "/settings", "/help", "/changelog"]; // 12 distinct < 15
-    let last;
+    let last: EvaluationResult | undefined;
     for (const path of pages) last = await engine.evaluate({ method: "GET", path, query: {}, headers: { host: "myapp.com", "user-agent": UA.chrome, ...BROWSER }, ip });
     expect(last?.detections ?? []).toHaveLength(0);
   });
@@ -153,7 +159,7 @@ describe("no false positives on legitimate traffic", () => {
   it("a normal user logging in does not trip credential-bruteforce", async () => {
     const engine = buildEngine();
     const ip = "203.0.113.51";
-    let last;
+    let last: EvaluationResult | undefined;
     for (let i = 0; i < 3; i++) {
       last = await engine.evaluate({ method: "POST", path: "/login", query: {}, headers: { host: "myapp.com", "user-agent": UA.chrome, "content-type": "application/x-www-form-urlencoded", ...BROWSER }, ip, body: "username=alice&password=correct-horse" });
     }
@@ -163,7 +169,7 @@ describe("no false positives on legitimate traffic", () => {
   it("normal request volume does not trip rate-spike", async () => {
     const engine = buildEngine();
     const ip = "203.0.113.52";
-    let last;
+    let last: EvaluationResult | undefined;
     for (let i = 0; i < 45; i++) last = await engine.evaluate({ method: "GET", path: "/api/v1/feed", query: { cursor: String(i) }, headers: { host: "myapp.com", "user-agent": UA.chrome, ...BROWSER }, ip }); // 45 < 60/10s
     expect(last?.detections ?? []).toHaveLength(0);
   });

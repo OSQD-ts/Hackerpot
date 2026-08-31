@@ -67,20 +67,37 @@ export class IpTracker {
     return this.events;
   }
 
+  /**
+   * The three window queries below are the engine's hottest read path: `rate-spike`,
+   * `path-bruteforce` and `credential-bruteforce` each call one on **every** request,
+   * against a window holding up to `maxEvents` (4096) events.
+   *
+   * Each used to `filter()` — and `uniquePathsIn` additionally `map()`ped — building one
+   * or two throwaway arrays of up to 4096 entries per detector per request before
+   * reading a single number off the result. Under exactly the flood these detectors
+   * exist to catch, that is the allocation rate at its worst precisely when the process
+   * can least afford it. Counting in place is the same logic with nothing retained.
+   */
   countIn(ms: number, now = Date.now()): number {
     const cutoff = now - ms;
-    return this.recent(now).filter((event) => event.at >= cutoff).length;
+    const events = this.recent(now);
+    let count = 0;
+    for (const event of events) if (event.at >= cutoff) count += 1;
+    return count;
   }
 
   uniquePathsIn(ms: number, now = Date.now()): number {
     const cutoff = now - ms;
-    const paths = new Set(this.recent(now).filter((event) => event.at >= cutoff).map((event) => event.path));
+    const paths = new Set<string>();
+    for (const event of this.recent(now)) if (event.at >= cutoff) paths.add(event.path);
     return paths.size;
   }
 
   countPathIn(path: string, ms: number, now = Date.now()): number {
     const cutoff = now - ms;
-    return this.recent(now).filter((event) => event.at >= cutoff && event.path === path).length;
+    let count = 0;
+    for (const event of this.recent(now)) if (event.at >= cutoff && event.path === path) count += 1;
+    return count;
   }
 }
 

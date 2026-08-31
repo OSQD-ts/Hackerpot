@@ -12,3 +12,8 @@ Dockerfile
 docker-compose.yml
 README.md
 data
+# Not COPYed into any stage — excluded so they stay out of the build context too.
+tests
+scripts
+examples
+.github

@@ -220,6 +220,14 @@ ips = []
 [blocklist]
 backend = "memory"
 key_prefix = "hackerpot:block:"
+# Hard ceiling on tracked blocks for the memory backend. A honeypot is internet-facing
+# by design, so this map grows on its own: every distinct source that crosses the block
+# threshold adds an entry, and a botnet or a spoofed-source flood drives it far faster.
+# Expired entries are swept first; if that is not enough, the soonest-to-expire live
+# blocks are shed — losing a block is graceful (the IP is re-detected and re-blocked on
+# its next request) where an OOM is not. Ignored by the redis backend, where expiry is
+# the server's job.
+max_entries = 100000
 
 # ── External block enforcement (off by default) ──────────────────────────────
 # Push every block out to the OS firewall or your own automation, so a confirmed
@@ -660,6 +668,13 @@ host = "0.0.0.0"
 scan_threshold = 2
 # Fake service banner sent on connect. Empty string stays silent.
 banner = "SSH-2.0-OpenSSH_8.4"
+# Memory bounds for the touched-ports map. Decoy ports exist to be connected to by
+# anything on the internet, so this map is the sentinel's only growth surface: entries
+# age out after retention_ms, and the map is hard-capped at max_tracked_ips
+# (least-recently-seen shed first). Raise them to correlate slower sweeps, lower them
+# on a memory-tight host.
+max_tracked_ips = 10000
+retention_ms = 3600000
 
 
 # ── SMTP honeypot ────────────────────────────────────────────────────────────

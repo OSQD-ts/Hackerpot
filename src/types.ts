@@ -25,10 +25,53 @@ export interface HoneypotHit {
   respondedWith: string;
 }
 
+/**
+ * A bounded, filtered read of the hit log.
+ *
+ * Every management read used to go through `list()`, which returns the whole retained
+ * corpus — so `/incidents?ip=X&limit=10` pulled every record the backend held (for the
+ * file store, a multi-megabyte read and parse; for Elasticsearch, a thousand documents
+ * over HTTP) to answer with ten. A store that can push these down implements `query()`;
+ * one that cannot omits it, and the caller falls back to `list()` with identical
+ * semantics.
+ */
+export interface HitQuery {
+  /** Only hits from this source IP. */
+  ip?: string;
+  /** Only hits where this detector fired. */
+  detector?: string;
+  /** Only hits carrying this actor fingerprint. */
+  fingerprint?: string;
+  /** Only hits at or after this epoch-ms timestamp. */
+  sinceMs?: number;
+  /** At most this many hits — the **most recent** ones. */
+  limit?: number;
+}
+
 export interface HitStore {
   record(hit: HoneypotHit): void | Promise<void>;
+  /**
+   * The retained hits, **oldest first**, across every backend.
+   *
+   * The order is part of the contract: a caller reading a store directly should not
+   * have to know which backend is behind it. `ElasticStore` still *queries* newest-first
+   * — with `size`, that is what selects which documents come back — and reverses before
+   * returning; the others are naturally in append order.
+   *
+   * The result is **bounded** by each backend's retention cap, so this is the recent
+   * window, not necessarily the full history.
+   */
   list(): HoneypotHit[] | Promise<HoneypotHit[]>;
   scoreFor(ip: string): number | Promise<number>;
+  /**
+   * Optional bounded/filtered read — same ordering contract as `list()`.
+   *
+   * Implement it when the backend can do better than materializing everything;
+   * omit it and callers fall back to `list()` + the shared filter, which produces
+   * the same answer. Aggregate endpoints (`/stats`, `/metrics`, `/ioc`) still read
+   * `list()`: they summarize the whole corpus, so there is nothing to push down.
+   */
+  query?(query: HitQuery): HoneypotHit[] | Promise<HoneypotHit[]>;
 }
 
 export interface HoneypotConfig {

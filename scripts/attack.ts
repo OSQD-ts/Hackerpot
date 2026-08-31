@@ -13,10 +13,22 @@ interface Result {
   note?: string;
 }
 
-// Each scenario runs under its own spoofed source IP (the dev server trusts
-// X-Forwarded-For) so one scenario's suspicion score doesn't get the shared
-// localhost IP blocked before the next scenario's detector can be observed.
+// Each scenario runs under its own spoofed source IP so one scenario's suspicion
+// score doesn't get the shared localhost IP blocked before the next scenario's
+// detector can be observed.
+//
+// This only works if the TARGET trusts X-Forwarded-For. `npm run dev` sets
+// trustProxy: true for exactly this reason; the standalone service defaults it to
+// false (correctly — it is a security setting, not a convenience). Against a target
+// that does not trust it, every scenario collapses onto 127.0.0.1, that one address
+// crosses the block threshold inside the first scenario, and the rest of the run is
+// answered by the block short-circuit before any detector runs. `blocked403` counts
+// that so the run can explain itself instead of just printing a wall of 403s.
 let sourceIp = "203.0.113.1";
+
+/** Responses served by the blocklist short-circuit rather than by a detector. */
+let blocked403 = 0;
+let totalResponses = 0;
 
 async function hit(method: string, path: string, opts: { headers?: Record<string, string>; body?: string; label?: string } = {}): Promise<Result> {
   const start = Date.now();
@@ -31,7 +43,37 @@ async function hit(method: string, path: string, opts: { headers?: Record<string
 
 function log(scenario: string, r: Result): void {
   const status = r.status ?? "---";
+  if (r.status !== undefined) {
+    totalResponses += 1;
+    if (r.status === 403) blocked403 += 1;
+  }
   console.log(`  [${scenario}] ${r.label} -> ${status} in ${r.ms}ms${r.note ? ` (${r.note})` : ""}`);
+}
+
+/**
+ * Explains a run that was mostly 403s.
+ *
+ * A blocked run looks like a working one — every line prints a status — so without
+ * this the user sees 75 of 80 requests answered 403, twenty detectors that never
+ * fired, and one source IP in the dashboard, with nothing saying why.
+ */
+function reportIfBlocked(): void {
+  if (totalResponses === 0 || blocked403 * 2 < totalResponses) return;
+  console.log(`
+⚠  ${blocked403} of ${totalResponses} responses were 403 — the target blocked the source
+   before most detectors could run, so this run does not show what it looks like it shows.
+
+   The simulator gives each scenario its own X-Forwarded-For address so their scores stay
+   separate. This target is not trusting that header, so every scenario landed on one IP,
+   that IP crossed the block threshold during the first scenario, and everything after it
+   was answered by the block short-circuit rather than by a detector.
+
+   Point the simulator at a target that trusts the header:
+     npm run dev                       # already sets trustProxy: true
+     TRUST_PROXY=true npm start        # standalone — local demo only, never on a public listener
+
+   (trust_proxy is off by default on purpose: with nothing overwriting the header in front
+   of it, a client can forge its own source IP.)`);
 }
 
 // Send a hand-crafted raw HTTP/1.1 request over a socket — fetch refuses to set
@@ -345,6 +387,7 @@ async function main(): Promise<void> {
     await scenario!();
     if (toRun.length > 1) await delay(300);
   }
+  reportIfBlocked();
 }
 
 main().catch((err: unknown) => {

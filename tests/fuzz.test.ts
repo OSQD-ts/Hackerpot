@@ -73,7 +73,13 @@ function fuzzFacts(rand: () => number): RequestFacts {
   if (rand() < 0.15) headers["user-agent"] = ["sqlmap/1.7", "nikto", "curl/8", "nmap"][Math.floor(rand() * 4)]!;
   else if (rand() < 0.12) {
     headers["user-agent"] = "Mozilla/5.0 (Windows NT 10.0) AppleWebKit/537 Chrome/120 Safari/537";
-    delete headers["accept"]; // no such key anyway, but be explicit — client-anomaly needs them absent
+    // client-anomaly needs Accept/Accept-Language/Accept-Encoding absent. The fuzzer
+    // never adds them (they are not in headerNames), so there is nothing to remove —
+    // asserting that is more durable than a `delete` that silently stops meaning
+    // anything the day someone adds "accept" to the pool.
+    for (const name of ["accept", "accept-language", "accept-encoding"]) {
+      if (name in headers) throw new Error(`fuzzer planted ${name}; client-anomaly can no longer fire`);
+    }
   }
 
   const query: Record<string, string> = Object.create(null);

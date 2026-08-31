@@ -13,6 +13,32 @@ import { ActivityRegistry, FingerprintRegistry, IpTracker } from "./state.js";
 import { MemoryStore } from "./stores/index.js";
 import type { HitStore, HoneypotConfig, HoneypotHit } from "./types.js";
 
+/**
+ * Which of `evaluate()`'s once-per-request side effects to perform.
+ *
+ * Evaluation is not pure: it appends the request to the IP's sliding activity
+ * window, and — when something fires — writes a hit to the store, announces it to
+ * `onHit`, and remembers the actor fingerprint. Every one of those must happen
+ * **exactly once per request**, which stops being automatic the moment a caller
+ * evaluates the same request twice.
+ *
+ * The middleware does exactly that: it evaluates on headers alone, and only if
+ * something fires does it read the body and evaluate again. With both passes
+ * committing, one probe against a decoy path became two stored incidents, two
+ * `onHit` alerts, two entries in the activity window (inflating `rate-spike` and
+ * `path-bruteforce` counts), and **double the score** — so an attacker crossed the
+ * block threshold at half the evidence, and the incident log double-counted them.
+ *
+ * So the two side-effect groups are separable: the first pass counts the activity
+ * and defers the hit; the second pass commits the hit and does not re-count.
+ */
+export interface EvaluateOptions {
+  /** Append this request to the IP's sliding activity window. Default true. */
+  trackActivity?: boolean;
+  /** Record the hit in the store, enrich it, and announce it via `onHit`. Default true. */
+  recordHit?: boolean;
+}
+
 export interface EvaluationResult {
   detections: Detection[];
   score: number;
@@ -132,7 +158,9 @@ export class HoneypotEngine {
    * provided (the body phase) — callers omit it on the first pass so a
    * downstream app never has its request stream consumed unnecessarily.
    */
-  async evaluate(facts: RequestFacts): Promise<EvaluationResult> {
+  async evaluate(facts: RequestFacts, options: EvaluateOptions = {}): Promise<EvaluationResult> {
+    const trackActivity = options.trackActivity ?? true;
+    const recordHit = options.recordHit ?? true;
     const tracker = this.registry.for(facts.ip);
     const fingerprint = computeFingerprint(facts);
 
@@ -142,7 +170,7 @@ export class HoneypotEngine {
     }
 
     const now = new Date();
-    tracker.record({ method: facts.method, path: facts.path, status: "seen" }, now.getTime());
+    if (trackActivity) tracker.record({ method: facts.method, path: facts.path, status: "seen" }, now.getTime());
 
     const ctx: DetectionContext = { ...facts, tracker, timestamp: now, fingerprint, fingerprintRegistry: this.fingerprints };
     const detections: Detection[] = [];
@@ -166,7 +194,7 @@ export class HoneypotEngine {
 
     // Record this fingerprint→IP only now that the request has scored — the registry
     // holds attackers only, so repeat-actor can't correlate benign traffic (see its docs).
-    this.fingerprints.record(fingerprint, facts.ip, now.getTime());
+    if (recordHit) this.fingerprints.record(fingerprint, facts.ip, now.getTime());
 
     detections.sort((a, b) => b.score - a.score);
     const score = detections.reduce((sum, detection) => sum + detection.score, 0);
@@ -182,6 +210,12 @@ export class HoneypotEngine {
       tracker,
     };
     const actionId = this.policy(policyCtx);
+
+    // A deferred pass reports what it found but writes nothing: the caller is going to
+    // evaluate this same request again, and that pass is the one that commits.
+    if (!recordHit) {
+      return { detections, score, totalScore, tracker, actionId, action: this.actions.get(actionId), fingerprint };
+    }
 
     let enrichment: HoneypotHit["enrichment"];
     try {

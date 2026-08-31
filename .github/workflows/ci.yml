@@ -32,6 +32,9 @@ jobs:
       # committed tree, not a working directory, so a stale staged state can't hide.
       - run: npm ci
 
+      - name: Lint
+        run: npm run lint
+
       - name: Type-check (src + tests + examples)
         run: npm run typecheck
 

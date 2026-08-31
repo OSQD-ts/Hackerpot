@@ -1,7 +1,6 @@
 import http from "node:http";
 import net from "node:net";
 import { gunzipSync } from "node:zlib";
-import { once } from "node:events";
 import { afterEach, describe, expect, it } from "vitest";
 import { Client } from "ssh2";
 import {
@@ -127,6 +126,10 @@ describe("new detectors", () => {
     const engine = new HoneypotEngine({ detectors: [insecureDeserializationDetector()] });
     expect((await engine.evaluate(facts({ path: "/api", headers: { host: "x", cookie: "sess=rO0ABXNyABFqYXZhLnV0aWwuSGFzaE1hcA" } }))).detections[0]?.detectorId).toBe("insecure-deserialization");
     expect((await engine.evaluate(facts({ method: "POST", path: "/api", body: 'data=O:4:"Evil":1:{s:3:"cmd";s:2:"id";}', ip: "203.0.113.28" }))).detections[0]?.detectorId).toBe("insecure-deserialization");
+    // node-serialize still caught — via the marker that makes the payload execute,
+    // which is the only thing that makes it a node-serialize payload at all.
+    const nodeSerialize = JSON.stringify({ rce: "_$$ND_FUNC$$_function (){require('child_process').exec('id')}()" });
+    expect((await engine.evaluate(facts({ method: "POST", path: "/api", body: nodeSerialize, ip: "203.0.113.29" }))).detections[0]?.detectorId).toBe("insecure-deserialization");
     expect((await engine.evaluate(facts({ path: "/api", headers: { host: "x", cookie: "sess=eyJ1c2VyIjoiYWxpY2UifQ; theme=dark" }, ip: "203.0.113.29" }))).detections).toHaveLength(0);
   });
 

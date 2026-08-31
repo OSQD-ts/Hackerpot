@@ -81,13 +81,33 @@ server.on("upgrade", (req, socket, head) => {
     return;
   }
   wss.handleUpgrade(req, socket, head, (client) => {
+    // A `ws` socket that emits 'error' with no listener rethrows it as an
+    // uncaughtException — so a browser tab closing mid-frame took the whole dashboard
+    // down. The upstream socket had a handler; the browser-facing one did not.
+    client.on("error", () => client.close());
     const target = `${MGMT_URL.replace(/^http/, "ws")}/stream${url.search}`;
-    const upstream = new WebSocket(target);
+    let upstream: WebSocket;
+    try {
+      upstream = new WebSocket(target);
+    } catch {
+      client.close();
+      return;
+    }
     upstream.on("message", (data) => client.readyState === client.OPEN && client.send(data.toString()));
     upstream.on("close", () => client.close());
     upstream.on("error", () => client.close());
     client.on("close", () => upstream.close());
   });
+});
+
+// 8080 is one of the most commonly occupied ports on a dev machine; report the clash
+// the way dev-server.ts does rather than dumping a bind stack trace.
+server.on("error", (err: NodeJS.ErrnoException) => {
+  if (err.code === "EADDRINUSE") {
+    console.error(`hackerpot dashboard: TCP ${PORT} is already in use. Set DASHBOARD_PORT=<free port> (e.g. DASHBOARD_PORT=${PORT + 1} npm run dashboard) or free the port.`);
+    process.exit(1);
+  }
+  throw err;
 });
 
 server.listen(PORT, HOST, () => {

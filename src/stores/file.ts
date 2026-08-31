@@ -1,8 +1,10 @@
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
+import { StringDecoder } from "node:string_decoder";
 import { RotatingJsonlWriter } from "./archive.js";
+import { matchesQuery } from "./query.js";
 import { ScoreLedger } from "./scores.js";
-import type { HitStore, HoneypotHit } from "../types.js";
+import type { HitQuery, HitStore, HoneypotHit } from "../types.js";
 
 /** Read granularity for the streaming readers. */
 const CHUNK_BYTES = 1024 * 1024;
@@ -121,13 +123,18 @@ export class FileStore implements HitStore {
     const fd = openSync(this.path, "r");
     try {
       const chunk = Buffer.allocUnsafe(CHUNK_BYTES);
+      // Decode across chunk boundaries: a record holding non-ASCII (a captured path,
+      // header, or body — routinely UTF-8) that straddles the 1 MB read boundary would
+      // otherwise have that character replaced, silently corrupting a stored incident on
+      // the way back out.
+      const decoder = new StringDecoder("utf8");
       let position = fromByte;
       let carry = "";
       for (;;) {
         const read = readSync(fd, chunk, 0, CHUNK_BYTES, position);
         if (read <= 0) break;
         position += read;
-        const text = carry + chunk.subarray(0, read).toString("utf8");
+        const text = carry + decoder.write(chunk.subarray(0, read));
         const lines = text.split("\n");
         // The last element is a partial line (or "" when the chunk ended on a newline).
         carry = lines.pop() ?? "";
@@ -136,7 +143,8 @@ export class FileStore implements HitStore {
         if (carry.length > MAX_LINE_BYTES) carry = "";
         for (const line of lines) onLine(line);
       }
-      if (carry) onLine(carry);
+      const tail = carry + decoder.end();
+      if (tail) onLine(tail);
     } finally {
       closeSync(fd);
     }
@@ -258,6 +266,64 @@ export class FileStore implements HitStore {
       }
     });
     return hits;
+  }
+
+  /**
+   * The same read as `list()`, but only the matching hits are ever retained.
+   *
+   * `list()` builds an array of every parsed record in the read window — up to
+   * `maxReadBytes` (64 MB) of JSON — and the caller then throws nearly all of it away.
+   * Streaming into a bounded window instead means a `?limit=100` read holds a hundred
+   * objects rather than however many the file happens to contain, which is the
+   * difference between a constant cost and one an attacker sets by filling the log.
+   */
+  query(query: HitQuery): HoneypotHit[] {
+    if (!existsSync(this.path)) return [];
+    const size = statSync(this.path).size;
+    const from = Math.max(0, size - this.maxReadBytes);
+    if (from > 0) this.truncated = true;
+
+    const limit = query.limit !== undefined && query.limit >= 0 ? query.limit : Infinity;
+    // A ring buffer, not `push` + `shift`: shifting a bounded window on every matching
+    // record is O(limit) per record, so a large file with `?limit=1000` would spend
+    // more time re-indexing the window than reading the file. Writes here are O(1).
+    const ring: HoneypotHit[] = [];
+    let next = 0;
+    let seen = 0;
+    const keep = (hit: HoneypotHit): void => {
+      // A zero window keeps nothing — and would make the modulo below a division by
+      // zero, so it is handled before any indexing.
+      if (limit === 0) return;
+      seen += 1;
+      if (limit === Infinity) {
+        ring.push(hit);
+        return;
+      }
+      if (ring.length < limit) ring.push(hit);
+      else ring[next] = hit;
+      next = (next + 1) % limit;
+    };
+    let first = true;
+    this.eachLine(from, (line) => {
+      if (first) {
+        first = false;
+        // A non-zero offset lands mid-record; drop that partial line.
+        if (from > 0) return;
+      }
+      if (!line.trim()) return;
+      let hit: HoneypotHit;
+      try {
+        hit = JSON.parse(line) as HoneypotHit;
+      } catch {
+        return; // a damaged record is not a reason to stop serving the intact ones
+      }
+      if (!matchesQuery(hit, query)) return;
+      keep(hit);
+    });
+    // Unwrap the ring back into chronological order. Once it has wrapped, the oldest
+    // retained record sits at `next`; before that it is already in order.
+    if (limit === Infinity || seen <= limit) return ring;
+    return [...ring.slice(next), ...ring.slice(0, next)];
   }
 
   scoreFor(ip: string): number {

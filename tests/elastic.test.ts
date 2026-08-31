@@ -22,6 +22,8 @@ function fakeCluster() {
   const docs: HoneypotHit[] = [];
   let indexCreated = false;
   const calls: string[] = [];
+  /** Bodies of the _search requests, so a test can assert what was actually asked for. */
+  const searches: Array<Record<string, unknown>> = [];
   const fetch = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
     const u = String(url);
     const method = init?.method ?? "GET";
@@ -38,6 +40,7 @@ function fakeCluster() {
       return new Response(JSON.stringify({ result: "created" }), { status: 201 });
     }
     if (method === "POST" && /\/_search$/.test(u)) {
+      searches.push(body as Record<string, unknown>);
       if (body.size === 0) {
         const ip = body.query.term.ip;
         const sum = docs.filter((d) => d.ip === ip).reduce((a, d) => a + d.score, 0);
@@ -48,7 +51,7 @@ function fakeCluster() {
     }
     return new Response("not found", { status: 404 });
   });
-  return { fetch: fetch as unknown as typeof globalThis.fetch, calls, docs };
+  return { fetch: fetch as unknown as typeof globalThis.fetch, calls, docs, searches };
 }
 
 describe("ElasticStore", () => {
@@ -64,9 +67,20 @@ describe("ElasticStore", () => {
     expect(await store.scoreFor("2.2.2.2")).toBe(3);
     expect(await store.scoreFor("9.9.9.9")).toBe(0);
 
+    // Oldest first — the contract every store shares (see `HitStore.list`). The query
+    // still sorts descending so `size` selects the newest N; only the order returned
+    // is normalized, so a caller need not know which backend is behind it.
     const list = await store.list();
     expect(list).toHaveLength(3);
-    expect(list[0]!.timestamp).toBe("2026-08-27T10:00:05.000Z"); // newest first
+    expect(list.map((h) => h.timestamp)).toEqual([
+      "2026-08-27T10:00:00.000Z",
+      "2026-08-27T10:00:02.000Z",
+      "2026-08-27T10:00:05.000Z",
+    ]);
+    // The QUERY must stay descending: with `size`, that is what selects the newest N.
+    // Only the returned order is normalized. Flipping the query to ascending would
+    // silently return the N *oldest* documents in the index.
+    expect(cluster.searches.at(-1)).toMatchObject({ sort: [{ timestamp: "desc" }] });
 
     // The index is created exactly once, not on every write.
     expect(cluster.calls.filter((c) => c.startsWith("PUT")).length).toBe(1);

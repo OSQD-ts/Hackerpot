@@ -225,8 +225,10 @@ export function createBlocklist(config: HackerpotConfig, redis?: Redis, onError?
     blocklist = new RedisBlocklist({ client: redis, keyPrefix: config.blocklist.keyPrefix });
     describe = `redis(${config.blocklist.keyPrefix})`;
   } else {
-    blocklist = new MemoryBlocklist();
-    describe = "memory";
+    blocklist = new MemoryBlocklist({ maxEntries: config.blocklist.maxEntries });
+    // Report the cap the way the memory store already reports its own: an operator
+    // reading the startup banner can see every ceiling that is actually in force.
+    describe = `memory(max ${config.blocklist.maxEntries})`;
   }
 
   const settings = config.blocklist.enforcer;
@@ -266,7 +268,9 @@ function withIngestTarget(config: HackerpotConfig, local: Blocklist, describe: s
     // Explicit opt-in: ingested hearsay is treated exactly like first-hand evidence.
     return { blocklist: local, describe: `${describe} + intel(enforcing)`, ingestTarget: local };
   }
-  const feed = new MemoryBlocklist();
+  // The ingest child gets the same ceiling as the local one: it holds hearsay, which is
+  // exactly the list an over-eager or poisoned feed would try to grow without bound.
+  const feed = new MemoryBlocklist({ maxEntries: config.blocklist.maxEntries });
   return {
     blocklist: new CompositeBlocklist(local, feed),
     describe: `${describe} + intel(non-enforcing)`,
@@ -281,6 +285,8 @@ export function createPortScanSentinel(config: HackerpotConfig, onEvent: (event:
     ports: settings.ports,
     host: settings.host,
     scanThreshold: settings.scanThreshold,
+    maxTrackedIps: settings.maxTrackedIps,
+    retentionMs: settings.retentionMs,
     onEvent,
   };
   if (settings.banner) options.banner = settings.banner;

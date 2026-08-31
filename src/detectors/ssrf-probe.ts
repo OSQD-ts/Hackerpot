@@ -32,7 +32,11 @@ function classify(raw: string): string | undefined {
     /* keep raw */
   }
   for (const candidate of [value, decoded]) {
-    if (DANGEROUS_SCHEME.test(candidate)) return `dangerous URL scheme (${RegExp.lastMatch})`;
+    // `exec` rather than `test` + `RegExp.lastMatch`: that legacy global is deprecated,
+    // is clobbered by any regex run anywhere in the process, and made the reason string
+    // depend on nothing having matched in between — a fact this function cannot check.
+    const scheme = DANGEROUS_SCHEME.exec(candidate);
+    if (scheme) return `dangerous URL scheme (${scheme[0]})`;
     if (INTERNAL_HOST.test(candidate)) return "URL targeting an internal/metadata host";
   }
   return undefined;

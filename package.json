@@ -1,7 +1,7 @@
 {
   "name": "hackerpot",
   "version": "0.1.0",
-  "description": "Customizable honeypot library — mount alongside an existing TypeScript server or run standalone to catch and log attacker probes.",
+  "description": "Customizable honeypot library \u2014 mount alongside an existing TypeScript server or run standalone to catch and log attacker probes.",
   "type": "module",
   "main": "./dist/index.cjs",
   "module": "./dist/index.js",
@@ -32,7 +32,10 @@
     "docker:build": "docker build -t hackerpot .",
     "docker:run": "docker run --rm -p 4004:4004 hackerpot",
     "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
     "typecheck": "tsc -p tsconfig.typecheck.json",
+    "lint": "biome lint",
+    "lint:fix": "biome lint --write",
     "attack": "tsx scripts/attack.ts",
     "attack:all": "tsx scripts/attack.ts all",
     "attack:decoys": "tsx scripts/attack.ts decoys",
@@ -71,12 +74,14 @@
     "decoy",
     "intrusion-detection"
   ],
-  "author": "Michał Płatosz <platosz.michal@gmail.com>",
+  "author": "Micha\u0142 P\u0142atosz <platosz.michal@gmail.com>",
   "license": "SEE LICENSE IN LICENSE",
   "devDependencies": {
+    "@biomejs/biome": "^2.5.11",
     "@types/node": "^26.3.0",
     "@types/ssh2": "^1.15.5",
     "@types/ws": "^8.18.1",
+    "@vitest/coverage-v8": "^4.1.11",
     "tsup": "^8.5.1",
     "tsx": "^4.23.12",
     "typescript": "^7.0.2",
@@ -94,5 +99,9 @@
   "sideEffects": "false",
   "bin": {
     "hackerpot": "./dist/standalone.js"
-  }
+  },
+  "overrides": {
+    "esbuild": "^0.28.2"
+  },
+  "_overridesNote": "esbuild is pinned past tsup's ^0.27.0 range to clear GHSA-g7r4-m6w7-qqqr (dev-server file read). tsup 8.5.1 builds correctly against 0.28.x; drop this once tsup widens its range."
 }

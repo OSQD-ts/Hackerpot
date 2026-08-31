@@ -1,42 +1,10 @@
 import http from "node:http";
 import { HoneypotEngine } from "./core.js";
 import { hardenHttpServer } from "./http-hardening.js";
+import { parseQuery, pathOf, readBody } from "./http-request.js";
 import { dispatch } from "./middleware.js";
 import type { RequestFacts } from "./detectors/types.js";
 import type { HoneypotConfig } from "./types.js";
-
-const MAX_BODY_BYTES = 64 * 1024;
-
-function readBody(req: http.IncomingMessage): Promise<string | undefined> {
-  const method = (req.method ?? "GET").toUpperCase();
-  if (method === "GET" || method === "HEAD") return Promise.resolve(undefined);
-  return new Promise((resolve) => {
-    let data = "";
-    let bytes = 0;
-    let truncated = false;
-    req.on("data", (chunk: Buffer) => {
-      bytes += chunk.length;
-      if (bytes > MAX_BODY_BYTES) {
-        truncated = true;
-        return;
-      }
-      data += chunk.toString("utf8");
-    });
-    req.on("end", () => resolve(truncated ? `${data}…[truncated]` : data));
-    req.on("error", () => resolve(undefined));
-  });
-}
-
-function parseQuery(url: string): Record<string, string> {
-  // Null-prototype bag so a literal `?__proto__=…` param becomes a real own key that
-  // detectors can inspect (a plain object silently drops it), and the honeypot itself
-  // can never be prototype-polluted through query parsing.
-  const query: Record<string, string> = Object.create(null);
-  const queryStart = url.indexOf("?");
-  if (queryStart === -1) return query;
-  for (const [key, value] of new URLSearchParams(url.slice(queryStart)).entries()) query[key] = value;
-  return query;
-}
 
 /**
  * Runs the honeypot as its own standalone HTTP service — no host app. Because
@@ -45,29 +13,54 @@ function parseQuery(url: string): Record<string, string> {
  */
 export class HoneypotServer {
   readonly engine: HoneypotEngine;
-  private server?: http.Server;
+  private server: http.Server | undefined;
 
   constructor(config: HoneypotConfig = {}) {
     this.engine = new HoneypotEngine(config);
   }
 
+  /**
+   * Binds the listener. **Rejects** if the bind fails.
+   *
+   * It used to only ever resolve: `listen()`'s callback fires on success, and a failure
+   * (EADDRINUSE, EACCES on a privileged port — the two most common ways a honeypot
+   * deployment goes wrong) arrives as an `error` event on the server instead. With no
+   * listener for it, Node rethrows it as an uncaughtException from inside the bind,
+   * bypassing the caller's `await`. The standalone entrypoint's careful `ConfigError`
+   * handling and its "port already in use" message never got a chance to run; the
+   * operator got a raw stack trace. Every other listener in this project (the SSH
+   * honeypot, the port-scan sentinel) already binds this way.
+   */
   listen(port: number, host?: string): Promise<void> {
-    this.server = http.createServer((req, res) => {
+    if (this.server) return Promise.reject(new Error("HoneypotServer is already listening"));
+    const server = http.createServer((req, res) => {
       void this.handle(req, res).catch(() => {
         if (!res.writableEnded) {
-          res.statusCode = 500;
+          if (!res.headersSent) res.statusCode = 500;
           res.end();
         }
       });
     });
-    hardenHttpServer(this.server);
-    return new Promise((resolve) => this.server?.listen(port, host, resolve));
+    hardenHttpServer(server);
+    this.server = server;
+
+    return new Promise((resolve, reject) => {
+      const onError = (err: Error): void => {
+        this.server = undefined;
+        reject(err);
+      };
+      server.once("error", onError);
+      server.listen(port, host, () => {
+        server.removeListener("error", onError);
+        resolve();
+      });
+    });
   }
 
   private async handle(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
     const method = req.method ?? "GET";
     const url = req.url ?? "/";
-    const path = url.split("?")[0] ?? "/";
+    const path = pathOf(url);
     const ip = this.engine.resolveIp(req.socket.remoteAddress, req.headers);
 
     // Allowlisted known-good sources bypass everything, including the block check.
@@ -99,9 +92,13 @@ export class HoneypotServer {
     return this.server?.address() ?? null;
   }
 
+  /** Stops the listener. Resolves immediately (rather than hanging) if it never started. */
   close(): Promise<void> {
+    const server = this.server;
+    if (!server) return Promise.resolve();
+    this.server = undefined;
     return new Promise((resolve, reject) => {
-      this.server?.close((err) => (err ? reject(err) : resolve()));
+      server.close((err) => (err ? reject(err) : resolve()));
     });
   }
 }

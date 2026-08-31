@@ -484,6 +484,40 @@ Why a **score TTL** matters: without it, an IP's suspicion only ever grows. A TT
 the Redis score key (refreshed on each hit) lets a quiet IP's score decay, so a
 shared address that tripped a detector once doesn't stay blocked forever.
 
+### Reading a store: `list()` and `query()`
+
+`list()` returns the retained hits **oldest first**, on every backend, bounded by that
+backend's retention cap. `ElasticStore` still *queries* newest-first — with `size`, that
+is what selects which documents come back — and reverses before returning, so callers
+never have to know which store is behind them.
+
+Stores may also implement the optional `query(q: HitQuery)`, a bounded, filtered read
+with the same ordering contract:
+
+```ts
+interface HitQuery {
+  ip?: string;          // only this source IP
+  detector?: string;    // only hits where this detector fired
+  fingerprint?: string; // only this actor fingerprint
+  sinceMs?: number;     // at or after this epoch-ms timestamp
+  limit?: number;       // at most this many — the MOST RECENT ones
+}
+```
+
+All five built-in stores implement it, and each pushes down what its backend can do:
+Elasticsearch turns `ip`/`sinceMs` into a real query instead of transferring up to
+`maxHits` documents and filtering them client-side, Redis slices the list server-side
+for a plain `limit`, and the file store streams into a bounded window instead of parsing
+the whole log into memory. That last one is the difference between a constant cost and
+one the attacker sets: on a 72 MB hit log, a single `/incidents?ip=…&limit=100` went from
+**96 MB retained to 25 MB**.
+
+A custom store can omit `query()` entirely — callers fall back to `list()` with
+identical filtering semantics, so it is a performance interface, never a correctness
+one. The aggregate endpoints (`/stats`, `/metrics`, `/ioc`, and the all-IPs `/sessions`)
+still read `list()` by design: they summarize the whole corpus, so there is nothing to
+push down.
+
 ---
 
 ### Hit-log rotation and retention
@@ -622,7 +656,7 @@ Mount it ahead of your real routes. Anything no detector flags falls through to
 
 ```ts
 import express from "express";
-import { HoneypotEngine, createMiddleware } from "hackerpot";
+import { HoneypotEngine, createMiddleware, hardenHttpServer } from "hackerpot";
 
 const engine = new HoneypotEngine({
   onHit: (hit) => console.warn("[honeypot]", hit.ip, hit.respondedWith, hit.detections.map((d) => d.detectorId)),
@@ -631,8 +665,27 @@ const engine = new HoneypotEngine({
 const app = express();
 app.use(createMiddleware(engine));   // mount FIRST
 // ...your real routes below
-app.listen(3000);
+const server = app.listen(3000);
+
+// Your server, your timeouts: `HoneypotServer` hardens itself, but in middleware mode
+// the listener is yours, so Node's permissive defaults (no connection cap, a 5-minute
+// request timeout) still apply — a Slowloris invitation on anything internet-facing.
+// One call fixes it; see "Slowloris / connection hardening" below.
+hardenHttpServer(server);
 ```
+
+If a detector's own machinery ever throws — a blocklist backend that is down, say —
+the middleware routes it to `next(err)` rather than rejecting, so your error handler
+sees it and the request never hangs. It is never the honeypot that takes your app down.
+
+#### Slowloris / connection hardening
+
+`hardenHttpServer(server)` applies conservative timeouts and a connection ceiling to
+any `http.Server`: a 20s headers deadline (the core Slowloris defense), a 30s whole-request
+deadline, a 5s keep-alive idle, and a 10 000-connection cap. The values are deliberately
+not configurable — no legitimate request needs 20s to send its headers, and there is no
+safe way to relax them into the vulnerable case. `HoneypotServer` and `ManagementServer`
+call it on themselves; in middleware mode you own the listener, so you make the call.
 
 ### 2. Standalone — programmatic
 
@@ -801,7 +854,7 @@ HACKERPOT_CONFIG=./hackerpot.toml node dist/standalone.js
 | `[store.redis]` | `url`, `key_prefix`, `score_ttl_seconds` (`0` = never expire), `max_hits` (setting `url` enables it; both stores enabled → `CompositeStore`) |
 | `[store.elastic]` | `node`, `index`, `api_key` **or** `username`+`password`, `max_hits`, `refresh` (setting `node` enables it) |
 | `[allowlist]` | `ips` — IPs and CIDRs (v4/v6) exempt from all detection: never scored, never blocked, no incident recorded |
-| `[blocklist]` | `backend` (`memory`/`redis`), `key_prefix` — where "this IP is blocked until T" lives |
+| `[blocklist]` | `backend` (`memory`/`redis`), `key_prefix`, `max_entries` — where "this IP is blocked until T" lives |
 | `[blocklist.enforcer]` | push blocks to the OS firewall or a WAF — `enabled`, `command`+`args` (`{ip}` is substituted, run without a shell), `timeout_ms`, `max_per_window`, `window_ms`, or `webhook`+`secret`+`headers` |
 | `[intel]` | consume peer IOC feeds — `enabled`, `feeds`, `refresh_seconds`, `min_score`, `api_key`, `ttl_seconds`, `max_entries`, `enforce` |
 | `[detectors.<id>]` | one table per detector — `enabled`, `score`, `respond_with`, plus that detector's own thresholds (same names as the [detector options](#detector-options), in snake_case) |
@@ -809,7 +862,7 @@ HACKERPOT_CONFIG=./hackerpot.toml node dist/standalone.js
 | `[detectors.decoy-path]` | `replace_defaults` (bool), `disabled` (ids of built-ins to drop) |
 | `[detectors.honeytoken]` | `tokens` — the seeded fake credentials to watch for |
 | `[responses.<id>]` | one table per response action — `enabled` plus its settings (same names as the [response options](#response-options), snake_case) |
-| `[port-scan]` | `ports`, `host`, `scan_threshold`, `banner` (listing any port enables it) |
+| `[port-scan]` | `ports`, `host`, `scan_threshold`, `banner`, `max_tracked_ips`, `retention_ms` (listing any port enables it) |
 | `[smtp]` | the SMTP honeypot — `enabled`, `port`, `host`, `banner`, `hostname`, `local_domains`, `drop_above_score` (see [Mail defense](#mail-defense--smtp-honeypot)) |
 | `[ssh]` | the SSH honeypot — `enabled`, `port`, `host`, `ident`, `max_auth_attempts`, `drop_above_score` (see [SSH honeypot](#ssh-honeypot)) |
 | `[management]` | the operator API — see [Incidents management API](#incidents-management-api) |
@@ -1232,8 +1285,18 @@ regenerating keeps it in sync.
 Flagged requests are `proxy_pass`ed to the honeypot (not HTTP-redirected), so the
 attacker is transparently served by the decoy and can't tell they were diverted. The
 request line is forwarded raw, so the honeypot's own detectors see the original
-encoding, and real client IPs arrive via `X-Forwarded-For` (pair with
-`trust_proxy = true`).
+encoding, and real client IPs arrive via `X-Forwarded-For`.
+
+> **You must also set `trust_proxy = true` on the honeypot.** This is the half of the
+> pair that is easy to miss, because nothing *looks* broken without it. The
+> `X-Forwarded-For` nginx sets is ignored unless the honeypot trusts it, so every
+> diverted request is attributed to **nginx's own address** rather than the attacker's.
+> Hits are still recorded and the dashboard still fills up — but every attacker shares
+> one score bucket, per-IP scoring stops meaning anything, `/ioc.txt` exports the
+> proxy's address, and once that shared score crosses the block threshold the honeypot
+> blocks the proxy: a 403 for every diverted request from everyone, first probe
+> included. Enable it *only* with this proxy in front — `trust_proxy` with nothing
+> overwriting the header lets any client forge its own source IP.
 
 Two details worth knowing, both handled in the generated file. nginx rejects `TRACE`
 and `CONNECT` itself during request-line parsing, before any config runs, so `405` is
@@ -1596,6 +1659,7 @@ src/
   core.ts            HoneypotEngine — runs detectors, scores, picks a response
   middleware.ts      Express/Connect middleware (two-phase, body-safe)
   server.ts          standalone HTTP server
+  http-request.ts    shared request parsing: bounded body read, null-prototype query
   standalone.ts      TOML/env-configured production entrypoint (the container CMD)
   state.ts           per-IP sliding-window activity tracking
   config/            TOML config: parsing, validation, and building the engine from it

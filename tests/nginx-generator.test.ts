@@ -105,3 +105,23 @@ describe("the generated nginx maps are regexes nginx can actually compile", () =
     }
   });
 });
+
+describe("the generated config states the honeypot-side half of the setup", () => {
+  // The edge config sets X-Forwarded-For, but the honeypot IGNORES it unless
+  // trust_proxy is on — and nothing looks broken when it is missing: hits are still
+  // recorded, they are just all attributed to the proxy's own address. Verified
+  // against a real nginx + honeypot: with TRUST_PROXY=true the hit carries the
+  // client's IP, without it the hit carries 127.0.0.1. So the instruction has to
+  // survive in the artifact an operator actually reads while installing.
+  const output = generated();
+
+  it("names trust_proxy in the server-context file's requirements", () => {
+    const serverFile = output.slice(output.indexOf("server-context config"));
+    expect(serverFile).toMatch(/trust_proxy = true/);
+    expect(serverFile).toMatch(/TRUST_PROXY/);
+  });
+
+  it("explains the silent failure rather than only naming the setting", () => {
+    expect(output).toMatch(/attributed to nginx's own address/i);
+  });
+});

@@ -1,4 +1,8 @@
 import net from "node:net";
+import { StringDecoder } from "node:string_decoder";
+
+/** Longest probe banner retained per connection. */
+const BANNER_CHARS = 512;
 
 export interface PortScanEvent {
   ip: string;
@@ -101,9 +105,16 @@ export class PortScanSentinel {
               const ports = this.remember(ip, port, Date.now());
 
               let banner = "";
+              // Decode incrementally (a probe banner can be any bytes, and a multi-byte
+              // sequence split across segments would decode to replacement characters),
+              // and bound what we append rather than only what we later slice: the old
+              // check admitted one whole chunk past the limit, so a single 64 KB write
+              // was retained in full just to be cut to 512 at close.
+              const bannerDecoder = new StringDecoder("utf8");
               socket.setTimeout(5_000, () => socket.destroy());
               socket.on("data", (chunk: Buffer) => {
-                if (banner.length < 512) banner += chunk.toString("utf8");
+                if (banner.length >= BANNER_CHARS) return;
+                banner = (banner + bannerDecoder.write(chunk)).slice(0, BANNER_CHARS);
               });
               socket.on("error", () => undefined);
               socket.on("close", () => {
@@ -114,7 +125,7 @@ export class PortScanSentinel {
                   portsTouched: ports.size,
                   isScan: ports.size >= threshold,
                 };
-                if (banner) event.banner = banner.slice(0, 512);
+                if (banner) event.banner = banner;
                 // Isolate a rejecting async onEvent: an attacker sweeping ports must not be
                 // able to turn a throwing callback into a process-killing unhandled rejection.
                 Promise.resolve(this.options.onEvent?.(event)).catch(() => undefined);

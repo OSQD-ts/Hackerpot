@@ -1,0 +1,96 @@
+{
+  "$schema": "https://biomejs.dev/schemas/2.5.11/schema.json",
+  "vcs": {
+    "enabled": true,
+    "clientKind": "git",
+    "useIgnoreFile": true
+  },
+  "files": {
+    "includes": [
+      "src/**/*.ts",
+      "tests/**/*.ts",
+      "scripts/**/*.ts",
+      "examples/**/*.ts"
+    ]
+  },
+  "formatter": {
+    "enabled": false
+  },
+  "linter": {
+    "enabled": true,
+    "rules": {
+      "recommended": false,
+      "correctness": {
+        "noUnusedVariables": "error",
+        "noUnusedImports": "error",
+        "noUnusedFunctionParameters": "error",
+        "noUnreachable": "error",
+        "noConstantCondition": "error",
+        "noSelfAssign": "error",
+        "noSwitchDeclarations": "error",
+        "noPrecisionLoss": "error",
+        "useValidTypeof": "error",
+        "noInvalidUseBeforeDeclaration": "error"
+      },
+      "suspicious": {
+        "noDoubleEquals": "error",
+        "noDuplicateCase": "error",
+        "noDuplicateObjectKeys": "error",
+        "noDuplicateClassMembers": "error",
+        "noFallthroughSwitchClause": "error",
+        "noSelfCompare": "error",
+        "noAsyncPromiseExecutor": "error",
+        "noMisleadingCharacterClass": "error",
+        "noControlCharactersInRegex": "off",
+        "noExplicitAny": "warn",
+        "noImplicitAnyLet": "error",
+        "noRedeclare": "error",
+        "noShadowRestrictedNames": "error",
+        "noGlobalIsNan": "error",
+        "useDefaultSwitchClauseLast": "error"
+      },
+      "complexity": {
+        "noUselessCatch": "error",
+        "noUselessTernary": "error",
+        "noUselessEscapeInRegex": "error",
+        "noForEach": "off"
+      },
+      "performance": {
+        "noDelete": "error",
+        "noAccumulatingSpread": "error"
+      },
+      "security": {
+        "noGlobalEval": "error",
+        "noDangerouslySetInnerHtml": "off"
+      }
+    }
+  },
+  "assist": {
+    "enabled": false
+  },
+  "javascript": {
+    "globals": [
+      "Response",
+      "Request",
+      "fetch",
+      "AbortSignal",
+      "AbortController",
+      "ReadableStream",
+      "TextDecoder"
+    ]
+  },
+  "overrides": [
+    {
+      "includes": [
+        "tests/**/*.ts"
+      ],
+      "linter": {
+        "rules": {
+          "suspicious": {
+            "noExplicitAny": "off"
+          }
+        }
+      }
+    }
+  ]
+}

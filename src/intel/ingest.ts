@@ -120,7 +120,8 @@ async function readCapped(res: Response, maxBytes: number): Promise<string> {
     total += value.byteLength;
     out += decoder.decode(value, { stream: true });
   }
-  return out;
+  // Flush any partial multi-byte sequence the stream ended on.
+  return out + decoder.decode();
 }
 
 /** One IP per line (the `/ioc.txt` shape); ignores blanks, comments, and anything that isn't an IP. */

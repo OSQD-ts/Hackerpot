@@ -5,6 +5,7 @@ export type { FileStoreOptions } from "./file.js";
 export { RotatingJsonlWriter } from "./archive.js";
 export type { RotatingJsonlWriterOptions } from "./archive.js";
 export { ScoreLedger } from "./scores.js";
+export { applyQuery, matchesQuery, queryHits, takeLatest } from "./query.js";
 export { CompositeStore } from "./composite.js";
 export { RedisStore } from "./redis.js";
 export type { RedisStoreOptions } from "./redis.js";
