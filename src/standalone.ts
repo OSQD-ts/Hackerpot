@@ -8,6 +8,9 @@ import {
   createPortScanSentinel,
   createSmtpHoneypot,
   createSshHoneypot,
+  createFtpHoneypot,
+  createTelnetHoneypot,
+  createSyslogSink,
   describeConfig,
   loadConfig,
   planReload,
@@ -15,6 +18,7 @@ import {
 } from "./config/index.js";
 import type { HackerpotConfig } from "./config/index.js";
 import type { ManagementServer } from "./management/index.js";
+import type { SyslogSink } from "./syslog.js";
 import { formatTextLine } from "./logfmt.js";
 import type { IpAllowlist } from "./allowlist.js";
 import type { Blocklist } from "./blocklist.js";
@@ -204,6 +208,7 @@ async function main(argv: string[]): Promise<void> {
   // The management server needs the store, and the engine needs an onHit that
   // feeds it — so the hit handler closes over a binding filled in just below.
   let management: ManagementServer | undefined;
+  let syslogSink: SyslogSink | undefined;
 
   /**
    * The configuration currently in force. Declared here, ahead of every closure that
@@ -225,6 +230,10 @@ async function main(argv: string[]): Promise<void> {
     (hit) => {
       log(hitEvent(running, hit));
       management?.publish(hit);
+      // Declared below and filled in before any listener binds — the same forward
+      // reference `management` uses, for the same reason: the store this closure needs
+      // has to exist before the thing that consumes it can be constructed.
+      syslogSink?.send(hit);
     },
     // Neither a failing firewall call nor an unreachable store may break the
     // honeypot's own response, so both are reported here rather than thrown —
@@ -246,19 +255,34 @@ async function main(argv: string[]): Promise<void> {
     active_blocks: (await server.engine.blocklist.size?.()) ?? 0,
     tracked_ips: server.engine.registry.size,
   }));
-  const sentinel = createPortScanSentinel(config, (event) =>
-    log({ kind: event.isScan ? "port-scan" : "port-touch", ip: event.ip, port: event.port, portsTouched: event.portsTouched, banner: event.banner }),
+  // Read through the engine on every call, never captured: `reconfigure()` replaces the
+  // allowlist on SIGHUP, and these listeners are not rebuilt on reload — a captured
+  // instance would keep exempting yesterday's set.
+  const isAllowlisted = (ip: string): boolean => server.engine.isAllowlisted(ip);
+
+  const sentinel = createPortScanSentinel(
+    config,
+    (event) => log({ kind: event.isScan ? "port-scan" : "port-touch", ip: event.ip, port: event.port, portsTouched: event.portsTouched, banner: event.banner }),
+    isAllowlisted,
   );
 
-  // SMTP and SSH incidents are already mapped into HoneypotHit, so they log and
-  // reach the management API through exactly the same path as HTTP hits.
+  // Syslog forwarding sits on the hit path itself rather than behind the management
+  // API, so a deployment can ship to its SIEM without also exposing a REST service
+  // over the captured data. `send` never throws and never returns a promise.
+  syslogSink = createSyslogSink(config, (error) => log({ kind: "syslog-error", error: error.message }));
+
+  // SMTP, SSH, FTP and Telnet incidents are already mapped into HoneypotHit, so they
+  // log and reach the management API through exactly the same path as HTTP hits.
   const onProtocolHit = (hit: HoneypotHit): void => {
     log(hitEvent(running, hit));
     management?.publish(hit);
+    syslogSink?.send(hit);
   };
   const onProtocolError = (error: unknown) => log({ kind: "protocol-error", error: error instanceof Error ? error.message : String(error) });
-  const smtp = createSmtpHoneypot(config, built.store, onProtocolHit, onProtocolError);
-  const ssh = createSshHoneypot(config, built.store, onProtocolHit, onProtocolError);
+  const smtp = createSmtpHoneypot(config, built.store, onProtocolHit, onProtocolError, isAllowlisted);
+  const ssh = createSshHoneypot(config, built.store, onProtocolHit, onProtocolError, isAllowlisted);
+  const ftp = createFtpHoneypot(config, built.store, onProtocolHit, onProtocolError, isAllowlisted);
+  const telnet = createTelnetHoneypot(config, built.store, onProtocolHit, onProtocolError, isAllowlisted);
 
   let poller: IntelPoller | undefined;
   if (config.intel.enabled && built.ingestTarget) {
@@ -280,7 +304,10 @@ async function main(argv: string[]): Promise<void> {
       poller?.stop();
       if (smtp) await smtp.close();
       if (ssh) await ssh.close();
+      if (ftp) await ftp.close();
+      if (telnet) await telnet.close();
       if (management) await management.close();
+      if (syslogSink) await syslogSink.close();
       await built.close();
     } catch (err) {
       log({ kind: "shutdown-error", error: (err as Error).message });
@@ -359,7 +386,13 @@ async function main(argv: string[]): Promise<void> {
   if (sentinel) await sentinel.listen();
   if (smtp) await smtp.listen();
   if (ssh) await ssh.listen();
+  if (ftp) await ftp.listen();
+  if (telnet) await telnet.listen();
   if (management) await management.listen();
+  // Before any listener takes traffic: a TCP collector that is only dialled by the
+  // first incident loses that incident, and an unreachable one should be reported now
+  // rather than in the middle of an attack.
+  syslogSink?.start();
   poller?.start();
 
   if (config.logging.startup) {
@@ -377,6 +410,9 @@ async function main(argv: string[]): Promise<void> {
       scanPorts: config.portScan.enabled ? config.portScan.ports : [],
       smtp: smtp ? `${config.smtp.host}:${config.smtp.port}` : "off",
       ssh: ssh ? `${config.ssh.host}:${config.ssh.port}` : "off",
+      ftp: ftp ? `${config.ftp.host}:${config.ftp.port}` : "off",
+      telnet: telnet ? `${config.telnet.host}:${config.telnet.port}` : "off",
+      syslog: syslogSink ? `${config.syslog.protocol}://${config.syslog.host}:${config.syslog.port} (${config.syslog.format})` : "off",
       management: management ? `${config.management.host}:${config.management.port}` : "off",
       intel: poller ? `${config.intel.feeds.length} feed(s)${config.intel.enforce ? ", ENFORCING" : ""}` : "off",
       trustProxy: config.server.trustProxy,

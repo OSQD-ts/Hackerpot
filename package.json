@@ -56,6 +56,8 @@
     "attack:smtp": "tsx scripts/attack.ts smtp",
     "generate:nginx": "tsx scripts/generate-nginx.ts",
     "attack:ssh": "tsx scripts/attack.ts ssh",
+    "attack:ftp": "tsx scripts/attack.ts ftp",
+    "attack:telnet": "tsx scripts/attack.ts telnet",
     "attack:nosql-injection": "tsx scripts/attack.ts nosql-injection",
     "attack:graphql-abuse": "tsx scripts/attack.ts graphql-abuse",
     "attack:jwt-weakness": "tsx scripts/attack.ts jwt-weakness",

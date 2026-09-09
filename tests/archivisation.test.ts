@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createGunzip } from "node:zlib";
-import { createReadStream, mkdtempSync, readFileSync, statSync } from "node:fs";
+import { createReadStream, existsSync, mkdtempSync, readFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { text } from "node:stream/consumers";
@@ -285,4 +285,45 @@ describe("the shipped hackerpot.toml stays valid", () => {
     expect(config.store.file.maxScoreEntries).toBe(100_000);
     expect(config.store.memory.maxScoreEntries).toBe(100_000);
   });
+});
+
+describe("archive names survive rotations inside the same millisecond", () => {
+  // The archive name is the roll time, and `toISOString()` resolves to milliseconds, so
+  // two rolls in the same millisecond produced the same name and `renameSync` silently
+  // overwrote the earlier archive — whole segments of captured evidence destroyed, with
+  // nothing logged. Rotation frequency follows write volume, which follows the attack,
+  // so the attacker sets the rate. Measured before the fix: 12 of 12 runs lost records,
+  // 462 in total. The pre-existing "readable and intact" test caught it only
+  // intermittently, because it depends on how fast the writes happen to land.
+  it("loses nothing across many fast rotations", async () => {
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const path = join(dir(), "hits.jsonl");
+      const writer = new RotatingJsonlWriter({ path, maxBytes: 512, maxArchives: 100 });
+      for (let i = 0; i < 120; i += 1) await writer.append(JSON.stringify({ i, pad: "z".repeat(60) }));
+      await writer.close();
+
+      const seen: number[] = [];
+      for (const archive of writer.archives()) {
+        const body = await text(createReadStream(archive).pipe(createGunzip()));
+        for (const line of body.split("\n")) if (line.trim()) seen.push(JSON.parse(line).i);
+      }
+      for (const line of readFileSync(path, "utf8").split("\n")) if (line.trim()) seen.push(JSON.parse(line).i);
+
+      expect(seen.sort((a, b) => a - b), `attempt ${attempt}`).toEqual(Array.from({ length: 120 }, (_, i) => i));
+    }
+  }, 20_000);
+
+  it("gives every archive a distinct path, and still recognizes them all", async () => {
+    const path = join(dir(), "hits.jsonl");
+    const writer = new RotatingJsonlWriter({ path, maxBytes: 256, maxArchives: 100 });
+    for (let i = 0; i < 60; i += 1) await writer.append(JSON.stringify({ i, pad: "q".repeat(40) }));
+    await writer.close();
+
+    const archives = writer.archives();
+    expect(archives.length).toBeGreaterThan(1);
+    // Every rolled segment is still discoverable — a discriminator must not fall
+    // outside the pattern `archives()` filters on, or pruning would stop seeing it.
+    expect(new Set(archives).size).toBe(archives.length);
+    for (const archive of archives) expect(existsSync(archive)).toBe(true);
+  }, 15_000);
 });

@@ -20,6 +20,9 @@ export type {
   ServerConfig,
   SmtpConfig,
   SshConfig,
+  FtpConfig,
+  TelnetConfig,
+  SyslogConfig,
   StoreConfig,
   Toggle,
 } from "./schema.js";
@@ -33,6 +36,9 @@ export {
   createPortScanSentinel,
   createSmtpHoneypot,
   createSshHoneypot,
+  createFtpHoneypot,
+  createTelnetHoneypot,
+  createSyslogSink,
   createStore,
 } from "./build.js";
 export type { BuiltBlocklist, BuiltEngineConfig, BuiltErrorSource, BuiltStore } from "./build.js";

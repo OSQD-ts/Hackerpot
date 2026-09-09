@@ -53,10 +53,13 @@ function b64decode(s: string): string {
  */
 export class SmtpHoneypot {
   private server: net.Server | undefined;
+  /** Live connections, so `close()` can end them instead of waiting on them. */
+  private readonly sockets = new Set<net.Socket>();
   private readonly opts: SmtpHoneypotOptions;
   private readonly hostname: string;
   private readonly localDomains: Set<string>;
   private readonly maxConnections: number;
+  private readonly maxSessionMs: number;
   private readonly captureBody: boolean;
   private readonly maxBodyChars: number;
   private activeConnections = 0;
@@ -66,6 +69,7 @@ export class SmtpHoneypot {
     this.hostname = options.hostname ?? "mail";
     this.localDomains = new Set((options.localDomains ?? []).map((d) => d.toLowerCase()));
     this.maxConnections = options.maxConnections ?? 256;
+    this.maxSessionMs = options.maxSessionMs ?? 120_000;
     this.captureBody = options.captureBody ?? true;
     this.maxBodyChars = options.maxBodyChars ?? 2000;
   }
@@ -96,10 +100,21 @@ export class SmtpHoneypot {
     });
   }
 
+  /**
+   * Stops the listener and ends any connection still open.
+   *
+   * `server.close()` alone stops accepting but waits for every live connection to end,
+   * and this listener's only per-socket bound is an *idle* timeout — which every byte
+   * resets. A client dripping one character a second therefore kept shutdown blocked
+   * indefinitely, and it is an attacker who decides whether to do that. Shutting down
+   * means shutting down: the sockets are destroyed rather than waited on.
+   */
   close(): Promise<void> {
     return new Promise((resolve) => {
       if (!this.server) return resolve();
       this.server.close(() => resolve());
+      for (const socket of this.sockets) socket.destroy();
+      this.sockets.clear();
     });
   }
 
@@ -121,8 +136,18 @@ export class SmtpHoneypot {
     // thing that opened it. The SSH honeypot documents this exact hazard and attaches
     // its handler first; this is the same fix.
     socket.on("error", () => undefined);
+    this.sockets.add(socket);
+    socket.once("close", () => this.sockets.delete(socket));
 
     const ip = socket.remoteAddress ?? "unknown";
+
+    // Allowlisted sources are exempt from all detection — the same rail the HTTP front
+    // ends apply, and what `[allowlist] ips` documents. Bail before anything is tracked,
+    // scored, or reported, so an exempt host can never reach the store or `/ioc.txt`.
+    if (this.opts.isAllowlisted?.(ip)) {
+      socket.destroy();
+      return;
+    }
 
     // Bound our own resource use: a connection flood must not exhaust our sockets.
     if (this.activeConnections >= this.maxConnections) {
@@ -132,6 +157,16 @@ export class SmtpHoneypot {
     }
     this.activeConnections += 1;
     socket.once("close", () => (this.activeConnections -= 1));
+
+    // Bound how long one connection may be held open. The SSH, FTP and Telnet
+    // emulators all carry this cap; only SMTP was missing it, and `IDLE_MS` alone does
+    // not substitute for it — an idle timeout is reset by every byte, so a client
+    // dripping one character every 20 seconds holds its slot indefinitely at no cost.
+    // With only `maxConnections` (256) slots, a few hundred such connections take the
+    // SMTP honeypot permanently offline without ever completing a transaction.
+    const lifetimeTimer = setTimeout(() => socket.destroy(), this.maxSessionMs);
+    lifetimeTimer.unref?.();
+    socket.once("close", () => clearTimeout(lifetimeTimer));
 
     if (this.opts.dropAboveScore !== undefined && this.opts.store) {
       const score = await this.opts.store.scoreFor(ip);

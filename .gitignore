@@ -9,3 +9,7 @@ nginx/
 
 # Local hit-log output
 data/
+
+# Local agent instructions
+CLAUDE.md
+.claude/

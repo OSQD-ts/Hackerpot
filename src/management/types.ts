@@ -1,3 +1,4 @@
+import type { AlertFormat } from "./alerts.js";
 import type { HoneypotHit } from "../types.js";
 
 /** An incident is a recorded honeypot hit — the detections that fired plus the response that was served. */
@@ -6,6 +7,14 @@ export type Incident = HoneypotHit;
 export interface WebhookConfig {
   /** Destination URL that each incident is POSTed to as JSON. */
   url: string;
+  /**
+   * How the request body is rendered. `hackerpot` (the default) posts the native
+   * incident JSON to your own receiver. `slack` and `discord` render a human-readable
+   * alert those platforms accept directly on an incoming-webhook URL — with the
+   * attacker-controlled text escaped, mentions neutered and link previews disabled.
+   * See `src/management/alerts.ts` for why each of those matters.
+   */
+  format?: AlertFormat;
   /** Optional HMAC-SHA256 signing secret. When set, each request carries an `X-Hackerpot-Signature` header. */
   secret?: string;
   /** Extra static headers to send (e.g. an auth token the receiver expects). */
@@ -36,9 +45,12 @@ export interface WebhookConfig {
   /** Per-attempt deadline in ms. Default 10000. */
   timeoutMs?: number;
   /**
-   * Omit the attacker-controlled request `body` from the delivered payload. Set true for
-   * alert destinations that render content (Slack, Teams, etc.) where attacker HTML/markup
-   * reaching a chat client is a risk. The score, detectors, IP, and path still go through.
+   * Omit the attacker-controlled request `body` from the delivered payload. The score,
+   * detectors, IP, and path still go through.
+   *
+   * Defaults to FALSE for the `hackerpot` format (your own receiver asked for the whole
+   * incident) and TRUE for `slack`/`discord`, where the body is raw attacker payload
+   * being rendered to everyone in a channel. Set it explicitly to override either way.
    */
   omitBody?: boolean;
 }

@@ -110,6 +110,7 @@ export async function dispatch(
     totalScore: result.totalScore,
     tracker: result.tracker,
     blocklist: engine.blocklist,
+    onError: (error, context) => engine.reportError(error, context),
   };
   await action.execute(ctx);
   if (!res.writableEnded) res.end();

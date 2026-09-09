@@ -36,7 +36,8 @@ import type {
   RateLimitOptions,
   TarpitOptions,
 } from "../responses/index.js";
-import type { WebhookConfig } from "../management/index.js";
+import type { AlertFormat, WebhookConfig } from "../management/index.js";
+import type { SyslogMessageFormat } from "../syslog.js";
 
 /**
  * The shape of a hackerpot TOML file, after parsing, validation, and defaulting.
@@ -104,6 +105,14 @@ export interface RedisStoreConfig {
   /** Seconds; 0 means scores never expire. */
   scoreTtlSeconds: number;
   maxHits: number;
+  /**
+   * Reconnect attempts a single command makes before it is rejected. 0 means
+   * ioredis's "wait forever" behaviour — see `store.redis.max_retries_per_request`
+   * in the TOML for why that is not the default.
+   */
+  maxRetriesPerRequest: number;
+  /** Milliseconds a command may wait on a live-but-silent server before rejecting. 0 disables. */
+  commandTimeoutMs: number;
 }
 
 export interface ElasticStoreConfig {
@@ -117,6 +126,8 @@ export interface ElasticStoreConfig {
   maxHits: number;
   /** Make each write immediately searchable. Slower; leave off in production. */
   refresh: boolean;
+  /** Per-request deadline in ms — `scoreFor()` is on the request path. 0 disables. */
+  timeoutMs: number;
 }
 
 export interface MemoryStoreConfig {
@@ -247,6 +258,8 @@ export interface SmtpConfig {
   dropAboveScore: number;
   /** Cap on simultaneous open connections, so a flood cannot exhaust our sockets. */
   maxConnections: number;
+  /** Hard cap on how long one connection may stay open, in ms — bounds a slow connection-hold DoS. */
+  maxSessionMs: number;
   /** Store the raw DATA body. Off still records the parsed Subject and byte count. */
   captureBody: boolean;
   maxBodyChars: number;
@@ -277,6 +290,70 @@ export interface SshConfig {
   maxCommandLength: number;
   /** Hard lifetime for one SSH connection, so a held-open session can't hold a slot forever. */
   maxSessionMs: number;
+}
+
+export interface FtpConfig {
+  enabled: boolean;
+  port: number;
+  host: string;
+  /** Greeting banner shown after the 220 code; a realistic one draws more interaction. */
+  banner: string;
+  /** Close the connection after this many credential attempts. */
+  maxAuthAttempts: number;
+  /** Drop connections from IPs at or above this cumulative score. 0 = never. */
+  dropAboveScore: number;
+  /** Cap on simultaneous open connections, so a flood cannot exhaust our sockets. */
+  maxConnections: number;
+  /** Accept the login after `acceptOnAttempt` tries and capture the commands that follow. */
+  interactive: boolean;
+  acceptOnAttempt: number;
+  maxCommands: number;
+  maxCommandLength: number;
+  /** Hard lifetime for one FTP connection, so a held-open session can't hold a slot forever. */
+  maxSessionMs: number;
+}
+
+export interface TelnetConfig {
+  enabled: boolean;
+  port: number;
+  host: string;
+  /** Banner printed before the login prompt. A device-shaped one draws the IoT botnets. */
+  banner: string;
+  /** Hostname in the login and shell prompts. */
+  hostname: string;
+  /** Close the connection after this many credential attempts. */
+  maxAuthAttempts: number;
+  /** Drop connections from IPs at or above this cumulative score. 0 = never. */
+  dropAboveScore: number;
+  /** Cap on simultaneous open connections, so a flood cannot exhaust our sockets. */
+  maxConnections: number;
+  /** Accept the login after `acceptOnAttempt` tries and capture fake-shell commands. */
+  interactive: boolean;
+  acceptOnAttempt: number;
+  maxCommands: number;
+  maxCommandLength: number;
+  /** Hard lifetime for one Telnet connection, so a held-open session can't hold a slot forever. */
+  maxSessionMs: number;
+}
+
+export interface SyslogConfig {
+  enabled: boolean;
+  /** Collector address. */
+  host: string;
+  port: number;
+  protocol: "udp" | "tcp";
+  /** How the message inside the syslog envelope is rendered. */
+  format: SyslogMessageFormat;
+  facility: number;
+  severity: number;
+  /** Hostname written into the syslog header. */
+  hostname: string;
+  /** Only forward incidents at or above this total score. 0 = everything. */
+  minScore: number;
+  /** Ceiling on one rendered message, in bytes. */
+  maxBytes: number;
+  /** Include the attacker-controlled request body in the forwarded message. */
+  includeBody: boolean;
 }
 
 export interface ManagementApiConfig {
@@ -318,6 +395,10 @@ export interface HackerpotConfig {
   portScan: PortScanConfig;
   smtp: SmtpConfig;
   ssh: SshConfig;
+  ftp: FtpConfig;
+  telnet: TelnetConfig;
+  /** Forward every incident to a syslog collector. Independent of the management API. */
+  syslog: SyslogConfig;
   management: ManagementApiConfig;
 }
 
@@ -628,7 +709,14 @@ function parseResponses(section: Section): ResponsesConfig {
   const largeSection = child(section, "large-payload");
   const largeOptions: LargePayloadOptions = {};
   put(largeOptions, "totalBytes", largeSection.integer("total_bytes"));
-  put(largeOptions, "chunkBytes", largeSection.integer("chunk_bytes"));
+  const largeChunkBytes = largeSection.integer("chunk_bytes");
+  // Caught here rather than at runtime: the streaming loop advances by `chunk_bytes`,
+  // so 0 (or negative) never terminates — a tight spin with no await on it, which pins
+  // the event loop and takes the whole process down on the first request routed here.
+  if (largeChunkBytes !== undefined && largeChunkBytes < 1) {
+    largeSection.fail("chunk_bytes", `must be at least 1, got ${largeChunkBytes} — the stream advances by this, so 0 never finishes`);
+  }
+  put(largeOptions, "chunkBytes", largeChunkBytes);
   put(largeOptions, "throttleMs", largeSection.integer("throttle_ms"));
   put(largeOptions, "contentType", largeSection.string("content_type"));
   put(largeOptions, "maxConcurrent", largeSection.integer("max_concurrent"));
@@ -680,7 +768,19 @@ function parseResponses(section: Section): ResponsesConfig {
     chaosSection.fail("garbage_chance", `must be a probability between 0 and 1, got ${garbageChance}`);
   }
   put(chaosOptions, "garbageChance", garbageChance);
-  put(chaosOptions, "maxGarbageBytes", chaosSection.integer("max_garbage_bytes"));
+  const maxGarbageBytes = chaosSection.integer("max_garbage_bytes");
+  // Caught here rather than at runtime: these feed `randomInt`, which throws on an
+  // empty range, and the throw surfaces as a 500 from the response action — a honeypot
+  // tell, emitted intermittently (garbage_chance defaults to 0.5) long after the config
+  // that caused it was accepted. `garbage_chance` above is range-checked for the same
+  // reason; these two were not.
+  if (maxGarbageBytes !== undefined && maxGarbageBytes < 64) {
+    chaosSection.fail("max_garbage_bytes", `must be at least 64, got ${maxGarbageBytes}`);
+  }
+  put(chaosOptions, "maxGarbageBytes", maxGarbageBytes);
+  if (chaosOptions.statuses?.length === 0) {
+    chaosSection.fail("statuses", "is empty — give at least one status code, or set enabled = false to switch the action off");
+  }
   const chaos = { enabled: chaosSection.boolean("enabled", true), options: chaosOptions };
   chaosSection.done();
 
@@ -740,10 +840,14 @@ function parseSmtp(section: Section): SmtpConfig {
     localDomains: section.stringArray("local_domains", []).map((domain) => domain.toLowerCase()),
     dropAboveScore: section.integer("drop_above_score", 0),
     maxConnections: section.integer("max_connections", 256),
+    maxSessionMs: section.integer("max_session_ms", 120_000),
     captureBody: section.boolean("capture_body", true),
     maxBodyChars: section.integer("max_body_chars", 2_000),
   };
   if (config.enabled && config.port === 0) section.fail("port", "is required when the SMTP honeypot is enabled");
+  if (config.maxSessionMs === 0) {
+    section.fail("max_session_ms", "must be greater than 0 — a session with no lifetime cap can be held open forever, which is the exhaustion this bounds");
+  }
   if (config.captureBody && config.maxBodyChars === 0) {
     section.fail("max_body_chars", 'is 0 while capture_body is true — set capture_body = false to stop storing bodies, rather than capturing an empty one');
   }
@@ -787,12 +891,114 @@ function parseSsh(section: Section): SshConfig {
   return config;
 }
 
+function parseFtp(section: Section): FtpConfig {
+  const config: FtpConfig = {
+    // Off unless asked for, like the other protocol listeners: binding a service port
+    // is a deliberate choice, and 21 needs privileges the container does not have.
+    enabled: section.boolean("enabled", false),
+    port: section.port("port", 2121),
+    host: section.string("host", "0.0.0.0"),
+    banner: section.string("banner", "(vsFTPd 3.0.3)"),
+    maxAuthAttempts: section.integer("max_auth_attempts", 6),
+    dropAboveScore: section.integer("drop_above_score", 0),
+    maxConnections: section.integer("max_connections", 256),
+    interactive: section.boolean("interactive", false),
+    acceptOnAttempt: section.integer("accept_on_attempt", 1),
+    maxCommands: section.integer("max_commands", 100),
+    maxCommandLength: section.integer("max_command_length", 512),
+    maxSessionMs: section.integer("max_session_ms", 120_000),
+  };
+  if (config.enabled && config.port === 0) section.fail("port", "is required when the FTP honeypot is enabled");
+  if (config.maxAuthAttempts === 0) section.fail("max_auth_attempts", "must be at least 1, or the honeypot captures no credentials");
+  if (config.maxSessionMs === 0) {
+    section.fail("max_session_ms", "must be greater than 0 — a session with no lifetime cap can be held open forever, which is the exhaustion this bounds");
+  }
+  if (config.maxCommandLength === 0) section.fail("max_command_length", "must be greater than 0 — every captured command would be empty");
+  if (config.interactive) {
+    if (config.acceptOnAttempt === 0) section.fail("accept_on_attempt", "must be at least 1 — attempt numbering starts at 1");
+    if (config.acceptOnAttempt > config.maxAuthAttempts) {
+      section.fail("accept_on_attempt", `(${config.acceptOnAttempt}) exceeds max_auth_attempts (${config.maxAuthAttempts}) — the connection closes before the login is ever accepted, so no commands are captured`);
+    }
+    if (config.maxCommands === 0) section.fail("max_commands", "must be at least 1 in interactive mode, or no commands are captured");
+  }
+  section.done();
+  return config;
+}
+
+function parseTelnet(section: Section): TelnetConfig {
+  const config: TelnetConfig = {
+    // Off unless asked for. Port 23 needs privileges the container does not have;
+    // 2323 is the usual unprivileged stand-in and is itself swept constantly.
+    enabled: section.boolean("enabled", false),
+    port: section.port("port", 2323),
+    host: section.string("host", "0.0.0.0"),
+    banner: section.string("banner", "Ubuntu 22.04.3 LTS"),
+    hostname: section.string("hostname", "srv01"),
+    // Three is what telnetd allows, and matching it keeps the fiction intact.
+    maxAuthAttempts: section.integer("max_auth_attempts", 3),
+    dropAboveScore: section.integer("drop_above_score", 0),
+    maxConnections: section.integer("max_connections", 256),
+    interactive: section.boolean("interactive", false),
+    acceptOnAttempt: section.integer("accept_on_attempt", 1),
+    maxCommands: section.integer("max_commands", 100),
+    maxCommandLength: section.integer("max_command_length", 4096),
+    maxSessionMs: section.integer("max_session_ms", 120_000),
+  };
+  if (config.enabled && config.port === 0) section.fail("port", "is required when the Telnet honeypot is enabled");
+  if (config.maxAuthAttempts === 0) section.fail("max_auth_attempts", "must be at least 1, or the honeypot captures no credentials");
+  if (config.maxCommandLength === 0) section.fail("max_command_length", "must be greater than 0 — every captured credential and command would be empty");
+  if (config.maxSessionMs === 0) {
+    section.fail("max_session_ms", "must be greater than 0 — a session with no lifetime cap can be held open forever, which is the exhaustion this bounds");
+  }
+  if (config.interactive) {
+    if (config.acceptOnAttempt === 0) section.fail("accept_on_attempt", "must be at least 1 — attempt numbering starts at 1");
+    if (config.acceptOnAttempt > config.maxAuthAttempts) {
+      section.fail("accept_on_attempt", `(${config.acceptOnAttempt}) exceeds max_auth_attempts (${config.maxAuthAttempts}) — the connection closes before the login is ever accepted, so no shell is entered`);
+    }
+    if (config.maxCommands === 0) section.fail("max_commands", "must be at least 1 in interactive mode, or no commands are captured");
+  }
+  section.done();
+  return config;
+}
+
+function parseSyslog(section: Section): SyslogConfig {
+  const host = section.string("host", "");
+  const config: SyslogConfig = {
+    enabled: section.boolean("enabled", host !== ""),
+    host,
+    port: section.port("port", 514),
+    protocol: section.enum("protocol", ["udp", "tcp"] as const, "udp"),
+    format: section.enum("format", ["cef", "json", "text"] as const, "cef"),
+    facility: section.integer("facility", 13),
+    severity: section.integer("severity", 4),
+    hostname: section.string("hostname", "hackerpot"),
+    minScore: section.integer("min_score", 0),
+    maxBytes: section.integer("max_bytes", 1024),
+    includeBody: section.boolean("include_body", false),
+  };
+  // Enabled with nowhere to send is the failure an operator finds months later, when
+  // they go looking for the events they assumed had been arriving all along.
+  if (config.enabled && config.host === "") section.fail("host", "is required when syslog forwarding is enabled");
+  if (config.enabled && config.port === 0) section.fail("port", "is required when syslog forwarding is enabled");
+  // These are the RFC 3164 field widths. A value outside them does not produce a
+  // syslog record with an odd priority — it produces one the collector cannot parse.
+  if (config.facility > 23) section.fail("facility", `must be a syslog facility between 0 and 23, got ${config.facility}`);
+  if (config.severity > 7) section.fail("severity", `must be a syslog severity between 0 and 7, got ${config.severity}`);
+  if (config.maxBytes < 480) {
+    section.fail("max_bytes", `must be at least 480 — below that the syslog header and the incident's own identifiers no longer fit, so every message is truncated to noise (got ${config.maxBytes})`);
+  }
+  section.done();
+  return config;
+}
+
 function parseWebhook(section: Section): WebhookConfig {
   const url = section.string("url");
   if (url === undefined) section.fail("url", "is required");
   if (!/^https?:\/\//i.test(url)) section.fail("url", `must be an http(s) URL, got "${url}"`);
 
   const webhook: WebhookConfig = { url };
+  const format = section.enum("format", ["hackerpot", "slack", "discord"] as const satisfies readonly AlertFormat[], "hackerpot");
+  if (format !== "hackerpot") webhook.format = format;
   put(webhook, "secret", section.string("secret"));
   put(webhook, "headers", section.stringTable("headers"));
   put(webhook, "maxRetries", section.integer("max_retries"));
@@ -936,6 +1142,8 @@ export function parseConfig(raw: Record<string, unknown>, source: string): Hacke
     keyPrefix: redisSection.string("key_prefix", "hackerpot:"),
     scoreTtlSeconds: redisSection.integer("score_ttl_seconds", 0),
     maxHits: redisSection.integer("max_hits", 10_000),
+    maxRetriesPerRequest: redisSection.integer("max_retries_per_request", 3),
+    commandTimeoutMs: redisSection.integer("command_timeout_ms", 5_000),
   };
   if (redisConfig.enabled && redisConfig.url === "") redisSection.fail("url", "is required when the redis store is enabled");
   redisSection.done();
@@ -951,6 +1159,7 @@ export function parseConfig(raw: Record<string, unknown>, source: string): Hacke
     password: elasticSection.string("password", ""),
     maxHits: elasticSection.integer("max_hits", 1_000),
     refresh: elasticSection.boolean("refresh", false),
+    timeoutMs: elasticSection.integer("timeout_ms", 10_000),
   };
   if (elasticConfig.enabled) {
     if (elasticConfig.node === "") elasticSection.fail("node", "is required when the elastic store is enabled");
@@ -1072,6 +1281,9 @@ export function parseConfig(raw: Record<string, unknown>, source: string): Hacke
   const portScan = parsePortScan(child(root, "port-scan"));
   const smtp = parseSmtp(root.section("smtp"));
   const ssh = parseSsh(root.section("ssh"));
+  const ftp = parseFtp(root.section("ftp"));
+  const telnet = parseTelnet(root.section("telnet"));
+  const syslog = parseSyslog(root.section("syslog"));
   const management = parseManagement(root.section("management"));
 
   root.done();
@@ -1090,6 +1302,8 @@ export function parseConfig(raw: Record<string, unknown>, source: string): Hacke
   if (portScan.enabled) for (const port of portScan.ports) claim(port, "[port-scan]");
   if (smtp.enabled) claim(smtp.port, "[smtp]");
   if (ssh.enabled) claim(ssh.port, "[ssh]");
+  if (ftp.enabled) claim(ftp.port, "[ftp]");
+  if (telnet.enabled) claim(telnet.port, "[telnet]");
   if (management.enabled) claim(management.port, "[management]");
 
   return {
@@ -1107,6 +1321,9 @@ export function parseConfig(raw: Record<string, unknown>, source: string): Hacke
     portScan,
     smtp,
     ssh,
+    ftp,
+    telnet,
+    syslog,
     management,
   };
 }

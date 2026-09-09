@@ -6,6 +6,7 @@ import type { Connection, Server as ServerType } from "ssh2";
 
 const { Server, utils } = ssh2;
 import type { HoneypotHit } from "../types.js";
+import { FAKE_MOTD, fakeShellOutput } from "../shell.js";
 import type { SshFinding, SshHoneypotOptions, SshIncident } from "./types.js";
 
 const SCORES: Record<SshFinding, number> = {
@@ -33,6 +34,8 @@ function fingerprint(keyData: Buffer): string {
  */
 export class SshHoneypot {
   private server?: ServerType;
+  /** Live client connections, so `close()` can end them instead of waiting on them. */
+  private readonly clients = new Set<Connection>();
   private readonly opts: SshHoneypotOptions;
   private readonly ident: string;
   private hostKeys: string[];
@@ -75,10 +78,20 @@ export class SshHoneypot {
     });
   }
 
+  /**
+   * Stops the listener and ends any session still open.
+   *
+   * `close()` waits for live connections, and a session may legitimately run for
+   * `maxSessionMs` (120s by default) — an attacker in the fake shell simply stays there,
+   * so a deploy or restart stalls behind traffic aimed at us. The lifetime cap bounds
+   * that; shutting down should not have to wait for it.
+   */
   close(): Promise<void> {
     return new Promise((resolve) => {
       if (!this.server) return resolve();
       this.server.close(() => resolve());
+      for (const client of this.clients) client.end();
+      this.clients.clear();
     });
   }
 
@@ -91,6 +104,14 @@ export class SshHoneypot {
     // unhandled 'error' (malformed input, abrupt disconnect) would otherwise throw —
     // including during the dropAboveScore early-out below.
     client.on("error", () => undefined);
+    this.clients.add(client);
+    client.once("close", () => this.clients.delete(client));
+
+    // Allowlisted sources are exempt from all detection — see `isAllowlisted`.
+    if (this.opts.isAllowlisted?.(ip)) {
+      client.end();
+      return;
+    }
 
     // Bound our own resource use: a connection flood must not exhaust our sockets.
     if (this.activeConnections >= this.maxConnections) {
@@ -192,7 +213,7 @@ export class SshHoneypot {
 
       session.on("shell", (acceptShell) => {
         const stream = acceptShell();
-        stream.write(`Welcome to Ubuntu 22.04.3 LTS\r\n\r\n${prompt}`);
+        stream.write(`${FAKE_MOTD}\r\n\r\n${prompt}`);
         let line = "";
         stream.on("data", (chunk: Buffer) => {
           for (const ch of chunk.toString("utf8")) {
@@ -206,7 +227,7 @@ export class SshHoneypot {
                 return;
               }
               capture(line);
-              stream.write(this.fakeOutput(line) + prompt);
+              stream.write(this.fakeOutput(line, user) + prompt);
               line = "";
               if (transcript.length >= this.maxCommands) {
                 stream.end();
@@ -226,7 +247,7 @@ export class SshHoneypot {
       session.on("exec", (acceptExec, _reject, info) => {
         const stream = acceptExec();
         capture(info.command);
-        stream.write(this.fakeOutput(info.command));
+        stream.write(this.fakeOutput(info.command, user));
         this.emitSession(transcript, clientVersion, user, ip);
         stream.exit(0);
         stream.end();
@@ -234,17 +255,12 @@ export class SshHoneypot {
     });
   }
 
-  /** A plausible-but-empty response to a shell command — enough to keep an attacker typing. */
-  private fakeOutput(command: string): string {
-    const cmd = command.trim().split(/\s+/)[0] ?? "";
-    if (cmd === "") return "";
-    if (cmd === "whoami") return "root\r\n";
-    if (cmd === "id") return "uid=0(root) gid=0(root) groups=0(root)\r\n";
-    if (cmd === "pwd") return "/root\r\n";
-    if (cmd === "uname") return "Linux srv01 5.15.0-91-generic #101-Ubuntu SMP x86_64 GNU/Linux\r\n";
-    if (cmd === "ls" || cmd === "dir") return "\r\n";
-    if (cmd === "cd" || cmd === "export" || cmd === "cat" || cmd === "echo") return "\r\n";
-    return `${cmd}: command not found\r\n`;
+  /**
+   * A plausible-but-inert response to a shell command. Shared with the Telnet
+   * honeypot, which presents the same fiction to the same botnets — see `src/shell.ts`.
+   */
+  private fakeOutput(command: string, user: string | undefined): string {
+    return fakeShellOutput(command, { hostname: this.shellHostname, ...(user !== undefined ? { user } : {}) });
   }
 
   private emittedSessions = new WeakSet<string[]>();

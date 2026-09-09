@@ -148,6 +148,21 @@ export interface WebhookEnforcerOptions {
   maxPerWindow?: number;
   /** Window for `maxPerWindow`, in ms. Default 1000. */
   windowMs?: number;
+  /**
+   * Per-request deadline, in ms. Default 10000 — the same budget, for the same reason,
+   * that `WebhookDispatcher` applies to management webhooks: `fetch` has no useful
+   * timeout of its own (undici's header timeout is measured in minutes), so a WAF
+   * endpoint that accepts the connection and then goes quiet holds the request open
+   * essentially indefinitely.
+   *
+   * Without it the spawn-rate ceiling below did not bound anything real. `maxPerWindow`
+   * caps how many requests are *started* per window; it does not cap how many are in
+   * flight, so against a silently-stalled endpoint every window contributed another 100
+   * hung fetches — sockets, TLS sessions and retained closures accumulating for as long
+   * as the attack ran, on a path an attacker drives directly by crossing the block
+   * threshold from distinct source IPs.
+   */
+  timeoutMs?: number;
   onError?: (error: Error) => void;
 }
 
@@ -158,6 +173,7 @@ export interface WebhookEnforcerOptions {
  */
 export function webhookEnforcer(options: WebhookEnforcerOptions): BlockEnforcer {
   const allow = rateLimiter(options.maxPerWindow ?? 100, options.windowMs ?? 1000);
+  const timeoutMs = options.timeoutMs ?? 10_000;
   return async (ip, blockedUntilEpochMs) => {
     if (!allow()) {
       options.onError?.(new Error(`enforcement rate limit hit — skipping firewall webhook for ${ip} (in-process block still applied)`));
@@ -167,7 +183,7 @@ export function webhookEnforcer(options: WebhookEnforcerOptions): BlockEnforcer 
     const headers: Record<string, string> = { "Content-Type": "application/json", "User-Agent": "hackerpot-firewall", ...options.headers };
     if (options.secret) headers["X-Hackerpot-Signature"] = `sha256=${createHmac("sha256", options.secret).update(body).digest("hex")}`;
     try {
-      const res = await fetch(options.url, { method: "POST", headers, body });
+      const res = await fetch(options.url, { method: "POST", headers, body, signal: AbortSignal.timeout(timeoutMs) });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
     } catch (err) {
       options.onError?.(err as Error);

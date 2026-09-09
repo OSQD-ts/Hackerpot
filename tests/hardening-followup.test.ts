@@ -49,11 +49,22 @@ describe("the template-injection signature is linear, not a CPU amplifier", () =
   });
 
   it("scales linearly, not quadratically, with payload length", () => {
+    // Both ends are measured with `fastestMs`, for the reason its own docstring gives:
+    // a single sample measures the machine as much as the regex. This test used one
+    // sample per end and divided them, which compounds the problem — one preempted
+    // `large` sample against a fixed ratio bound is enough to fail a run with nothing
+    // wrong, and it did, intermittently, under full-suite parallelism. Measured on an
+    // idle machine the ratio is a stable ~7.6x; the bound of 24 still leaves the old
+    // quadratic behaviour (~64x) nowhere to hide.
+    //
+    // A flaky guard in a security suite is worse than no guard: it teaches whoever sees
+    // it to rerun rather than look, which is exactly how a real archive data-loss bug in
+    // this repository stayed hidden behind an "intermittent" failure.
     const cost = (n: number): number => {
       const payload = "{{".repeat(n);
-      const started = process.hrtime.bigint();
-      for (let i = 0; i < 20; i += 1) detector.inspect(ctxFor(payload));
-      return Number(process.hrtime.bigint() - started) / 1e6;
+      return fastestMs(() => {
+        for (let i = 0; i < 20; i += 1) detector.inspect(ctxFor(payload));
+      });
     };
     cost(500); // warm up the JIT so the comparison is about the regex, not compilation
     const small = Math.max(cost(1000), 0.1);

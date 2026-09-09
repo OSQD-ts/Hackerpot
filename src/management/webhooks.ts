@@ -1,4 +1,5 @@
 import { createHmac } from "node:crypto";
+import { renderAlert } from "./alerts.js";
 import type { IncidentBroker } from "./broker.js";
 import type { Incident, WebhookConfig } from "./types.js";
 
@@ -122,9 +123,10 @@ export class WebhookDispatcher {
   }
 
   private async deliver(hook: WebhookConfig, incident: Incident): Promise<void> {
-    // Optionally strip the attacker-controlled body before it reaches a rendering client.
-    const payloadIncident = hook.omitBody && incident.body !== undefined ? { ...incident, body: undefined } : incident;
-    const body = JSON.stringify({ type: "incident", incident: payloadIncident });
+    // The renderer owns both the payload shape and the escaping the destination needs:
+    // native incident JSON for your own receiver, an escaped and mention-neutered
+    // message for a chat platform. It also decides the `omitBody` default per format.
+    const { body } = renderAlert(hook.format ?? "hackerpot", incident, hook.omitBody !== undefined ? { omitBody: hook.omitBody } : {});
     const headers: Record<string, string> = {
       "Content-Type": "application/json",
       "User-Agent": "hackerpot-webhook",

@@ -74,6 +74,23 @@ export interface SshHoneypotOptions {
   dropAboveScore?: number;
   /** Cap on simultaneous open connections, so a flood can't exhaust our sockets. Default 256. */
   maxConnections?: number;
+  /**
+   * Reports whether a source IP is allowlisted. Wired to the engine's allowlist by the
+   * standalone builder; omit it for no exemption.
+   *
+   * The HTTP front ends have always consulted the allowlist, and `[allowlist] ips` is
+   * documented as exempting a source from **all** detection — "never scored, never
+   * blocked, no incident recorded". The protocol emulators did not consult it, so an
+   * allowlisted host that touched one was scored, stored, and published on `/ioc.txt`,
+   * which peer honeypots ingest and block. An uptime checker or an internal scanner —
+   * exactly what an operator allowlists — could therefore be propagated into a
+   * fleet-wide blocklist by the very instance that was told to exempt it.
+   *
+   * Passed as a predicate rather than an `IpAllowlist` so a SIGHUP that reloads the
+   * allowlist is honoured live: these listeners are not rebuilt on reload, so a
+   * captured instance would go stale.
+   */
+  isAllowlisted?: (ip: string) => boolean;
   /** Hard cap on how long one connection may stay open, in ms — bounds a slow connection-hold DoS. Default 120000. */
   maxSessionMs?: number;
 }

@@ -51,6 +51,12 @@ import { SmtpHoneypot } from "../smtp/index.js";
 import type { SmtpHoneypotOptions } from "../smtp/index.js";
 import { SshHoneypot } from "../ssh/index.js";
 import type { SshHoneypotOptions } from "../ssh/index.js";
+import { FtpHoneypot } from "../ftp/index.js";
+import type { FtpHoneypotOptions } from "../ftp/index.js";
+import { TelnetHoneypot } from "../telnet/index.js";
+import type { TelnetHoneypotOptions } from "../telnet/index.js";
+import { SyslogSink } from "../syslog.js";
+import type { SyslogSinkOptions } from "../syslog.js";
 import { ConfigError } from "./reader.js";
 import { CompositeStore, ElasticStore, FileStore, MemoryStore, RedisStore } from "../stores/index.js";
 import type { HitStore, HoneypotConfig, HoneypotHit } from "../types.js";
@@ -140,7 +146,24 @@ export function createStore(config: HackerpotConfig, onError?: (error: Error) =>
 
   if (config.store.redis.enabled) {
     const settings = config.store.redis;
-    redis = new Redis(settings.url, { lazyConnect: false, maxRetriesPerRequest: null });
+    // Bounded failure, not an unbounded wait. `maxRetriesPerRequest: null` — ioredis's
+    // "queue the command and retry until the server comes back" mode — meant that when
+    // Redis went down, `scoreFor()` never settled. That call is on the **request path**:
+    // the engine awaits it for every request, and `HoneypotEngine.safeScore` wraps it in
+    // a try/catch precisely so a flaky store degrades to a score of 0 rather than
+    // failing the request. A promise that never settles never reaches that catch, so
+    // the designed degradation could not happen: instead every request hung, ioredis's
+    // offline queue grew at the attacker's chosen rate, and in middleware mode the host
+    // application hung along with it. A dead logging backend must cost us the log, not
+    // the service.
+    //
+    // `commandTimeout` covers the other half — a server that holds the connection open
+    // and stops answering, which retry counting alone never notices.
+    redis = new Redis(settings.url, {
+      lazyConnect: false,
+      maxRetriesPerRequest: settings.maxRetriesPerRequest > 0 ? settings.maxRetriesPerRequest : null,
+      ...(settings.commandTimeoutMs > 0 ? { commandTimeout: settings.commandTimeoutMs } : {}),
+    });
     const options: ConstructorParameters<typeof RedisStore>[0] = { client: redis, keyPrefix: settings.keyPrefix, maxHits: settings.maxHits };
     if (settings.scoreTtlSeconds > 0) options.scoreTtlSeconds = settings.scoreTtlSeconds;
     backends.push(new RedisStore(options));
@@ -149,6 +172,7 @@ export function createStore(config: HackerpotConfig, onError?: (error: Error) =>
   if (config.store.elastic.enabled) {
     const settings = config.store.elastic;
     const options: ConstructorParameters<typeof ElasticStore>[0] = { node: settings.node, index: settings.index, maxHits: settings.maxHits, refresh: settings.refresh };
+    if (settings.timeoutMs > 0) options.timeoutMs = settings.timeoutMs;
     if (settings.apiKey) options.apiKey = settings.apiKey;
     if (settings.username) {
       options.username = settings.username;
@@ -278,7 +302,7 @@ function withIngestTarget(config: HackerpotConfig, local: Blocklist, describe: s
   };
 }
 
-export function createPortScanSentinel(config: HackerpotConfig, onEvent: (event: PortScanEvent) => void): PortScanSentinel | undefined {
+export function createPortScanSentinel(config: HackerpotConfig, onEvent: (event: PortScanEvent) => void, isAllowlisted?: (ip: string) => boolean): PortScanSentinel | undefined {
   const settings = config.portScan;
   if (!settings.enabled || settings.ports.length === 0) return undefined;
   const options: PortScanSentinelOptions = {
@@ -290,6 +314,7 @@ export function createPortScanSentinel(config: HackerpotConfig, onEvent: (event:
     onEvent,
   };
   if (settings.banner) options.banner = settings.banner;
+  if (isAllowlisted) options.isAllowlisted = isAllowlisted;
   return new PortScanSentinel(options);
 }
 
@@ -299,7 +324,7 @@ export function createPortScanSentinel(config: HackerpotConfig, onEvent: (event:
  * mail-side incidents accumulate against the same per-IP score and surface in the
  * management API alongside HTTP hits.
  */
-export function createSmtpHoneypot(config: HackerpotConfig, store: HitStore, onHit: (hit: HoneypotHit) => void, onError?: (error: unknown) => void): SmtpHoneypot | undefined {
+export function createSmtpHoneypot(config: HackerpotConfig, store: HitStore, onHit: (hit: HoneypotHit) => void, onError?: (error: unknown) => void, isAllowlisted?: (ip: string) => boolean): SmtpHoneypot | undefined {
   const settings = config.smtp;
   if (!settings.enabled) return undefined;
   const options: SmtpHoneypotOptions = {
@@ -309,6 +334,7 @@ export function createSmtpHoneypot(config: HackerpotConfig, store: HitStore, onH
     hostname: settings.hostname,
     localDomains: settings.localDomains,
     maxConnections: settings.maxConnections,
+    maxSessionMs: settings.maxSessionMs,
     captureBody: settings.captureBody,
     maxBodyChars: settings.maxBodyChars,
     store,
@@ -316,6 +342,7 @@ export function createSmtpHoneypot(config: HackerpotConfig, store: HitStore, onH
   };
   if (onError) options.onError = onError;
   if (settings.dropAboveScore > 0) options.dropAboveScore = settings.dropAboveScore;
+  if (isAllowlisted) options.isAllowlisted = isAllowlisted;
   return new SmtpHoneypot(options);
 }
 
@@ -327,7 +354,7 @@ export function createSmtpHoneypot(config: HackerpotConfig, store: HitStore, onH
  * Host keys are read here rather than at parse time, so validating a config never
  * touches private key material on disk.
  */
-export function createSshHoneypot(config: HackerpotConfig, store: HitStore, onHit: (hit: HoneypotHit) => void, onError?: (error: unknown) => void): SshHoneypot | undefined {
+export function createSshHoneypot(config: HackerpotConfig, store: HitStore, onHit: (hit: HoneypotHit) => void, onError?: (error: unknown) => void, isAllowlisted?: (ip: string) => boolean): SshHoneypot | undefined {
   const settings = config.ssh;
   if (!settings.enabled) return undefined;
 
@@ -360,7 +387,90 @@ export function createSshHoneypot(config: HackerpotConfig, store: HitStore, onHi
   if (hostKeys.length > 0) options.hostKeys = hostKeys;
   if (settings.dropAboveScore > 0) options.dropAboveScore = settings.dropAboveScore;
   if (onError) options.onError = onError;
+  if (isAllowlisted) options.isAllowlisted = isAllowlisted;
   return new SshHoneypot(options);
+}
+
+/**
+ * The FTP honeypot, if the config turns it on. Shares the store with every other
+ * listener, so an IP brute-forcing FTP credentials stacks onto the same score it is
+ * accruing over HTTP.
+ */
+export function createFtpHoneypot(config: HackerpotConfig, store: HitStore, onHit: (hit: HoneypotHit) => void, onError?: (error: unknown) => void, isAllowlisted?: (ip: string) => boolean): FtpHoneypot | undefined {
+  const settings = config.ftp;
+  if (!settings.enabled) return undefined;
+  const options: FtpHoneypotOptions = {
+    port: settings.port,
+    host: settings.host,
+    banner: settings.banner,
+    maxAuthAttempts: settings.maxAuthAttempts,
+    maxConnections: settings.maxConnections,
+    interactive: settings.interactive,
+    acceptOnAttempt: settings.acceptOnAttempt,
+    maxCommands: settings.maxCommands,
+    maxCommandLength: settings.maxCommandLength,
+    maxSessionMs: settings.maxSessionMs,
+    store,
+    onHit,
+  };
+  if (onError) options.onError = onError;
+  if (settings.dropAboveScore > 0) options.dropAboveScore = settings.dropAboveScore;
+  if (isAllowlisted) options.isAllowlisted = isAllowlisted;
+  return new FtpHoneypot(options);
+}
+
+/**
+ * The Telnet honeypot, if the config turns it on. The highest-volume of the protocol
+ * listeners in practice — port 23 is swept continuously by IoT botnets — and it
+ * shares the store like the rest.
+ */
+export function createTelnetHoneypot(config: HackerpotConfig, store: HitStore, onHit: (hit: HoneypotHit) => void, onError?: (error: unknown) => void, isAllowlisted?: (ip: string) => boolean): TelnetHoneypot | undefined {
+  const settings = config.telnet;
+  if (!settings.enabled) return undefined;
+  const options: TelnetHoneypotOptions = {
+    port: settings.port,
+    host: settings.host,
+    banner: settings.banner,
+    hostname: settings.hostname,
+    maxAuthAttempts: settings.maxAuthAttempts,
+    maxConnections: settings.maxConnections,
+    interactive: settings.interactive,
+    acceptOnAttempt: settings.acceptOnAttempt,
+    maxCommands: settings.maxCommands,
+    maxCommandLength: settings.maxCommandLength,
+    maxSessionMs: settings.maxSessionMs,
+    store,
+    onHit,
+  };
+  if (onError) options.onError = onError;
+  if (settings.dropAboveScore > 0) options.dropAboveScore = settings.dropAboveScore;
+  if (isAllowlisted) options.isAllowlisted = isAllowlisted;
+  return new TelnetHoneypot(options);
+}
+
+/**
+ * The syslog forwarder, if the config turns it on.
+ *
+ * Deliberately independent of the management API: shipping to a SIEM should not
+ * require also standing up a REST service over the captured data.
+ */
+export function createSyslogSink(config: HackerpotConfig, onError?: (error: Error) => void): SyslogSink | undefined {
+  const settings = config.syslog;
+  if (!settings.enabled) return undefined;
+  const options: SyslogSinkOptions = {
+    host: settings.host,
+    port: settings.port,
+    protocol: settings.protocol,
+    format: settings.format,
+    facility: settings.facility,
+    severity: settings.severity,
+    hostname: settings.hostname,
+    minScore: settings.minScore,
+    maxBytes: settings.maxBytes,
+    includeBody: settings.includeBody,
+  };
+  if (onError) options.onError = onError;
+  return new SyslogSink(options);
 }
 
 /**

@@ -28,6 +28,20 @@ services:
       # Share scores across replicas + keep a durable audit log.
       REDIS_URL: "redis://redis:6379"
       REDIS_SCORE_TTL: "3600"
+      # Retention here is a MEMORY bound, not a preference. The Redis hit log is one
+      # list holding whole incidents, captured request body included, so its worst case
+      # is max_hits x the 64 KB body cap: the 10000 default is ~630 MB, against the
+      # 256 MB this compose file gives the redis container. An attacker reaches that by
+      # doing the one thing a honeypot invites — sending flagged requests with large
+      # bodies — and the container is then OOM-killed and restarted empty, losing every
+      # accrued score and every active block. That is an attacker-driven reset of the
+      # state blocking depends on, which is a worse outcome than keeping fewer hits.
+      #
+      # A maxmemory-policy does not solve this: the hit log is a SINGLE key, so LRU
+      # eviction would discard the small score and block keys first and leave the list
+      # that is actually growing untouched. 1500 x 64 KB is ~95 MB, which fits with room
+      # for the score and block keys beside it. Raise both together, never just this.
+      REDIS_MAX_HITS: "1500"
       HIT_LOG: "/data/hits.jsonl"
       # Seed the exact fake credentials you planted in decoys (comma-separated).
       HONEYTOKENS: "AKIA_HACKERPOT_HONEYTOKEN_DEMO"

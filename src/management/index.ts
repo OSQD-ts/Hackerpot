@@ -2,6 +2,8 @@ export { ManagementServer } from "./server.js";
 export type { ManagementServerOptions } from "./server.js";
 export { IncidentBroker } from "./broker.js";
 export { WebhookDispatcher } from "./webhooks.js";
+export { escapeDiscord, escapeSlack, renderAlert } from "./alerts.js";
+export type { AlertFormat, RenderedAlert } from "./alerts.js";
 export type { WebhookDispatcherOptions } from "./webhooks.js";
 export { extractApiKey, isAuthorized } from "./auth.js";
 export { listIncidents, getIncident, computeStats, computeIoc, computeSessions, computeActors } from "./rest.js";

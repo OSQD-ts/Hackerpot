@@ -1,5 +1,6 @@
 import { Redis, type RedisOptions } from "ioredis";
 import { applyQuery } from "./query.js";
+import { usableScore } from "./scores.js";
 import type { HitQuery, HitStore, HoneypotHit } from "../types.js";
 
 export interface RedisStoreOptions {
@@ -107,8 +108,9 @@ export class RedisStore implements HitStore {
   }
 
   async scoreFor(ip: string): Promise<number> {
-    const value = await this.redis.get(this.scoreKey(ip));
-    return value ? Number(value) : 0;
+    // Guarded: an unusable value here silently disables blocking for this IP rather
+    // than degrading it — see `usableScore`.
+    return usableScore(await this.redis.get(this.scoreKey(ip)));
   }
 
   /** Close the connection — only if this store created it. */

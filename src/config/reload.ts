@@ -25,6 +25,11 @@ const RESTART_REQUIRED: Array<{ key: string; select: (c: HackerpotConfig) => unk
   { key: "port-scan", select: (c) => c.portScan, why: "the sentinel ports are already bound" },
   { key: "smtp", select: (c) => c.smtp, why: "the SMTP listener is already bound" },
   { key: "ssh", select: (c) => c.ssh, why: "the SSH listener is already bound" },
+  { key: "ftp", select: (c) => c.ftp, why: "the FTP listener is already bound" },
+  { key: "telnet", select: (c) => c.telnet, why: "the Telnet listener is already bound" },
+  // The transport (a UDP socket, or a TCP connection with its own backoff state) is
+  // opened at startup, and a rebuild would drop whatever the reconnect loop is holding.
+  { key: "syslog", select: (c) => c.syslog, why: "the syslog transport is opened at startup" },
   { key: "management", select: (c) => c.management, why: "the management listener is already bound" },
   // Turning ingest on/off or flipping enforce changes how the blocklist itself is
   // composed (whether a non-enforcing feed child exists at all), which is decided

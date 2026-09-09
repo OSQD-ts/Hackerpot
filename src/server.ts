@@ -92,13 +92,25 @@ export class HoneypotServer {
     return this.server?.address() ?? null;
   }
 
-  /** Stops the listener. Resolves immediately (rather than hanging) if it never started. */
+  /**
+   * Stops the listener. Resolves immediately (rather than hanging) if it never started.
+   *
+   * `server.close()` alone stops accepting but then *waits for every live connection to
+   * end*, and on an internet-facing honeypot who holds a connection open is the
+   * attacker's choice: a half-sent request header keeps its socket in-flight until
+   * `headersTimeout`/`requestTimeout` fires, so a shutdown stalls for up to 30 seconds
+   * per such client — a deploy, a restart, or a test teardown hanging on traffic aimed
+   * at us. Node closes *idle* keep-alive sockets on its own; these are the ones mid-
+   * request, which it does not. `closeAllConnections()` ends them: we are shutting down,
+   * so an in-flight probe has no answer coming either way.
+   */
   close(): Promise<void> {
     const server = this.server;
     if (!server) return Promise.resolve();
     this.server = undefined;
     return new Promise((resolve, reject) => {
       server.close((err) => (err ? reject(err) : resolve()));
+      server.closeAllConnections();
     });
   }
 }

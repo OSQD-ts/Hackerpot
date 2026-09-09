@@ -31,6 +31,12 @@ export interface PortScanSentinelOptions {
    * growth surface — see `remember()`.
    */
   maxTrackedIps?: number;
+  /**
+   * Reports whether a source IP is allowlisted, so an exempt host is never remembered
+   * or reported. See the emulators' `isAllowlisted` for why this is a predicate rather
+   * than an `IpAllowlist`: the sentinel is not rebuilt on a SIGHUP reload.
+   */
+  isAllowlisted?: (ip: string) => boolean;
   /** How long an IP's touched-port set is remembered, in ms. Default 3600000 (1h). */
   retentionMs?: number;
   onEvent?: (event: PortScanEvent) => void | Promise<void>;
@@ -44,6 +50,8 @@ export interface PortScanSentinelOptions {
  */
 export class PortScanSentinel {
   private servers: net.Server[] = [];
+  /** Live probe connections, so `close()` can end them instead of waiting on them. */
+  private readonly sockets = new Set<net.Socket>();
   private readonly seen = new Map<string, { ports: Set<number>; at: number }>();
   private readonly options: PortScanSentinelOptions;
   private readonly maxTrackedIps: number;
@@ -102,7 +110,16 @@ export class PortScanSentinel {
           new Promise<void>((resolve, reject) => {
             const server = net.createServer((socket) => {
               const ip = socket.remoteAddress ?? "unknown";
+              // Allowlisted sources are exempt from all detection: not remembered, not
+              // reported. A TCP health check from an exempt monitor is the ordinary
+              // reason a sentinel port sees a connection it should ignore.
+              if (this.options.isAllowlisted?.(ip)) {
+                socket.destroy();
+                return;
+              }
               const ports = this.remember(ip, port, Date.now());
+              this.sockets.add(socket);
+              socket.once("close", () => this.sockets.delete(socket));
 
               let banner = "";
               // Decode incrementally (a probe banner can be any bytes, and a multi-byte
@@ -149,7 +166,18 @@ export class PortScanSentinel {
     );
   }
 
+  /**
+   * Stops every sentinel listener and ends any probe connection still open.
+   *
+   * `server.close()` waits for live connections, and the only per-socket bound here is
+   * a 5s *idle* timeout — which every byte resets. A probe writing one byte a second
+   * therefore held shutdown open forever, unlike the other emulators, which at least
+   * cap a session's total lifetime. Sentinel ports exist to be connected to by hostile
+   * traffic, so that is not a rare condition; the sockets are destroyed instead.
+   */
   async close(): Promise<void> {
+    for (const socket of this.sockets) socket.destroy();
+    this.sockets.clear();
     await Promise.all(this.servers.map((server) => new Promise<void>((resolve) => server.close(() => resolve()))));
     this.servers = [];
   }

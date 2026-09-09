@@ -50,7 +50,9 @@ export class ManagementServer {
 
   constructor(options: ManagementServerOptions) {
     this.store = options.store;
-    this.broker = options.broker ?? new IncidentBroker();
+    // A broker we create reports a misbehaving subscriber on the server's own error
+    // channel; a broker passed in keeps whatever channel its owner gave it.
+    this.broker = options.broker ?? new IncidentBroker((err) => options.onError?.(err as Error));
     this.apiKeys = options.apiKeys ?? [];
     this.host = options.host ?? "127.0.0.1";
     this.port = options.port ?? 9500;
@@ -135,6 +137,30 @@ export class ManagementServer {
     }
   }
 
+  /**
+   * Parses a request target into a `URL`, returning undefined when it will not parse.
+   *
+   * The base is the fixed literal `http://management.invalid` rather than the client's
+   * `Host` header. Building the base out of that header made an attacker-supplied string
+   * part of a URL the constructor has to accept — and `Host: ]` is not a parseable
+   * authority, so `new URL()` threw `TypeError: Invalid URL`. On the HTTP path that
+   * surfaced as a spurious 500; on the **upgrade** path, which runs inside an event
+   * handler with no `try`, it was an uncaughtException that killed the process. One
+   * unauthenticated request — the throw happens before the API-key check — took down
+   * the management server and, in standalone mode, the honeypot sharing the process.
+   *
+   * Nothing here routes on the host: every endpoint dispatches on pathname and query
+   * alone. So the header is simply not an input to this, and a request target that is
+   * itself malformed is now reported rather than thrown.
+   */
+  private static parseUrl(req: http.IncomingMessage): URL | undefined {
+    try {
+      return new URL(req.url ?? "/", "http://management.invalid");
+    } catch {
+      return undefined;
+    }
+  }
+
   private sendJson(res: http.ServerResponse, status: number, body: unknown): void {
     // The catch-all in `handleHttp` calls this after a handler has already begun
     // writing (`/metrics` streams its body before it can fail). Setting a status or a
@@ -153,7 +179,11 @@ export class ManagementServer {
 
   private async handleHttp(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
     try {
-      const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
+      const url = ManagementServer.parseUrl(req);
+      if (!url) {
+        this.sendJson(res, 400, { error: "bad request target" });
+        return;
+      }
       const path = url.pathname;
       const method = req.method ?? "GET";
 
@@ -260,8 +290,8 @@ export class ManagementServer {
   }
 
   private handleUpgrade(req: http.IncomingMessage, socket: Duplex, head: Buffer): void {
-    const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
-    if (url.pathname !== "/stream" || !this.wss) {
+    const url = ManagementServer.parseUrl(req);
+    if (!url || url.pathname !== "/stream" || !this.wss) {
       socket.destroy();
       return;
     }
@@ -305,6 +335,10 @@ export class ManagementServer {
     await new Promise<void>((resolve, reject) => {
       if (!this.server) return resolve();
       this.server.close((err) => (err ? reject(err) : resolve()));
+      // `close()` waits for live connections; a peer mid-request (a half-sent header
+      // line) holds one until `requestTimeout` fires, stalling shutdown by up to 30s.
+      // See `HoneypotServer.close` — same reasoning, same fix.
+      this.server.closeAllConnections();
     });
   }
 }

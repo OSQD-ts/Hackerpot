@@ -31,10 +31,12 @@ npm run attack:all                 # simulate every attack type against it (2nd 
 - [Actor fingerprinting & cross-IP correlation](#actor-fingerprinting--cross-ip-correlation)
 - [Source-IP enrichment](#source-ip-enrichment)
 - [Threat-intel ingest](#threat-intel-ingest-consuming-other-honeypots-ioc-feeds) — consuming other honeypots' IOC feeds
+- [Protocol honeypots](#mail-defense--smtp-honeypot) — SMTP, SSH, FTP, Telnet
 - [Deployment modes](#deployment-modes) — middleware, programmatic, standalone
 - [Configuration reference](#configuration-reference) — the full TOML surface
 - [Environment variables](#environment-variables)
 - [Incidents management API](#incidents-management-api) — REST, WebSocket, webhooks
+- [Alert sinks](#alert-sinks) — Slack, Discord, syslog/SIEM
 - [The dashboard](#the-dashboard)
 - [nginx edge capture](#nginx-edge-capture)
 - [Docker](#docker)
@@ -652,7 +654,25 @@ Same engine underneath; three ways to run it.
 ### 1. Middleware — alongside your existing server
 
 Mount it ahead of your real routes. Anything no detector flags falls through to
-`next()` untouched (body included), so it never disturbs legitimate traffic.
+`next()` untouched, body included — the request stream is never consumed on your
+behalf.
+
+> **Tune the volume detectors before putting this in front of real users.** The
+> per-request detectors are conservative, but `path-bruteforce` and `rate-spike` count
+> *traffic*, and in middleware mode they see every request your app serves — static
+> assets included. A single ordinary page load of a modern SPA is easily 20+ distinct
+> paths, which is past `path-bruteforce`'s default of 15 in 30s: measured against the
+> shipped defaults, one 22-request page load scores a visitor 64, and the default block
+> threshold is 40. Standalone mode does not have this problem — nothing there serves
+> real assets, so many distinct paths genuinely is probing — which is why the defaults
+> are set for it. For middleware, raise `unique_path_threshold` well above your
+> heaviest page, or disable `path-bruteforce` and let the per-request detectors do the
+> work:
+>
+> ```toml
+> [detectors.path-bruteforce]
+> enabled = false           # or: unique_path_threshold = 200
+> ```
 
 ```ts
 import express from "express";
@@ -865,8 +885,11 @@ HACKERPOT_CONFIG=./hackerpot.toml node dist/standalone.js
 | `[port-scan]` | `ports`, `host`, `scan_threshold`, `banner`, `max_tracked_ips`, `retention_ms` (listing any port enables it) |
 | `[smtp]` | the SMTP honeypot — `enabled`, `port`, `host`, `banner`, `hostname`, `local_domains`, `drop_above_score` (see [Mail defense](#mail-defense--smtp-honeypot)) |
 | `[ssh]` | the SSH honeypot — `enabled`, `port`, `host`, `ident`, `max_auth_attempts`, `drop_above_score` (see [SSH honeypot](#ssh-honeypot)) |
+| `[ftp]` | the FTP honeypot — `enabled`, `port`, `host`, `banner`, `max_auth_attempts`, `interactive`, `drop_above_score` (see [FTP honeypot](#ftp-honeypot)) |
+| `[telnet]` | the Telnet honeypot — `enabled`, `port`, `host`, `banner`, `hostname`, `max_auth_attempts`, `interactive`, `drop_above_score` (see [Telnet honeypot](#telnet-honeypot)) |
+| `[syslog]` | forward every incident to a SIEM — `host`, `port`, `protocol`, `format`, `facility`, `severity`, `min_score`, `max_bytes` (see [Alert sinks](#alert-sinks)) |
 | `[management]` | the operator API — see [Incidents management API](#incidents-management-api) |
-| `[[management.webhooks]]` | `url`, `secret`, `headers`, `min_score`, `max_retries`, `timeout_ms`, `max_in_flight`, `dedupe_window_seconds`, `throttle_window_seconds`+`max_per_window`, `omit_body` |
+| `[[management.webhooks]]` | `url`, `format` (`hackerpot`/`slack`/`discord`), `secret`, `headers`, `min_score`, `max_retries`, `timeout_ms`, `max_in_flight`, `dedupe_window_seconds`, `throttle_window_seconds`+`max_per_window`, `omit_body` |
 
 ### A worked example
 
@@ -1052,8 +1075,10 @@ so the receiver can verify authenticity. `min_score` only delivers incidents at 
 above a cumulative score; failed deliveries retry with exponential backoff.
 
 **Danger alerts to a chat/paging endpoint.** A webhook with a high `min_score` *is* an
-alert channel — it fires only when an IP crosses into confirmed-attacker territory. Three
-options make one safe to point at Slack/Teams/PagerDuty:
+alert channel — it fires only when an IP crosses into confirmed-attacker territory. For
+Slack and Discord specifically, set `format` and hackerpot renders a readable, escaped
+message rather than raw JSON — see [Alert sinks](#alert-sinks). Whatever the destination,
+three options make one safe to point at a channel somebody is watching:
 
 - `dedupe_window_seconds` — suppress repeat alerts for the same source IP within the window,
   so one noisy attacker is one alert, not hundreds.
@@ -1100,6 +1125,91 @@ function verify(rawBody: string, signatureHeader: string, secret: string): boole
 The `ManagementServer` class is also exported, so you can attach the same API to a
 middleware deployment. Env overrides for the last mile: `MANAGEMENT_API_KEYS`
 (comma-separated), `MANAGEMENT_HOST`, `MANAGEMENT_PORT`.
+
+---
+
+## Alert sinks
+
+An incident feed is only useful if it reaches somebody. Three destinations ship with
+hackerpot, and all three assume every field they carry is hostile — because every field
+is: the request path, the User-Agent, a captured shell command, and the detector `reason`
+strings that quote them back.
+
+### Slack and Discord
+
+Point a webhook at the platform's own incoming-webhook URL and set `format`:
+
+```toml
+[[management.webhooks]]
+url = "https://hooks.slack.com/services/T000/B000/xxxx"
+format = "slack"          # or "discord"; default "hackerpot" = the native incident JSON
+min_score = 20            # only the ones worth interrupting somebody for
+dedupe_window_seconds = 300
+```
+
+This reuses the whole delivery path the native webhook already had — HMAC signing, retries
+with backoff, per-IP de-duplication, throttling, and the in-flight cap — and changes only
+the body. What the rendering adds is the escaping each platform actually needs:
+
+| Risk | What the renderer does |
+| --- | --- |
+| `GET /@everyone` pages your entire Discord server | the text is markdown-escaped **and** the payload carries `allowed_mentions: {parse: []}` — the platform's own guarantee that no mention in the body can resolve |
+| `<!channel>` in a path pings a Slack channel | Slack builds mentions out of angle brackets, so `&`, `<` and `>` are HTML-escaped |
+| a URL in a captured path gets *fetched* by your chat provider, telling the attacker their probe landed | link previews are disabled on both (`unfurl_links`/`unfurl_media` off, Discord's `SUPPRESS_EMBEDS` flag set) |
+| a newline in a captured value forges an extra field in the alert | every value is flattened to one line before it is placed in the message |
+| a huge capture blows the platform's message limit | fields and the whole message are truncated to fit |
+
+`omit_body` **defaults to `true`** for these two formats and `false` for `hackerpot`. The
+request body is raw attacker payload — a serialized exploit, a malware stager, sometimes
+somebody else's data — and a chat client renders it to everyone in the channel. Set
+`omit_body = false` if you genuinely want it.
+
+> Escaping is not a promise that alert text is attacker-*free*. Detector `reason` strings
+> quote slices of the request by design. Render alerts as plain text wherever they land.
+
+### Syslog / SIEM
+
+```toml
+[syslog]
+host = "siem.internal"
+port = 514
+protocol = "udp"          # or "tcp" — reconnects with backoff and reports what it lost
+format = "cef"            # "cef" (SIEM-native) | "json" | "text"
+min_score = 0
+```
+
+This is **deliberately independent of `[management]`**: shipping to your SIEM should not
+also require exposing a REST API over your captured attacker data. Setting `host` turns it
+on. It sits directly on the hit path, so it forwards HTTP incidents and protocol-honeypot
+incidents alike.
+
+Three properties the transport holds, all because it is fed at a rate the attacker chooses:
+
+1. **One message is always one line.** Syslog is line-framed, so a newline inside a
+   captured value would end our record and let whatever follows be read as a separate
+   event — with a source IP of the attacker's choosing, indistinguishable from a real
+   detection. The formatters escape; the transport strips again anyway.
+2. **Messages are bounded.** RFC 3164 only obliges a receiver to accept 1024 bytes, and a
+   UDP datagram past the path MTU is silently lost, so a long capture is truncated rather
+   than sent into a hole. Truncation is byte-aware and never splits a UTF-8 character.
+3. **Drop, never queue.** When a TCP collector is down, messages are discarded and the
+   outage is reported **once** — not once per lost message. A queue in front of an
+   unavailable consumer is just unbounded memory growth moved somewhere less visible.
+
+The library form takes a broker or a direct feed:
+
+```ts
+import { SyslogSink } from "hackerpot";
+
+const sink = new SyslogSink({ host: "siem.internal", protocol: "tcp", minScore: 20 });
+sink.start();                          // open the TCP connection now, not on the first hit
+sink.attach(management.broker);        // or call sink.send(hit) from your own onHit
+```
+
+`start()` matters for TCP: without it the connection is opened by the first `send()`,
+which is then dropped for want of a ready socket — so the first thing an attacker does
+becomes the one event that never reaches the SIEM. The standalone service calls it
+before any listener binds. It is a no-op for UDP.
 
 ---
 
@@ -1482,6 +1592,182 @@ host_keys = []           # inline PEM strings
 
 ---
 
+## FTP honeypot
+
+`FtpHoneypot` is a **low-interaction FTP listener**. FTP is old, is still swept
+constantly — it turns up on appliances nobody administers — and it carries its
+credentials in the clear, which is exactly what makes a fake one pay. It speaks enough
+of RFC 959 to keep a client working through its script, and reports the things that
+only ever come from abuse:
+
+| Finding (detector id) | What it catches |
+| --- | --- |
+| `ftp-auth-bruteforce` | credential guessing via `USER`/`PASS` — captures the pair in plaintext, answers `530` |
+| `ftp-anonymous-login` | an `anonymous`/`ftp`/`guest` login attempt — the oldest reconnaissance question there is |
+| `ftp-bounce` | a `PORT`/`EPRT` naming an address that is **not the client's** — asking us to open a connection to a third party |
+| `ftp-traversal` | `../`, an encoded equivalent, a null byte or an absolute system path in any command that takes a filename |
+| `ftp-command` | in interactive mode, each command issued after the login was granted |
+| `ftp-scan` | a connection that takes the banner and leaves without offering a credential |
+
+**The FTP bounce is the one worth understanding.** `PORT h1,h2,h3,h4,p1,p2` tells a real
+server where to open the data connection — and nothing in the protocol says that address
+has to be the client's. Historically that let an attacker use an FTP server to port-scan
+or attack a third party from *its* address. hackerpot parses the command, compares the
+address to the peer's, reports the mismatch, and **never opens the connection**; there is
+no code path from that command to a `connect()`.
+
+Detection does not wait for a login. In the default (non-interactive) configuration every
+post-auth command is refused with `530`, so gating the bounce and traversal findings on a
+successful login would mean never reporting either one — the ask is the evidence, not
+whether we honoured it.
+
+**No data connection is ever opened in either direction**, no file is served or accepted,
+and there is no filesystem behind the fake directory. Incidents map into the same
+`HoneypotHit` shape as HTTP hits (`method: "FTP"`), so they share per-IP scoring and appear
+in the [management API](#incidents-management-api) and [dashboard](#the-dashboard).
+
+```ts
+import { FtpHoneypot, MemoryStore } from "hackerpot";
+
+const store = new MemoryStore(); // share with your HoneypotServer for unified scoring
+const ftp = new FtpHoneypot({
+  port: 2121,                    // 21 needs privileges; 2121 is the usual stand-in
+  banner: "(vsFTPd 3.0.3)",
+  store,
+  onHit: (hit) => console.warn("[ftp]", hit.detections[0]?.detectorId, hit.path),
+  dropAboveScore: 40,
+});
+await ftp.listen();
+```
+
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `port` | — | TCP port to listen on |
+| `host` | all interfaces | bind address |
+| `banner` | `"(vsFTPd 3.0.3)"` | server name in the `220` greeting |
+| `maxAuthAttempts` | `6` | close the connection after this many credential attempts |
+| `store` | — | share the honeypot's store so FTP incidents contribute to per-IP scoring |
+| `onHit` / `onIncident` | — | `HoneypotHit` callback / raw `FtpIncident` callback |
+| `dropAboveScore` | — | refuse + drop connections from IPs at or above this cumulative score (needs `store`) |
+| `interactive` | `false` | accept the login and capture the commands issued against the fake tree |
+| `acceptOnAttempt` | `1` | in interactive mode, accept on this attempt number |
+| `maxCommands` | `100` | max commands captured per session before it's closed |
+| `maxCommandLength` | `512` | max characters retained per command |
+| `maxConnections` | `256` | cap on simultaneous open connections |
+| `maxSessionMs` | `120000` | hard lifetime for one connection, bounding a slow connection-hold |
+
+`npm run dev` starts it on `:2121`; drive it with `npm run attack:ftp`. For the standalone
+service:
+
+```toml
+[ftp]
+enabled = true
+port = 2121              # 21 needs privileges
+host = "0.0.0.0"
+banner = "(vsFTPd 3.0.3)"
+max_auth_attempts = 6
+drop_above_score = 0     # refuse IPs at/above this cumulative score (0 = never)
+interactive = false      # accept the login and record what they do with it
+```
+
+---
+
+## Telnet honeypot
+
+`TelnetHoneypot` is the highest-yield trap in this project, for an unglamorous reason:
+Telnet has no transport security, so credentials arrive in the clear, and the IoT botnet
+families descended from Mirai sweep ports 23 and 2323 continuously with a hard-coded list
+of vendor defaults. What you collect is **the live default-credential list being sprayed
+at your netblock** — and, in interactive mode, the staging URL the dropper reaches for the
+moment it believes it is in.
+
+| Finding (detector id) | What it catches |
+| --- | --- |
+| `telnet-auth-bruteforce` | a `login:`/`Password:` pair, captured in the clear |
+| `telnet-command` | in interactive mode, each command run in the fake shell |
+| `telnet-session` | the full ordered transcript, emitted when the session closes |
+| `telnet-scan` | a connection that takes the banner and leaves without submitting a password |
+
+Each failed login **re-prompts**, exactly as `telnetd` does — so a botnet working through
+its list hands over the whole list rather than one pair.
+
+### Option negotiation is handled, not skipped
+
+Telnet interleaves control commands with the data stream: an `IAC` byte (`0xFF`) starts a
+two- or three-byte command, or a variable-length sub-negotiation. A honeypot that reads the
+stream as plain text ends up with `0xFF` sequences embedded in the credentials it captured.
+`TelnetCodec` (exported, and tested on its own) strips and answers them, holding two
+properties that matter under hostile input:
+
+- **Resumable across chunks** — an attacker can send one byte at a time; the parser state
+  survives between reads, so a split command is still parsed as one command.
+- **Bounded replies** — negotiation is symmetric, and a hostile peer can answer each of our
+  refusals with another request forever. Past a cap we stop replying and keep reading. A
+  honeypot that can be made to generate unbounded traffic is an amplifier.
+
+Because the honeypot announces `WILL ECHO`, it controls the echo — which is what lets it
+echo the username keystroke by keystroke and **withhold the password**, like a real login.
+
+**Nothing executes.** The fake shell is a scripted stream shared with the SSH honeypot
+([`src/shell.ts`](src/shell.ts)) — the same botnets run the same recon down either pipe, so
+one implementation means one place to make the illusion better. It answers the BusyBox
+applet probe (`/bin/busybox <APPLET>` → `applet not found`) that IoT droppers use to
+fingerprint a live device, and it fetches nothing for a `wget` or `curl`: the URL has
+already been captured, which is the entire value.
+
+```ts
+import { TelnetHoneypot, MemoryStore } from "hackerpot";
+
+const store = new MemoryStore();
+const telnet = new TelnetHoneypot({
+  port: 2323,                    // 23 needs privileges; 2323 is itself heavily swept
+  banner: "Ubuntu 22.04.3 LTS",
+  hostname: "srv01",
+  interactive: true,             // capture what they run once they think they are in
+  store,
+  onHit: (hit) => console.warn("[telnet]", hit.detections[0]?.detectorId, hit.body),
+});
+await telnet.listen();
+```
+
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `port` | — | TCP port to listen on |
+| `host` | all interfaces | bind address |
+| `banner` | the fake MOTD | printed before the login prompt; a device-shaped one draws the sweeps |
+| `hostname` | `"srv01"` | hostname in the `login:` and shell prompts |
+| `maxAuthAttempts` | `3` | what `telnetd` allows; each failure re-prompts |
+| `store` | — | share the honeypot's store so Telnet incidents contribute to per-IP scoring |
+| `onHit` / `onIncident` | — | `HoneypotHit` callback / raw `TelnetIncident` callback |
+| `dropAboveScore` | — | refuse connections from IPs at or above this cumulative score (needs `store`) |
+| `interactive` | `false` | accept the login and drop them into the fake shell |
+| `acceptOnAttempt` | `1` | in interactive mode, accept on this attempt number |
+| `maxCommands` | `100` | max commands captured per session |
+| `maxCommandLength` | `4096` | max characters retained per line |
+| `maxConnections` | `256` | cap on simultaneous open connections |
+| `maxSessionMs` | `120000` | hard lifetime for one connection |
+
+`npm run dev` starts it on `:2323` in interactive mode; drive it with
+`npm run attack:telnet`, which replays a Mirai-style default-credential sweep followed by
+the BusyBox fingerprint and a payload fetch. For the standalone service:
+
+```toml
+[telnet]
+enabled = true
+port = 2323              # 23 needs privileges
+host = "0.0.0.0"
+banner = "Ubuntu 22.04.3 LTS"
+hostname = "srv01"
+max_auth_attempts = 3
+interactive = false      # the post-login capture is the reason to run this
+```
+
+> Captured commands are attacker-controlled text that lands in your logs, your store, and
+> any webhook you forward to. Length is capped, and the text log escapes control characters
+> so a captured command cannot forge log lines.
+
+---
+
 ## Docker
 
 The image runs the standalone service ([src/standalone.ts](src/standalone.ts)) — a
@@ -1667,8 +1953,13 @@ src/
   responses/         one file per response action + policy + defaultResponseActions()
   stores/            HitStore implementations: memory, file, redis, composite
   management/        incidents API: REST + WebSocket feed + webhooks, API-key auth
+                     (alerts.ts renders the Slack/Discord webhook formats)
   smtp/              low-interaction SMTP honeypot (mail defense)
   ssh/               medium-interaction SSH honeypot (credential capture, via ssh2)
+  ftp/               low-interaction FTP honeypot (credentials, bounce, traversal)
+  telnet/            medium-interaction Telnet honeypot (+ codec.ts: IAC negotiation)
+  shell.ts           the scripted fake shell SSH and Telnet share — nothing executes
+  syslog.ts          syslog/SIEM forwarding, independent of the management API
 Dockerfile           multi-stage image running src/standalone.ts
 docker-compose.yml   honeypot + redis + hit-log volume
 hackerpot.toml       default standalone config — every built-in default, annotated

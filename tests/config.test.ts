@@ -514,11 +514,15 @@ describe("building from config", () => {
     const engine = new HoneypotEngine({ detectors: buildDetectors(config) });
     const spoofing = { host: "x", "user-agent": "Mozilla/5.0 (X11; Linux x86_64) Chrome/120.0", accept: "*/*", "accept-language": "en", "accept-encoding": "gzip" };
 
-    // Two different IPs, same fingerprint, both probing a decoy — the second is
-    // recognized as the same actor rotating addresses.
+    // Two different IPs, same fingerprint, both probing a decoy. Each is counted only
+    // once it has scored on its own merits, so the correlation lands on the actor's
+    // next probe rather than on an address that has not yet done anything.
     await engine.evaluate(facts({ path: "/.env", ip: "203.0.113.1", headers: spoofing }));
     const second = await engine.evaluate(facts({ path: "/.env", ip: "203.0.113.2", headers: spoofing }));
-    expect(second.detections.find((d) => d.detectorId === "repeat-actor")?.score).toBe(27);
+    expect(second.detections.map((d) => d.detectorId)).not.toContain("repeat-actor");
+
+    const third = await engine.evaluate(facts({ path: "/.env", ip: "203.0.113.2", headers: spoofing }));
+    expect(third.detections.find((d) => d.detectorId === "repeat-actor")?.score).toBe(27);
 
     // Benign traffic sharing a fingerprint across many IPs must never correlate:
     // it scores nothing, so it never enters the registry in the first place.
@@ -526,6 +530,13 @@ describe("building from config", () => {
     for (const ip of ["198.51.100.1", "198.51.100.2", "198.51.100.3", "198.51.100.4"]) {
       const result = await clean.evaluate(facts({ path: "/", ip, headers: spoofing }));
       expect(result.detections).toHaveLength(0);
+    }
+
+    // …and it must still never correlate on the engine that HAS seen attackers under
+    // that fingerprint, which is the situation a live deployment is actually in.
+    for (const ip of ["198.51.100.5", "198.51.100.6", "198.51.100.7"]) {
+      const result = await engine.evaluate(facts({ path: "/", ip, headers: spoofing }));
+      expect(result.detections, `benign ${ip}`).toHaveLength(0);
     }
   });
 

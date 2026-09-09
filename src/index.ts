@@ -17,6 +17,14 @@ export { generateRobotsTxt } from "./robots.js";
 export type { RobotsTxtOptions } from "./robots.js";
 export { cefFormat, syslogLine } from "./formats.js";
 export type { SyslogOptions } from "./formats.js";
+// Syslog forwarding, deliberately outside the management API: shipping to a SIEM
+// should not require standing up a REST service over the captured data too.
+export { SyslogSink, truncateBytes } from "./syslog.js";
+export type { SyslogMessageFormat, SyslogSinkOptions } from "./syslog.js";
+// The scripted shell the interactive SSH and Telnet honeypots present. Nothing here
+// executes anything — see the module for why it is shared between the two.
+export { FAKE_MOTD, fakeShellOutput } from "./shell.js";
+export type { FakeShellOptions } from "./shell.js";
 // Log rendering, so a custom `onHit` can emit the same injection-safe text lines the
 // standalone service does rather than re-deriving the escaping rules.
 export { formatTextLine, formatValue } from "./logfmt.js";
@@ -37,4 +45,6 @@ export * from "./responses/index.js";
 export * from "./management/index.js";
 export * from "./smtp/index.js";
 export * from "./ssh/index.js";
+export * from "./ftp/index.js";
+export * from "./telnet/index.js";
 export * from "./config/index.js";

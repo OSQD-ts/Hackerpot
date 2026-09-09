@@ -1,4 +1,15 @@
-import { HoneypotServer, PortScanSentinel, SmtpHoneypot, SshHoneypot, honeytokenDetector, defaultResponsePolicy, ManagementServer, MemoryStore } from "../src/index.js";
+import {
+  HoneypotServer,
+  PortScanSentinel,
+  SmtpHoneypot,
+  SshHoneypot,
+  FtpHoneypot,
+  TelnetHoneypot,
+  honeytokenDetector,
+  defaultResponsePolicy,
+  ManagementServer,
+  MemoryStore,
+} from "../src/index.js";
 import type { HoneypotHit, ResponsePolicy } from "../src/index.js";
 
 const port = Number(process.env.PORT ?? 4004);
@@ -6,6 +17,8 @@ const scanPorts = (process.env.SCAN_PORTS ?? "8022,9200,7001").split(",").map((p
 const mgmtPort = Number(process.env.MGMT_PORT ?? 9500);
 const smtpPort = Number(process.env.SMTP_PORT ?? 2525);
 const sshPort = Number(process.env.SSH_PORT ?? 2222);
+const ftpPort = Number(process.env.FTP_PORT ?? 2121);
+const telnetPort = Number(process.env.TELNET_PORT ?? 2323);
 const apiKey = process.env.MGMT_API_KEY ?? "dev-key";
 
 // A demo policy that showcases the newer response actions: still blocks confirmed
@@ -72,6 +85,25 @@ const ssh = new SshHoneypot({
   onHit: (hit) => logHit(hit),
 });
 
+// FTP and Telnet share the store too. Both run INTERACTIVE here, which is not the
+// shipped default: locally you want to see the post-login capture (the commands, the
+// staging URLs) that is the whole reason to run them.
+const ftp = new FtpHoneypot({
+  port: ftpPort,
+  banner: "(vsFTPd 3.0.3)",
+  interactive: true,
+  store,
+  onHit: (hit) => logHit(hit),
+});
+
+const telnet = new TelnetHoneypot({
+  port: telnetPort,
+  hostname: "srv01",
+  interactive: true,
+  store,
+  onHit: (hit) => logHit(hit),
+});
+
 management = new ManagementServer({
   store,
   host: "127.0.0.1",
@@ -118,12 +150,16 @@ const started = {
   management: await tryListen("management API", "MGMT_PORT", mgmtPort, () => management!.listen()),
   smtp: await tryListen("SMTP honeypot", "SMTP_PORT", smtpPort, () => smtp.listen()),
   ssh: await tryListen("SSH honeypot", "SSH_PORT", sshPort, () => ssh.listen()),
+  ftp: await tryListen("FTP honeypot", "FTP_PORT", ftpPort, () => ftp.listen()),
+  telnet: await tryListen("Telnet honeypot", "TELNET_PORT", telnetPort, () => telnet.listen()),
 };
 
 if (started.http) console.log(`hackerpot dev server listening on http://localhost:${port}`);
 if (started.sentinel) console.log(`port-scan sentinel listening on TCP ${scanPorts.join(", ")}`);
 if (started.smtp) console.log(`SMTP honeypot listening on TCP ${smtpPort}`);
 if (started.ssh) console.log(`SSH honeypot listening on TCP ${sshPort}`);
+if (started.ftp) console.log(`FTP honeypot listening on TCP ${ftpPort}`);
+if (started.telnet) console.log(`Telnet honeypot listening on TCP ${telnetPort}`);
 if (started.management) console.log(`management API on http://127.0.0.1:${mgmtPort}  (API key: "${apiKey}")`);
 console.log(`${server.engine.detectors.length} detectors active, ${server.engine.actions.size} response actions registered.`);
 console.log(`\nGenerate traffic:  npm run attack:all`);

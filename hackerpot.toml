@@ -128,8 +128,31 @@ url = ""
 key_prefix = "hackerpot:"
 # Seconds before an idle IP's score expires, so suspicion decays. 0 = never.
 score_ttl_seconds = 0
-# Cap on the retained hit log.
+# Cap on the retained hit log — and, in practice, Redis's memory ceiling.
+#
+# The log is one Redis list holding whole incidents, captured request body included, so
+# the worst case is max_hits x the 64 KB body cap: 10000 is roughly 630 MB. Size this
+# against the memory your Redis actually has. A maxmemory-policy is not a substitute —
+# the list is a single key, so LRU eviction discards the small score and block keys (the
+# state blocking depends on) before it touches the list that is growing. Overridable at
+# deploy time with REDIS_MAX_HITS; docker-compose.yml sets it to fit its own limit.
 max_hits = 10000
+# How a Redis outage is allowed to fail.
+#
+# scoreFor() is on the request path — the engine reads an IP's running score for
+# every request — and the engine wraps that read so a broken store degrades to a
+# score of 0 rather than failing the request. That degradation only works if the
+# read actually FAILS. ioredis's "retry forever" mode (0 here) never settles the
+# promise, so instead of degrading, every request hangs, the offline queue grows
+# at whatever rate the attacker is sending, and in middleware mode the host app
+# hangs too. A dead logging backend should cost you the log, not the service.
+#
+# 0 restores the wait-forever behaviour; don't, unless losing the honeypot is
+# preferable to losing a few score reads.
+max_retries_per_request = 3
+# Milliseconds a command may wait on a server that is connected but has stopped
+# answering — the failure retry counting alone never notices. 0 disables.
+command_timeout_ms = 5000
 
 
 [store.elastic]
@@ -152,6 +175,11 @@ password = ""
 max_hits = 1000
 # Make each write immediately searchable. Slower — leave off in production.
 refresh = false
+# Per-request deadline in ms. fetch has no useful timeout of its own, and
+# scoreFor() is on the request path, so a cluster that accepts the connection and
+# then goes quiet would otherwise hold every evaluation open indefinitely — see
+# max_retries_per_request under [store.redis] for the same reasoning.
+timeout_ms = 10000
 
 
 # ── Threat-intel ingest (off by default) ─────────────────────────────────────
@@ -480,6 +508,15 @@ attempt_threshold = 8
 
 # One IP walking a wordlist: many *distinct* paths in a short window, so a busy
 # client polling a single endpoint never trips it.
+#
+# ⚠️ These defaults are sized for STANDALONE mode, where nothing serves real assets and
+# many distinct paths genuinely is probing. In MIDDLEWARE mode this detector sees every
+# request your application serves, and one ordinary page load of a modern SPA is easily
+# 20+ distinct paths — past the threshold below on its own. Measured against these
+# defaults, a single 22-request page load scores the visitor 64, and [policy]
+# block_threshold is 40, so an ordinary first-time visitor is blocked. Mounted as
+# middleware, raise this well above your heaviest page (200 is a sane starting point)
+# or set enabled = false and let the per-request detectors carry the load.
 [detectors.path-bruteforce]
 enabled = true
 score = 8
@@ -703,6 +740,13 @@ local_domains = []
 drop_above_score = 0
 # Cap on simultaneous open connections, so a flood can't exhaust our sockets.
 max_connections = 256
+# Hard ceiling on how long one connection may stay open. The 30s idle timeout is
+# not a substitute: an idle timeout is reset by every byte, so a client dripping a
+# single character every 20 seconds holds its slot forever at no cost to itself,
+# and a few hundred of those take the SMTP honeypot offline without ever
+# completing a transaction. Not to 0, which is rejected — an uncapped session is
+# the exhaustion this exists to bound.
+max_session_ms = 120000
 # Store the raw DATA body of captured mail. Turning this OFF still records the
 # parsed Subject and the byte count, which is usually enough to classify the
 # campaign — worth considering, since a captured body may carry live malware or
@@ -771,6 +815,130 @@ host_keys = []
 # host_key_files = ["/etc/hackerpot/ssh_host_rsa_key"]
 
 
+# ── FTP honeypot ─────────────────────────────────────────────────────────────
+# FTP is old, is still swept constantly, and carries its credentials in the clear —
+# which is exactly why a fake one pays. This speaks enough of RFC 959 to keep a
+# client talking and reports the four things that only ever come from abuse:
+# credential brute-force, anonymous-login probes, path traversal, and the FTP
+# BOUNCE (a PORT/EPRT naming somebody else's address, asking us to attack a third
+# party from ours — we report it and never dial it).
+#
+# No data connection is ever opened in either direction and no file is ever served
+# or accepted; there is no filesystem behind the fake directory.
+#
+# Off by default. Port 21 needs privileges the container does not have; 2121 is the
+# usual unprivileged stand-in (map 21 -> 2121 at the edge for real traffic).
+[ftp]
+enabled = false
+port = 2121
+host = "0.0.0.0"
+# Shown after the 220 code. A realistic banner draws more interaction.
+banner = "(vsFTPd 3.0.3)"
+# Close the connection after this many credential attempts.
+max_auth_attempts = 6
+# Refuse and drop connections from IPs at or above this cumulative score. 0 = never.
+drop_above_score = 0
+# Cap on simultaneous open connections, so a flood can't exhaust our sockets.
+max_connections = 256
+
+# Interactive mode: after `accept_on_attempt` attempts the honeypot ACCEPTS the
+# login (230) and records the commands issued against the fake tree — where they
+# tried to CWD, what they tried to STOR. Nothing is created, served, or deleted.
+#
+# Note that the traversal and bounce detections do NOT depend on this: both are
+# reported from the command itself, whether or not the login was granted.
+interactive = false
+accept_on_attempt = 1
+max_commands = 100
+max_command_length = 512
+# Hard lifetime for one connection, so a held-open session can't hold a slot forever.
+max_session_ms = 120000
+
+
+# ── Telnet honeypot ──────────────────────────────────────────────────────────
+# The highest-yield trap here in practice. Telnet has no transport security, so
+# credentials arrive in the clear, and the IoT botnet families sweep ports 23 and
+# 2323 continuously with a hard-coded list of vendor defaults. What you collect is
+# the live default-credential list being sprayed at your netblock.
+#
+# Option negotiation (IAC) is handled properly rather than skipped, so captured
+# credentials don't have 0xFF bytes embedded in them, and a hostile client can't
+# drive the negotiation into a loop — replies are capped.
+#
+# Off by default. Port 23 needs privileges the container does not have; 2323 is the
+# usual unprivileged stand-in and is itself heavily swept.
+[telnet]
+enabled = false
+port = 2323
+host = "0.0.0.0"
+# Printed before the login prompt. A device-shaped banner draws the IoT sweeps.
+banner = "Ubuntu 22.04.3 LTS"
+# Hostname in the "<hostname> login:" and shell prompts. Cosmetic, but a plausible
+# one sustains the illusion.
+hostname = "srv01"
+# Three is what telnetd allows, and matching it keeps the fiction intact. Each
+# failure re-prompts, so a botnet working a list hands over the whole list.
+max_auth_attempts = 3
+# Refuse and drop connections from IPs at or above this cumulative score. 0 = never.
+drop_above_score = 0
+# Cap on simultaneous open connections, so a flood can't exhaust our sockets.
+max_connections = 256
+
+# Interactive mode: accept the login and drop them into a fake shell, capturing
+# every command. This is where a Telnet honeypot earns its keep — the droppers
+# reveal their staging URLs and payload names in the first three commands.
+#
+# Nothing executes. The shell is a scripted stream (shared with the SSH honeypot)
+# with no path to a real process. What it changes is what you STORE: commands are
+# attacker-controlled text landing in your logs, your store, and any webhook you
+# forward to. Length is capped below and the text log escapes control characters,
+# so a captured command cannot forge log lines.
+interactive = false
+accept_on_attempt = 1
+max_commands = 100
+max_command_length = 4096
+# Hard lifetime for one connection, so a held-open session can't hold a slot forever.
+max_session_ms = 120000
+
+
+# ── Syslog forwarding ────────────────────────────────────────────────────────
+# Ship every incident to a syslog collector — the input every SIEM already has.
+#
+# Deliberately independent of [management]: shipping to your SIEM should not also
+# require exposing a REST API over the captured attacker data. Set `host` and this
+# turns itself on.
+#
+# Three rules the transport holds, all because it is fed at a rate the attacker
+# chooses: one message is always one line (a newline in a captured value would
+# otherwise let an attacker forge a second record with a source IP of their
+# choosing); messages are truncated to max_bytes rather than sent and silently
+# lost; and when a TCP collector is down, messages are DROPPED and the outage
+# reported, never queued.
+[syslog]
+# host = "siem.internal"
+port = 514
+# "udp" is fire-and-forget. "tcp" reconnects with backoff and reports what it lost.
+protocol = "udp"
+# What goes inside the syslog envelope:
+#   "cef"  — ArcSight Common Event Format, what a SIEM parses natively (default)
+#   "json" — the same field set the JSON log emits
+#   "text" — the key=value line the text log emits
+format = "cef"
+# RFC 3164 facility (0-23) and severity (0-7). 13 is "log audit", 4 is "warning".
+facility = 13
+severity = 4
+# Hostname written into the syslog header.
+hostname = "hackerpot"
+# Only forward incidents at or above this cumulative score. 0 = everything.
+min_score = 0
+# Ceiling on one rendered message. RFC 3164 only obliges a receiver to accept 1024
+# bytes, and a UDP datagram past the path MTU is silently lost.
+max_bytes = 1024
+# Include the attacker-controlled request body in the forwarded message. Off by
+# default: it is raw payload, and it is what blows past max_bytes.
+include_body = false
+
+
 # ── Operator API ─────────────────────────────────────────────────────────────
 # REST + WebSocket feed over the captured incidents, on its own listener. This
 # exposes attacker data and must never be reachable by the attackers themselves:
@@ -793,6 +961,17 @@ websocket = true
 # url = "https://hooks.example.com/hackerpot"
 # secret = "shared-signing-secret"
 # max_retries = 3
+#
+# --- posting straight into a chat channel ---
+# format = "slack"   (or "discord"; default "hackerpot" = the native incident JSON)
+#
+# Point `url` at the platform's own incoming-webhook URL and hackerpot renders a
+# readable alert instead of raw JSON. Both renderings assume every field is hostile,
+# because every field is: text is escaped for the platform, link previews are
+# disabled so neither provider fetches a URL an attacker planted in a path, and the
+# Discord payload carries allowed_mentions = {parse: []} — so a request for
+# /@everyone cannot page your whole server. `omit_body` defaults to TRUE for these
+# two formats and false for "hackerpot".
 #
 # --- turning a firehose into an alert ---
 # Only deliver incidents at or above this cumulative score — the "danger" gate.

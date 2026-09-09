@@ -80,6 +80,17 @@ export function applyEnvOverrides(config: HackerpotConfig, env: NodeJS.ProcessEn
   const redisTtl = read(env, "REDIS_SCORE_TTL");
   if (redisTtl !== undefined) config.store.redis.scoreTtlSeconds = asInteger("REDIS_SCORE_TTL", redisTtl);
 
+  // Retention has to be tunable from the environment because it is what decides Redis's
+  // memory ceiling, and that ceiling is a *deployment* fact. The hit log is one Redis
+  // list holding whole incidents, request body included, so its worst case is
+  // `max_hits x MAX_BODY_BYTES` — 10000 x 64 KB is roughly 630 MB, well past the memory
+  // a modest Redis container is given. No `maxmemory-policy` rescues that either: the
+  // list is a single key, so LRU eviction would drop the small score and block keys
+  // (the security-critical state) long before it touched the list that is actually
+  // growing. Bounding retention is the only thing that bounds it. See docker-compose.yml.
+  const redisMaxHits = read(env, "REDIS_MAX_HITS");
+  if (redisMaxHits !== undefined) config.store.redis.maxHits = asInteger("REDIS_MAX_HITS", redisMaxHits);
+
   const honeytokens = read(env, "HONEYTOKENS");
   if (honeytokens !== undefined) {
     const tokens = asList(honeytokens).map((value) => ({ value, label: "env-honeytoken" }));

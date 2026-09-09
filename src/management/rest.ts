@@ -32,7 +32,17 @@ function parseQuery(search: URLSearchParams): IncidentQuery {
   const detector = search.get("detector");
   if (detector) query.detector = detector;
   const limit = search.get("limit");
-  if (limit) query.limit = Number(limit);
+  // Only a value that actually parses becomes a limit. `Number("abc")` is NaN, and NaN
+  // survives the `Math.min(Math.max(1, n), 1000)` clamp below unchanged — every
+  // comparison against it is false, so both bounds pass it straight through. It then
+  // reached the stores as `limit: NaN`, where `limit >= 0` is likewise false and the
+  // read falls back to "no limit": `?limit=abc` returned the **entire** corpus, past
+  // the 1000-row ceiling this endpoint documents. A junk limit is no limit at all, so
+  // it now takes the default rather than disabling the cap.
+  if (limit) {
+    const parsed = Number(limit);
+    if (Number.isFinite(parsed)) query.limit = parsed;
+  }
   return query;
 }
 

@@ -54,6 +54,20 @@ function v6ToBigInt(ip: string): bigint | undefined {
  */
 export class IpAllowlist {
   private readonly exact = new Set<string>();
+  /**
+   * Exact IPv6 entries, held as their 128-bit value rather than as text.
+   *
+   * They used to sit in `exact` alongside the v4 ones and be matched by string equality,
+   * which for IPv6 is not an equality test at all: one address has many valid spellings
+   * (`2001:db8::1`, `2001:0db8:0:0:0:0:0:1`, `2001:DB8::0:1`), and which one arrives is
+   * decided by the peer's stack and Node's formatting, not by whatever the operator
+   * typed in the config. So an allowlisted IPv6 monitor matched only by coincidence —
+   * and when it did not match, it was not merely un-exempted, it was scored, blocked and
+   * (with external enforcement wired) firewalled, silently, as if it were an attacker.
+   * Comparing the parsed value makes every spelling of one address one entry, exactly as
+   * the v6 CIDR ranges below already do.
+   */
+  private readonly exactV6 = new Set<bigint>();
   private readonly v4: Array<{ base: number; mask: number }> = [];
   private readonly v6: Array<{ base: bigint; mask: bigint }> = [];
   readonly size: number;
@@ -72,8 +86,15 @@ export class IpAllowlist {
       const slash = entry.indexOf("/");
       if (slash === -1) {
         const normalized = normalize(entry);
-        if (net.isIP(normalized) === 0) this.invalid.push(raw);
-        else this.exact.add(normalized);
+        if (net.isIPv6(normalized)) {
+          const big = v6ToBigInt(normalized);
+          if (big === undefined) this.invalid.push(raw);
+          else this.exactV6.add(big);
+        } else if (net.isIPv4(normalized)) {
+          this.exact.add(normalized);
+        } else {
+          this.invalid.push(raw);
+        }
         continue;
       }
       const base = normalize(entry.slice(0, slash));
@@ -97,7 +118,7 @@ export class IpAllowlist {
         this.invalid.push(raw);
       }
     }
-    this.size = this.exact.size + this.v4.length + this.v6.length;
+    this.size = this.exact.size + this.exactV6.size + this.v4.length + this.v6.length;
   }
 
   allows(ip: string): boolean {
@@ -111,6 +132,7 @@ export class IpAllowlist {
     }
     const big = v6ToBigInt(n);
     if (big === undefined) return false;
+    if (this.exactV6.has(big)) return true;
     return this.v6.some(({ base, mask }) => (big & mask) === base);
   }
 }

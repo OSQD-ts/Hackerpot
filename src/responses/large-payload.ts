@@ -53,8 +53,19 @@ function drain(res: ResponseContext["res"]): Promise<void> {
  * gzipped small.
  */
 export function largePayloadAction(options: LargePayloadOptions = {}): ResponseAction {
-  const totalBytes = options.totalBytes ?? 50 * 1024 * 1024;
-  const chunkBytes = options.chunkBytes ?? 64 * 1024;
+  const totalBytes = Math.max(0, options.totalBytes ?? 50 * 1024 * 1024);
+  // At least one byte per chunk, or the stream loop below never advances.
+  //
+  // `size` is `min(chunkBytes, remaining)`, and `sent += size`. At `chunkBytes = 0`
+  // that adds nothing, so `sent < totalBytes` stays true forever — and the loop has no
+  // await on that path either: an empty `write()` returns true, so `drain()` is skipped,
+  // and `throttleMs` defaults to 0, so `sleep()` is skipped. The result is a tight
+  // synchronous spin that pins the event loop for good, taking the HTTP honeypot, the
+  // management API and every protocol emulator with it — from the first attacker request
+  // routed to this action, with nothing logged. A negative value is worse still: `sent`
+  // counts backwards. The config layer now rejects both, but this action is public API a
+  // library caller constructs directly, so it holds the floor itself.
+  const chunkBytes = Math.max(1, options.chunkBytes ?? 64 * 1024);
   const throttleMs = options.throttleMs ?? 0;
   const contentType = options.contentType ?? "application/octet-stream";
   const maxConcurrent = options.maxConcurrent ?? 64;

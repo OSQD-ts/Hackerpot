@@ -21,6 +21,11 @@ export interface ResponseContext extends PolicyContext {
   res: ServerResponse;
   /** The engine's blocklist — the `block` action writes here so blocking is pluggable. */
   blocklist: Blocklist;
+  /**
+   * The engine's error channel, so an action can report a side-effect that failed
+   * without failing the response. Optional: a directly-constructed context may omit it.
+   */
+  onError?: ((error: unknown, context: { source: string }) => void) | undefined;
 }
 
 export interface ResponseAction {

@@ -17,7 +17,11 @@ export interface GzipBombOptions {
  * it costs almost nothing.
  */
 export function gzipBombAction(options: GzipBombOptions = {}): ResponseAction {
-  const decompressedBytes = options.decompressedBytes ?? 10 * 1024 * 1024;
+  // The config layer already rejects a negative here, but this action is public API a
+  // library caller constructs directly, and `Buffer.alloc(-1)` throws — lazily, on the
+  // first request routed here, which surfaces as a 500 and so as a honeypot tell. Same
+  // floor `chaosAction` and `largePayloadAction` hold, for the same reason.
+  const decompressedBytes = Math.max(0, options.decompressedBytes ?? 10 * 1024 * 1024);
   const contentType = options.contentType ?? "text/html; charset=utf-8";
   let cached: Buffer | undefined;
 

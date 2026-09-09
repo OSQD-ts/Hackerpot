@@ -116,6 +116,15 @@ export class HoneypotEngine {
     return this.blocklist.isBlocked(ip);
   }
 
+  /**
+   * Reports a failure on the engine's error channel. Exposed so the response layer can
+   * surface a side effect that failed (see `blockAction`) on the same channel the
+   * engine already uses for the store, the enricher and `onHit`.
+   */
+  reportError(error: unknown, context: { source: string }): void {
+    this.onError?.(error, context);
+  }
+
   /** True if this detector set has any detector that inspects the request body. */
   get needsBodyPhase(): boolean {
     return this.detectors.some((detector) => detector.needsBody);

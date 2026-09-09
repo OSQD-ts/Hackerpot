@@ -16,6 +16,34 @@
  * archive, Redis, Elasticsearch), so an evicted score is a dropped cache entry, not
  * lost evidence.
  */
+/**
+ * Coerces a score read back from an external store into a usable number.
+ *
+ * A score is only ever *compared against a threshold*, and every comparison against
+ * `NaN` is false — so a single unusable value does not degrade blocking for that IP,
+ * it silently switches it off entirely: `totalScore` becomes NaN, `NaN >= blockThreshold`
+ * is false, `NaN >= tarpitThreshold` is false, and the attacker is served the benign
+ * default response no matter how much they accrue. Nothing logs, because nothing threw.
+ *
+ * The remote stores read a value they did not necessarily write. `RedisStore` returns
+ * whatever `GET` yields — normally an integer written by `INCRBY`, but this project
+ * already treats a foreign writer to the same key/path as part of its threat model
+ * (see `RedisStore.list` and `FileStore.list`, both hardened against exactly that), and
+ * a shared Redis with a colliding key prefix reaches it without an attacker at all.
+ * `ScoreLedger.seed` has always applied this rail to the checkpoint file; the remote
+ * stores were reading their equivalent unguarded.
+ *
+ * Negative is treated the same way as unusable: scores in this system only ever
+ * accumulate positive detection points, so a negative total is not a low score, it is a
+ * value that could only have come from outside — and it suppresses blocking just as
+ * effectively. Both fail to 0, which loses accrued history but leaves the IP blockable
+ * on its next request.
+ */
+export function usableScore(value: unknown): number {
+  const score = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(score) && score > 0 ? score : 0;
+}
+
 export class ScoreLedger {
   private readonly scores = new Map<string, number>();
   private readonly maxEntries: number;

@@ -1,4 +1,5 @@
 import { applyQuery } from "./query.js";
+import { usableScore } from "./scores.js";
 import type { HitQuery, HitStore, HoneypotHit } from "../types.js";
 
 export interface ElasticStoreOptions {
@@ -25,6 +26,18 @@ export interface ElasticStoreOptions {
    * your own alerting if you need to know the store is unreachable.
    */
   onError?: (error: Error) => void;
+  /**
+   * Per-request deadline, in ms. Default 10000.
+   *
+   * `scoreFor()` is on the **request path** — the engine awaits it for every request —
+   * and `fetch` has no usable timeout of its own (undici's header timeout is measured
+   * in minutes). A cluster that accepts the connection and then goes quiet therefore
+   * held every evaluation open indefinitely, at the request rate the attacker chooses.
+   * `HoneypotEngine.safeScore` is written to degrade to a score of 0 when the store
+   * misbehaves, but a promise that never settles never reaches that catch. A deadline
+   * is what turns a stalled cluster back into the failure the engine already handles.
+   */
+  timeoutMs?: number;
   /** Injected for tests; defaults to the global `fetch`. */
   fetch?: typeof fetch;
 }
@@ -44,6 +57,7 @@ export class ElasticStore implements HitStore {
   private readonly refresh: boolean;
   private readonly onError: ((error: Error) => void) | undefined;
   private readonly doFetch: typeof fetch;
+  private readonly timeoutMs: number;
   private ensured: Promise<void> | undefined;
 
   constructor(options: ElasticStoreOptions) {
@@ -53,6 +67,7 @@ export class ElasticStore implements HitStore {
     this.refresh = options.refresh ?? false;
     this.onError = options.onError;
     this.doFetch = options.fetch ?? fetch;
+    this.timeoutMs = options.timeoutMs ?? 10_000;
     if (options.apiKey) {
       this.authHeader = `ApiKey ${options.apiKey}`;
     } else if (options.username !== undefined) {
@@ -70,6 +85,7 @@ export class ElasticStore implements HitStore {
     const res = await this.doFetch(`${this.node}${path}`, {
       method,
       headers: this.headers(),
+      signal: AbortSignal.timeout(this.timeoutMs),
       ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
     });
     return res;
@@ -195,7 +211,9 @@ export class ElasticStore implements HitStore {
       });
       if (!res.ok) throw new Error(`aggregation failed: ${res.status} ${await res.text()}`);
       const json = (await res.json()) as { aggregations?: { total?: { value?: number } } };
-      return json.aggregations?.total?.value ?? 0;
+      // Same rail as `RedisStore.scoreFor`: this is a value parsed out of a remote
+      // response, and an unusable one switches blocking off rather than degrading it.
+      return usableScore(json.aggregations?.total?.value);
     } catch (err) {
       this.onError?.(err instanceof Error ? err : new Error(String(err)));
       return 0;
