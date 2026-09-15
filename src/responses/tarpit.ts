@@ -41,6 +41,12 @@ export function tarpitAction(options: TarpitOptions = {}): ResponseAction {
     id: "tarpit",
     description: "Delay the response to waste the attacker's time",
     async execute(ctx: ResponseContext): Promise<void> {
+      // Already gone: the `close` listener below would never fire, because the event
+      // fired while evaluation was still awaiting the store (a Redis round-trip is
+      // plenty), and the slot would sit out the full delay on a socket that no longer
+      // exists. Request-then-reset refills slots faster than they drain — the same
+      // switch-off described below, reached before we ever subscribe.
+      if (ctx.res.destroyed) return;
       // At capacity: answer immediately rather than holding another socket.
       if (active >= maxConcurrent) {
         respond(ctx);

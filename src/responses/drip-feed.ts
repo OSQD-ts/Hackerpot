@@ -34,6 +34,10 @@ export function dripFeedAction(options: DripFeedOptions = {}): ResponseAction {
     id: "drip-feed",
     description: "Trickle the response out byte by byte to pin the attacker's connection",
     async execute(ctx: ResponseContext): Promise<void> {
+      // A client that reset while evaluation awaited the store has already emitted
+      // `close`, so the listener below never fires and the loop would trickle into a
+      // dead socket until `maxDurationMs`, holding one of the few slots throughout.
+      if (ctx.res.destroyed) return;
       ctx.res.statusCode = status;
       ctx.res.setHeader("Content-Type", "text/html; charset=utf-8");
       // At capacity: send a complete short response instead of pinning another socket.

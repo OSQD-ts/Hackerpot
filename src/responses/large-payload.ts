@@ -75,6 +75,12 @@ export function largePayloadAction(options: LargePayloadOptions = {}): ResponseA
     id: "large-payload",
     description: "Stream a large response to waste the attacker's bandwidth and storage",
     async execute(ctx: ResponseContext): Promise<void> {
+      // Already gone — the client reset while evaluation awaited the store. `close` has
+      // fired, so neither the `aborted` listener nor `drain()` below would ever hear it:
+      // the first write on the dead socket reports backpressure and `drain()` waits
+      // forever, which is the permanent slot leak `drain()` documents, reached before we
+      // subscribe instead of after.
+      if (ctx.res.destroyed) return;
       // At capacity: don't start another big stream — send a short body instead.
       if (active >= maxConcurrent) {
         if (!ctx.res.writableEnded) {
