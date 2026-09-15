@@ -114,5 +114,53 @@ export function applyEnvOverrides(config: HackerpotConfig, env: NodeJS.ProcessEn
     throw new ConfigError("MANAGEMENT_API_KEYS: is required when the management API is enabled");
   }
 
+  // The dashboard's credentials belong in the environment rather than in a file baked into
+  // an image, and `hackerpot dashboard` run as its own container is configured mostly here.
+  const dashboardEnabled = read(env, "DASHBOARD_ENABLED");
+  if (dashboardEnabled !== undefined) config.dashboard.enabled = asBoolean("DASHBOARD_ENABLED", dashboardEnabled);
+
+  const dashboardHost = read(env, "DASHBOARD_HOST");
+  if (dashboardHost !== undefined) config.dashboard.host = dashboardHost;
+
+  const dashboardPort = read(env, "DASHBOARD_PORT");
+  if (dashboardPort !== undefined) config.dashboard.port = asPort("DASHBOARD_PORT", dashboardPort);
+
+  const dashboardToken = read(env, "DASHBOARD_TOKEN");
+  const dashboardUser = read(env, "DASHBOARD_USERNAME");
+  const dashboardPassword = read(env, "DASHBOARD_PASSWORD");
+  if (dashboardToken !== undefined) {
+    if (dashboardToken.length < 16) throw new ConfigError("DASHBOARD_TOKEN: must be at least 16 characters from a random source");
+    config.dashboard.auth = { kind: "token", token: dashboardToken };
+  } else if (dashboardUser !== undefined || dashboardPassword !== undefined) {
+    const username = dashboardUser ?? (config.dashboard.auth.kind === "basic" ? config.dashboard.auth.username : "");
+    if (username === "" || dashboardPassword === undefined) throw new ConfigError("DASHBOARD_USERNAME and DASHBOARD_PASSWORD: basic auth needs both");
+    config.dashboard.auth = { kind: "basic", username, password: dashboardPassword };
+  }
+
+  // Behind a reverse proxy the dashboard is reached by a public name, which must be listed
+  // or the rebinding check refuses it; a container is where that name is known.
+  const dashboardAllowedHosts = read(env, "DASHBOARD_ALLOWED_HOSTS");
+  if (dashboardAllowedHosts !== undefined) config.dashboard.allowedHosts = asList(dashboardAllowedHosts);
+
+  const dashboardAllowedClients = read(env, "DASHBOARD_ALLOWED_CLIENTS");
+  if (dashboardAllowedClients !== undefined) config.dashboard.allowedClients = asList(dashboardAllowedClients);
+
+  const dashboardManagementUrl = read(env, "DASHBOARD_MANAGEMENT_URL");
+  if (dashboardManagementUrl !== undefined) config.dashboard.managementUrl = dashboardManagementUrl;
+
+  const dashboardManagementKey = read(env, "DASHBOARD_MANAGEMENT_API_KEY");
+  if (dashboardManagementKey !== undefined) config.dashboard.managementApiKey = dashboardManagementKey;
+
+  // The same checks `[dashboard]` gets when the file is parsed, again, because the environment
+  // can change the answer: DASHBOARD_HOST=0.0.0.0 with no auth would otherwise pass here and
+  // fail only once the service had bound every other listener.
+  const loopback = ["127.0.0.1", "::1", "localhost"].includes(config.dashboard.host);
+  if (config.dashboard.enabled && !loopback && config.dashboard.auth.kind === "default") {
+    throw new ConfigError(`DASHBOARD_HOST: the dashboard binds ${config.dashboard.host}, which needs authentication: set DASHBOARD_USERNAME and DASHBOARD_PASSWORD, or DASHBOARD_TOKEN`);
+  }
+  if (config.dashboard.auth.kind === "basic" && config.dashboard.refusal !== "unauthorized") {
+    throw new ConfigError(`DASHBOARD_USERNAME: basic auth cannot work with refusal "${config.dashboard.refusal}", because no browser would ever be asked for the password`);
+  }
+
   return config;
 }

@@ -2,7 +2,12 @@ export interface RequestEvent {
   at: number;
   method: string;
   path: string;
-  status: "flagged" | "seen";
+  /**
+   * `passed` marks a request middleware handed to the downstream app before anyone knew
+   * whether the path exists. It counts toward request volume but not toward distinct
+   * paths until `confirmPath()` promotes it. See `MiddlewareOptions.countOnlyMissedPaths`.
+   */
+  status: "flagged" | "seen" | "passed";
 }
 
 /**
@@ -86,11 +91,27 @@ export class IpTracker {
     return count;
   }
 
+  /** Distinct paths in the window, not counting `passed` requests the app may have served. */
   uniquePathsIn(ms: number, now = Date.now()): number {
     const cutoff = now - ms;
     const paths = new Set<string>();
-    for (const event of this.recent(now)) if (event.at >= cutoff) paths.add(event.path);
+    for (const event of this.recent(now)) if (event.at >= cutoff && event.status !== "passed") paths.add(event.path);
     return paths.size;
+  }
+
+  /**
+   * Promotes the newest `passed` request for `path` to a counted one, once it turned out
+   * to be a probe: the app answered 404, or the honeypot answered it itself.
+   */
+  confirmPath(path: string): void {
+    const key = path.length > MAX_PATH_CHARS ? path.slice(0, MAX_PATH_CHARS) : path;
+    for (let i = this.events.length - 1; i >= 0; i -= 1) {
+      const event = this.events[i]!;
+      if (event.status === "passed" && event.path === key) {
+        event.status = "seen";
+        return;
+      }
+    }
   }
 
   countPathIn(path: string, ms: number, now = Date.now()): number {

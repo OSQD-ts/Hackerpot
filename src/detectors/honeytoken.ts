@@ -19,6 +19,25 @@ interface Normalized {
   label: string;
 }
 
+/** The headers whose value is, by definition, `Basic base64(user:password)`. */
+const CREDENTIAL_HEADERS = new Set(["authorization", "proxy-authorization"]);
+
+/**
+ * The `user:password` inside an HTTP Basic credential, or undefined for anything else.
+ *
+ * A token replayed as a Basic password never appears in the raw header, only its base64
+ * form, so a plain `includes()` missed the most natural place to try a harvested
+ * credential. Only these two headers are decoded: their value is base64 by definition,
+ * so decoding them adds no false-positive surface. Guessing at base64 inside arbitrary
+ * values would.
+ */
+function decodeBasic(value: string): string | undefined {
+  const match = /^\s*basic\s+([A-Za-z0-9+/_-]+=*)\s*$/i.exec(value);
+  if (!match) return undefined;
+  const decoded = Buffer.from(match[1]!, "base64").toString("utf8");
+  return decoded === "" ? undefined : decoded;
+}
+
 /**
  * Detects use of a honeytoken — a fake credential/key/id you deliberately
  * seeded somewhere an attacker might harvest it (a decoy `.env`, a fake admin
@@ -41,11 +60,17 @@ export function honeytokenDetector(options: HoneytokenOptions): Detector {
 
       const haystacks: Array<{ location: string; value: string }> = [
         { location: "path", value: ctx.path },
+        ...(ctx.rawPath !== undefined ? [{ location: "path (as sent)", value: ctx.rawPath }] : []),
         ...Object.entries(ctx.query).map(([key, value]) => ({ location: `query.${key}`, value })),
       ];
       for (const [name, raw] of Object.entries(ctx.headers)) {
         const value = Array.isArray(raw) ? raw.join(" ") : raw;
         if (value) haystacks.push({ location: `header.${name}`, value });
+        if (!CREDENTIAL_HEADERS.has(name)) continue;
+        for (const one of Array.isArray(raw) ? raw : [raw]) {
+          const decoded = one ? decodeBasic(one) : undefined;
+          if (decoded) haystacks.push({ location: `header.${name} (basic, decoded)`, value: decoded });
+        }
       }
       if (ctx.body) haystacks.push({ location: "body", value: ctx.body });
 
@@ -56,6 +81,8 @@ export function honeytokenDetector(options: HoneytokenOptions): Detector {
           detectorId: "honeytoken",
           reason: `Honeytoken "${token.label}" replayed in ${found.location}`,
           score,
+          // No legitimate client has ever been given this value.
+          certain: true,
           metadata: { label: token.label, location: found.location },
         };
         if (options.respondWith) detection.respondWith = options.respondWith;

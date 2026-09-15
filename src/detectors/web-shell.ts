@@ -1,3 +1,4 @@
+import { statelessPattern } from "../internal/pattern.js";
 import type { Detection, DetectionContext, Detector } from "./types.js";
 
 export interface WebShellOptions {
@@ -23,7 +24,7 @@ const DEFAULT_PATTERNS: RegExp[] = [
  * behavior — someone trying to reach or use a backdoor — so it scores high.
  */
 export function webShellDetector(options: WebShellOptions = {}): Detector {
-  const patterns = options.patterns ?? DEFAULT_PATTERNS;
+  const patterns = (options.patterns ?? DEFAULT_PATTERNS).map((pattern) => statelessPattern(pattern));
   const score = options.score ?? 9;
 
   return {

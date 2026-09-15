@@ -7,6 +7,8 @@ import { payloadInjectionDetector } from "./payload-injection.js";
 import { suspiciousMethodDetector } from "./suspicious-method.js";
 import { sensitiveFileDetector } from "./sensitive-file.js";
 import { headerAnomalyDetector } from "./header-anomaly.js";
+import { headerIntegrityDetector } from "./header-integrity.js";
+import { targetIntegrityDetector } from "./target-integrity.js";
 import { ssrfProbeDetector } from "./ssrf-probe.js";
 import { openRedirectDetector } from "./open-redirect.js";
 import { crlfInjectionDetector } from "./crlf-injection.js";
@@ -30,7 +32,7 @@ export { credentialBruteforceDetector } from "./credential-bruteforce.js";
 export type { CredentialBruteforceOptions } from "./credential-bruteforce.js";
 export { rateSpikeDetector } from "./rate-spike.js";
 export type { RateSpikeOptions } from "./rate-spike.js";
-export { scannerSignatureDetector, scannerUserAgentPatterns } from "./scanner-signature.js";
+export { attackToolUserAgentPatterns, scannerSignatureDetector, scannerUserAgentPatterns, scriptingClientUserAgentPatterns } from "./scanner-signature.js";
 export type { ScannerSignatureOptions } from "./scanner-signature.js";
 export { payloadInjectionDetector, injectionSignatures } from "./payload-injection.js";
 export type { PayloadInjectionOptions, InjectionSignature } from "./payload-injection.js";
@@ -40,6 +42,10 @@ export { sensitiveFileDetector, sensitiveFilePatterns } from "./sensitive-file.j
 export type { SensitiveFileOptions } from "./sensitive-file.js";
 export { headerAnomalyDetector } from "./header-anomaly.js";
 export type { HeaderAnomalyOptions } from "./header-anomaly.js";
+export { headerIntegrityDetector } from "./header-integrity.js";
+export type { HeaderIntegrityOptions } from "./header-integrity.js";
+export { targetIntegrityDetector } from "./target-integrity.js";
+export type { TargetIntegrityOptions } from "./target-integrity.js";
 export { ssrfProbeDetector } from "./ssrf-probe.js";
 export type { SsrfProbeOptions } from "./ssrf-probe.js";
 export { openRedirectDetector } from "./open-redirect.js";
@@ -64,6 +70,12 @@ export { hostHeaderInjectionDetector } from "./host-header-injection.js";
 export type { HostHeaderInjectionOptions } from "./host-header-injection.js";
 export { repeatActorDetector } from "./repeat-actor.js";
 export type { RepeatActorOptions } from "./repeat-actor.js";
+export { crawlerVerificationDetector, verifiableCrawlers } from "./crawler-verification.js";
+export type { CrawlerVerificationOptions, VerifiableCrawler } from "./crawler-verification.js";
+export { cachingResolver, forwardConfirmedReverseDns, nodeDnsResolver } from "../internal/dns.js";
+export type { CachingResolverOptions, DnsResolver, DnsVerification } from "../internal/dns.js";
+export { DEFAULT_TRAP_PATHS, renderTrapField, renderTrapLink, trapDetector, trapRobotsEntries } from "./trap.js";
+export type { TrapOptions } from "./trap.js";
 export { honeytokenDetector } from "./honeytoken.js";
 export type { HoneytokenOptions, Honeytoken } from "./honeytoken.js";
 export { PortScanSentinel } from "./port-scan.js";
@@ -87,6 +99,8 @@ export function defaultDetectors(): Detector[] {
     crlfInjectionDetector(),
     webShellDetector(),
     headerAnomalyDetector(),
+    headerIntegrityDetector(),
+    targetIntegrityDetector(),
     hostHeaderInjectionDetector(),
     sensitiveFileDetector(),
     openRedirectDetector(),

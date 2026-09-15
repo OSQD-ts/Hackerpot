@@ -30,6 +30,8 @@ export { chaosAction } from "./chaos.js";
 export type { ChaosOptions } from "./chaos.js";
 export { rateLimitAction } from "./rate-limit.js";
 export type { RateLimitOptions } from "./rate-limit.js";
+export { checkResponseActions } from "./check.js";
+export type { CheckResponseActionsOptions, ResponseCheckResult } from "./check.js";
 
 /** The response actions registered when none are configured explicitly. */
 export function defaultResponseActions(): ResponseAction[] {

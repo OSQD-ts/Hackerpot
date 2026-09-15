@@ -38,7 +38,9 @@ function isTable(value: unknown): value is Raw {
 export function toRegExp(value: string, onError: (message: string) => never): RegExp {
   const literal = /^\/(.*)\/([a-z]*)$/s.exec(value);
   try {
-    return literal ? new RegExp(literal[1]!, literal[2]!) : new RegExp(value, "i");
+    // `g` and `y` are dropped: they make `.test()` stateful, so a pattern would match on
+    // every other request. See `statelessPattern`.
+    return literal ? new RegExp(literal[1]!, literal[2]!.replace(/[gy]/g, "")) : new RegExp(value, "i");
   } catch (err) {
     return onError(`is not a valid regular expression: ${(err as Error).message}`);
   }

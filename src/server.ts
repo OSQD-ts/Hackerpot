@@ -63,8 +63,9 @@ export class HoneypotServer {
     const path = pathOf(url);
     const ip = this.engine.resolveIp(req.socket.remoteAddress, req.headers);
 
-    // Allowlisted known-good sources bypass everything, including the block check.
-    if (this.engine.isAllowlisted(ip)) {
+    // Allowlisted known-good sources bypass everything, including the block check, and so
+    // does a request presenting a service token.
+    if (this.engine.isAllowlisted(ip) || this.engine.serviceTokenFor(req.headers) !== undefined) {
       res.statusCode = 404;
       res.end("Not Found");
       return;
@@ -77,7 +78,7 @@ export class HoneypotServer {
     }
 
     const body = await readBody(req);
-    const facts: RequestFacts = { method, path, query: parseQuery(url), headers: req.headers, rawHeaders: req.rawHeaders, ip, body };
+    const facts: RequestFacts = { method, path, query: parseQuery(url), headers: req.headers, rawHeaders: req.rawHeaders, ip, body, httpVersion: req.httpVersion };
     const result = await this.engine.evaluate(facts);
 
     if (result.detections.length === 0) {
@@ -85,7 +86,7 @@ export class HoneypotServer {
       res.end("Not Found");
       return;
     }
-    await dispatch(this.engine, res, result, ip, path);
+    await dispatch(this.engine, res, result, ip, result.path);
   }
 
   address(): ReturnType<http.Server["address"]> {

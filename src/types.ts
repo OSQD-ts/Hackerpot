@@ -1,4 +1,6 @@
+import type { TrafficAudit } from "./audit.js";
 import type { Blocklist } from "./blocklist.js";
+import type { ServiceTokenOptions, ServiceTokens } from "./service-tokens.js";
 import type { Detection, Detector } from "./detectors/types.js";
 import type { IpEnricher, IpEnrichment } from "./enrichment.js";
 import type { ResponseAction, ResponsePolicy } from "./responses/types.js";
@@ -9,6 +11,8 @@ export interface HoneypotHit {
   ip: string;
   method: string;
   path: string;
+  /** The request target as sent, when it differs from the normalised `path` (e.g. `//.env`, `/%2eenv`). */
+  rawPath?: string | undefined;
   headers: Record<string, string | string[] | undefined>;
   body?: string | undefined;
   /** Actor fingerprint (header order + UA family) — correlates one actor across rotating IPs. See `computeFingerprint`. */
@@ -17,12 +21,16 @@ export interface HoneypotHit {
   enrichment?: IpEnrichment | undefined;
   /** Every detector that fired on this request. */
   detections: Detection[];
+  /** Findings from shadowed detectors, which added nothing to the score. See `HoneypotConfig.shadowDetectors`. */
+  shadowDetections?: Detection[] | undefined;
   /** Points added to this IP by this request. */
   score: number;
   /** This IP's cumulative score after this request. */
   totalScore: number;
   /** Id of the response action that ran. */
   respondedWith: string;
+  /** `"block"` when the policy chose a block that a proof requirement refused. See `EvaluateOptions.blockRequiresProof`. */
+  downgradedFrom?: string | undefined;
 }
 
 /**
@@ -125,4 +133,41 @@ export interface HoneypotConfig {
    * shared across replicas (opt-in — the default keeps everything self-contained).
    */
   blocklist?: Blocklist;
+  /**
+   * Longest a detector's asynchronous `inspect()` may take, in ms. Past it that detector
+   * is skipped for the request and the timeout is reported through `onError`. Every
+   * built-in detector is synchronous and unaffected; this bounds custom `extraDetectors`
+   * that call out to something slow. Default 2000; 0 disables the limit.
+   */
+  detectorTimeoutMs?: number;
+  /**
+   * Ids of detectors that run in shadow: they inspect every request as usual, but what they
+   * find is reported and never acted on. A shadowed finding adds no score, chooses no
+   * response, triggers no body read, and records no hit of its own; it is attached to a
+   * hit that live detectors caused (`shadowDetections`) and passed to `onShadow`. Use it
+   * to trial a new or retuned detector against real traffic before it can block anyone.
+   */
+  shadowDetectors?: string[];
+  /** Called for every request a shadowed detector fired on. */
+  onShadow?: (event: ShadowEvent) => void;
+  /**
+   * Shared secrets your own services present in a header (default `x-hackerpot-token`). A
+   * request carrying a valid one is exempt like an allowlisted address: no detection, no
+   * block check, no record. For monitors whose address you cannot pin. See `ServiceTokens`.
+   */
+  serviceTokens?: ServiceTokenOptions | ServiceTokens;
+  /** Counts every evaluated request so it can watch for anomalies. See `TrafficAudit`. */
+  audit?: TrafficAudit;
+}
+
+/** A request a shadowed detector fired on. See `HoneypotConfig.shadowDetectors`. */
+export interface ShadowEvent {
+  timestamp: string;
+  ip: string;
+  method: string;
+  path: string;
+  /** What the shadowed detectors found. */
+  detections: Detection[];
+  /** Whether live detectors fired too, so the request was recorded as a hit anyway. */
+  alsoHit: boolean;
 }

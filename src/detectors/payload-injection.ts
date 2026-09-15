@@ -48,7 +48,23 @@ export const injectionSignatures: InjectionSignature[] = [
 // always near the front anyway.
 const MAX_SCAN = 16384;
 
+/**
+ * Characters without which no default signature can match, in the value or in its
+ * percent-decoded form (`%` lets a decoded form through). Traversal needs `.` or `/` or
+ * `\`; SQL needs whitespace, `(`, `=`, `/`, `*` or `_` (`information_schema`); markup and
+ * XXE need `<`; `javascript:` and `php://` need `:`; command injection needs `;`, `|`,
+ * `` ` ``, `$` or `/`; template injection needs `{`.
+ *
+ * A gate, not a matcher: an ordinary value (an id, a slug, a page number) carries none of
+ * these and costs one scan instead of sixteen regex tests, which is what long query strings
+ * were paying. From bothandlerjs. A gate is a weaker copy of what it guards, so it applies
+ * only to the built-in signatures and `tests/payload-gate.test.ts` fuzzes it: nothing it
+ * rejects may match any of them.
+ */
+const PAYLOAD_GATE = /[./\\%\s(=<:;|`${*_]/;
+
 function scan(raw: string): InjectionSignature | undefined {
+  if (!PAYLOAD_GATE.test(raw)) return undefined;
   const value = raw.length > MAX_SCAN ? raw.slice(0, MAX_SCAN) : raw;
   let decoded = value;
   try {
@@ -76,6 +92,9 @@ export function payloadInjectionDetector(options: PayloadInjectionOptions = {}):
     needsBody: inspectBody,
     inspect(ctx: DetectionContext): Detection | undefined {
       const targets: Array<{ location: string; value: string }> = [{ location: "path", value: ctx.path }];
+      // Normalisation resolves `..` and decodes `%2e%2e%2f`, so the traversal itself is only
+      // visible in the target as sent.
+      if (ctx.rawPath !== undefined) targets.push({ location: "path (as sent)", value: ctx.rawPath });
       for (const [key, value] of Object.entries(ctx.query)) targets.push({ location: `query.${key}`, value });
       for (const name of inspectHeaders) {
         const raw = ctx.headers[name];
@@ -91,6 +110,8 @@ export function payloadInjectionDetector(options: PayloadInjectionOptions = {}):
           detectorId: "payload-injection",
           reason: `${signature.kind} payload detected in ${target.location}`,
           score,
+          // An encoded traversal also trips `target-integrity`; one act, counted once.
+          ...(signature.kind === "path-traversal" ? { family: "path-traversal" } : {}),
           metadata: { kind: signature.kind, location: target.location, sample: target.value.slice(0, 200) },
         };
         if (options.respondWith) detection.respondWith = options.respondWith;

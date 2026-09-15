@@ -17,5 +17,7 @@
     "rootDir": "src"
   },
   "include": ["src/**/*"],
-  "exclude": ["dist", "node_modules", "**/*.test.ts"]
+  // The browser half of the dashboard and the embeddable element speak DOM, which the
+  // library deliberately does not; tsconfig.browser.json type-checks them.
+  "exclude": ["dist", "node_modules", "**/*.test.ts", "src/dashboard/client", "src/element"]
 }

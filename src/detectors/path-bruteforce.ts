@@ -24,6 +24,8 @@ export function pathBruteforceDetector(options: PathBruteforceOptions = {}): Det
     id: "path-bruteforce",
     description: "One IP requesting many distinct paths in a short window (directory enumeration)",
     inspect(ctx: DetectionContext): Detection | undefined {
+      // A crawler DNS has confirmed visits many distinct paths by design. See `crawler-verification`.
+      if (ctx.verifiedCrawler !== undefined) return undefined;
       const unique = ctx.tracker.uniquePathsIn(windowMs, ctx.timestamp.getTime());
       if (unique < threshold) return undefined;
       const detection: Detection = {

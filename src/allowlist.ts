@@ -48,6 +48,19 @@ function v6ToBigInt(ip: string): bigint | undefined {
 }
 
 /**
+ * Whether two strings name the same IP address, however each is spelled: an IPv4-mapped
+ * IPv6 address and its IPv4 form, zero-compressed and expanded IPv6, and letter case.
+ */
+export function sameAddress(a: string, b: string): boolean {
+  const left = normalize(a);
+  const right = normalize(b);
+  if (left === right) return true;
+  if (!net.isIPv6(left) || !net.isIPv6(right)) return false;
+  const value = v6ToBigInt(left);
+  return value !== undefined && value === v6ToBigInt(right);
+}
+
+/**
  * Matches an IP against a set of exact addresses and CIDR ranges (both IPv4 and
  * IPv6). Used to exempt known-good sources — uptime monitors, health checkers,
  * office/VPC ranges — from detection entirely, so they never score or get blocked.

@@ -9,7 +9,7 @@
  *
  * We allowlist localhost so your own local requests reach the real app, and use
  * X-Forwarded-For to play the part of a remote attacker (trustProxy reads it). In
- * your own project you'd import from "hackerpot"; here we import from ../src so the
+ * your own project you'd import from "@osqd/hackerpot"; here we import from ../src so the
  * example runs against the working tree. With Express it's the same middleware:
  *   app.use(createMiddleware(engine));   // mount ahead of your routes
  */
@@ -37,10 +37,10 @@ const robotsTxt = generateRobotsTxt({ sitemap: "https://example.com/sitemap.xml"
 
 const server = http.createServer((req, res) => {
   // 1. hackerpot first: it handles anything a detector flags and calls next() otherwise.
-  //    `next` receives an error if the honeypot's own machinery failed (e.g. an
-  //    unreachable blocklist backend) — it never rejects into your server. Handle it
-  //    the way your framework does; here we fail OPEN to the real app, because a
-  //    honeypot being down must not take the application with it.
+  //    If the honeypot's own machinery fails (e.g. an unreachable blocklist backend) it
+  //    reports the error through `onError` and calls next() anyway, so the app is still
+  //    served: a honeypot being down must not take the application with it. `err` is
+  //    only ever set with `createMiddleware(engine, { failOpen: false })`.
   void honeypot(req, res, (err) => {
     if (err) console.error("[honeypot] degraded, serving the app anyway:", (err as Error).message);
     // 2. Your real application below — reached only for traffic the honeypot didn't flag.

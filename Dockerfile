@@ -8,8 +8,11 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci
 
-# Build the library + the standalone entrypoint.
-COPY tsconfig.json tsup.config.ts ./
+# Build the library + the standalone entrypoint. `npm run build` first bundles the
+# dashboard's browser code (scripts/build-client.mjs) and emits the element's type
+# declarations (tsconfig.element.json), so both have to be in the builder stage.
+COPY tsconfig.json tsconfig.element.json tsup.config.ts ./
+COPY scripts/build-client.mjs ./scripts/build-client.mjs
 COPY src ./src
 RUN npm run build
 
@@ -52,10 +55,14 @@ USER node
 VOLUME ["/data"]
 
 EXPOSE 4004
+# The dashboard, when [dashboard] is enabled or the container runs `dashboard`
+# (see docker-compose.yml). The management API is 9500.
+EXPOSE 9501
 
 # TCP connect check — deliberately not an HTTP request, so the healthcheck
 # never registers as a honeypot hit or trips the scanner-signature detector.
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
   CMD node -e "require('net').connect(Number(process.env.PORT)||4004,'127.0.0.1').on('connect',function(){this.end();process.exit(0)}).on('error',()=>process.exit(1))"
 
+# The command line: `serve` by default, or any other command (`dashboard`, `check`, …).
 CMD ["node", "dist/standalone.js"]

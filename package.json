@@ -1,89 +1,152 @@
 {
-  "name": "hackerpot",
+  "name": "@osqd/hackerpot",
   "version": "0.1.0",
-  "description": "Customizable honeypot library \u2014 mount alongside an existing TypeScript server or run standalone to catch and log attacker probes.",
-  "type": "module",
-  "main": "./dist/index.cjs",
-  "module": "./dist/index.js",
-  "types": "./dist/index.d.ts",
-  "exports": {
-    ".": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.js",
-      "require": "./dist/index.cjs"
-    }
+  "publishConfig": {
+    "access": "public"
   },
-  "files": [
-    "dist",
-    "hackerpot.toml"
-  ],
-  "scripts": {
-    "build": "tsup && tsc --emitDeclarationOnly",
-    "build:start": "npm run build && npm run start",
-    "build:gui": "npm run build && npm run start:gui",
-    "build:watch": "tsup --watch",
-    "start": "node dist/standalone.js",
-    "start:gui": "tsx scripts/launch.ts start",
-    "dev": "tsx scripts/dev-server.ts",
-    "dev:gui": "tsx scripts/launch.ts dev",
-    "dashboard": "tsx scripts/dashboard.ts",
-    "serve": "tsx src/standalone.ts",
-    "config:check": "tsx src/standalone.ts --print-config",
-    "docker:build": "docker build -t hackerpot .",
-    "docker:run": "docker run --rm -p 4004:4004 hackerpot",
-    "test": "vitest run",
-    "test:coverage": "vitest run --coverage",
-    "typecheck": "tsc -p tsconfig.typecheck.json",
-    "lint": "biome lint",
-    "lint:fix": "biome lint --write",
-    "attack": "tsx scripts/attack.ts",
-    "attack:all": "tsx scripts/attack.ts all",
-    "attack:decoys": "tsx scripts/attack.ts decoys",
-    "attack:path-bruteforce": "tsx scripts/attack.ts path-bruteforce",
-    "attack:credential-bruteforce": "tsx scripts/attack.ts credential-bruteforce",
-    "attack:rate-spike": "tsx scripts/attack.ts rate-spike",
-    "attack:scanner-signature": "tsx scripts/attack.ts scanner-signature",
-    "attack:payload-injection": "tsx scripts/attack.ts payload-injection",
-    "attack:suspicious-method": "tsx scripts/attack.ts suspicious-method",
-    "attack:sensitive-file": "tsx scripts/attack.ts sensitive-file",
-    "attack:header-anomaly": "tsx scripts/attack.ts header-anomaly",
-    "attack:ssrf-probe": "tsx scripts/attack.ts ssrf-probe",
-    "attack:open-redirect": "tsx scripts/attack.ts open-redirect",
-    "attack:crlf-injection": "tsx scripts/attack.ts crlf-injection",
-    "attack:web-shell": "tsx scripts/attack.ts web-shell",
-    "attack:honeytoken": "tsx scripts/attack.ts honeytoken",
-    "attack:port-scan": "tsx scripts/attack.ts port-scan",
-    "attack:smtp": "tsx scripts/attack.ts smtp",
-    "generate:nginx": "tsx scripts/generate-nginx.ts",
-    "attack:ssh": "tsx scripts/attack.ts ssh",
-    "attack:ftp": "tsx scripts/attack.ts ftp",
-    "attack:telnet": "tsx scripts/attack.ts telnet",
-    "attack:nosql-injection": "tsx scripts/attack.ts nosql-injection",
-    "attack:graphql-abuse": "tsx scripts/attack.ts graphql-abuse",
-    "attack:jwt-weakness": "tsx scripts/attack.ts jwt-weakness",
-    "attack:client-anomaly": "tsx scripts/attack.ts client-anomaly",
-    "example": "tsx examples/basic-server.ts",
-    "prepublishOnly": "npm run build",
-    "prepack": "npm run build",
-    "attack:prototype-pollution": "tsx scripts/attack.ts prototype-pollution",
-    "attack:insecure-deserialization": "tsx scripts/attack.ts insecure-deserialization",
-    "attack:host-header-injection": "tsx scripts/attack.ts host-header-injection"
-  },
+  "description": "A honeypot for TypeScript servers — decoys, detectors and responses that catch attacker probes, mounted beside your application or run as a standalone service, with a dashboard to watch it.",
   "keywords": [
     "honeypot",
     "security",
     "canary",
     "decoy",
-    "intrusion-detection"
+    "deception",
+    "intrusion-detection",
+    "scanner-detection",
+    "middleware",
+    "typescript"
   ],
-  "author": "Micha\u0142 P\u0142atosz <platosz.michal@gmail.com>",
   "license": "SEE LICENSE IN LICENSE",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/OSQD-ts/Hackerpot.git"
+  },
+  "homepage": "https://github.com/OSQD-ts/Hackerpot#readme",
+  "bugs": {
+    "url": "https://github.com/OSQD-ts/Hackerpot/issues"
+  },
+  "author": "Michał Płatosz <platosz.michal@gmail.com>",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    },
+    "./adapters": {
+      "types": "./dist/adapters/index.d.ts",
+      "import": "./dist/adapters/index.js",
+      "require": "./dist/adapters/index.cjs"
+    },
+    "./element": {
+      "types": "./dist/element/index.d.ts",
+      "import": "./dist/element.js"
+    },
+    "./package.json": "./package.json",
+    "./cli": {
+      "types": "./dist/cli.d.ts",
+      "import": "./dist/cli.js",
+      "require": "./dist/cli.cjs"
+    },
+    "./corpus": {
+      "types": "./dist/corpus/index.d.ts",
+      "import": "./dist/corpus/index.js",
+      "require": "./dist/corpus/index.cjs"
+    }
+  },
+  "main": "./dist/index.cjs",
+  "types": "./dist/index.d.ts",
+  "bin": {
+    "hackerpot": "bin/hackerpot.mjs"
+  },
+  "directories": {
+    "example": "examples",
+    "test": "tests"
+  },
+  "files": [
+    "dist",
+    "bin",
+    "docs",
+    "hackerpot.toml",
+    "README.md",
+    "CHANGELOG.md",
+    "SECURITY.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsup && tsc --emitDeclarationOnly && tsc -p tsconfig.element.json",
+    "check:package": "npm run build && tsx scripts/check-package.ts",
+    "build:watch": "tsup --watch",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "lint": "biome check .",
+    "docs:check": "node scripts/check-links.mjs",
+    "format": "biome check --write .",
+    "start": "node bin/hackerpot.mjs",
+    "serve": "tsx src/standalone.ts",
+    "dashboard": "tsx src/standalone.ts dashboard",
+    "demo": "tsx demo/server.ts",
+    "demo:embedded": "tsx demo/embedded.ts",
+    "simulate": "tsx scripts/simulate.ts",
+    "simulate:corpus": "tsx scripts/simulate.ts --corpus",
+    "simulate:corpus:human": "tsx scripts/simulate.ts --corpus --audience human",
+    "simulate:list": "tsx scripts/simulate.ts --list",
+    "simulate:decoys": "tsx scripts/simulate.ts decoys",
+    "simulate:path-bruteforce": "tsx scripts/simulate.ts path-bruteforce",
+    "simulate:credential-bruteforce": "tsx scripts/simulate.ts credential-bruteforce",
+    "simulate:rate-spike": "tsx scripts/simulate.ts rate-spike",
+    "simulate:scanner-signature": "tsx scripts/simulate.ts scanner-signature",
+    "simulate:payload-injection": "tsx scripts/simulate.ts payload-injection",
+    "simulate:suspicious-method": "tsx scripts/simulate.ts suspicious-method",
+    "simulate:sensitive-file": "tsx scripts/simulate.ts sensitive-file",
+    "simulate:header-anomaly": "tsx scripts/simulate.ts header-anomaly",
+    "simulate:header-integrity": "tsx scripts/simulate.ts header-integrity",
+    "simulate:ssrf-probe": "tsx scripts/simulate.ts ssrf-probe",
+    "simulate:open-redirect": "tsx scripts/simulate.ts open-redirect",
+    "simulate:crlf-injection": "tsx scripts/simulate.ts crlf-injection",
+    "simulate:web-shell": "tsx scripts/simulate.ts web-shell",
+    "simulate:honeytoken": "tsx scripts/simulate.ts honeytoken",
+    "simulate:trap": "tsx scripts/simulate.ts trap",
+    "simulate:nosql-injection": "tsx scripts/simulate.ts nosql-injection",
+    "simulate:graphql-abuse": "tsx scripts/simulate.ts graphql-abuse",
+    "simulate:jwt-weakness": "tsx scripts/simulate.ts jwt-weakness",
+    "simulate:client-anomaly": "tsx scripts/simulate.ts client-anomaly",
+    "simulate:prototype-pollution": "tsx scripts/simulate.ts prototype-pollution",
+    "simulate:insecure-deserialization": "tsx scripts/simulate.ts insecure-deserialization",
+    "simulate:host-header-injection": "tsx scripts/simulate.ts host-header-injection",
+    "simulate:port-scan": "tsx scripts/simulate.ts port-scan",
+    "simulate:smtp": "tsx scripts/simulate.ts smtp",
+    "simulate:ssh": "tsx scripts/simulate.ts ssh",
+    "simulate:ftp": "tsx scripts/simulate.ts ftp",
+    "simulate:telnet": "tsx scripts/simulate.ts telnet",
+    "typecheck": "tsc -p tsconfig.typecheck.json && tsc -p tsconfig.browser.json",
+    "corpus": "tsx scripts/corpus.ts",
+    "replay": "tsx src/standalone.ts replay",
+    "explain": "tsx src/standalone.ts explain",
+    "config:check": "tsx src/standalone.ts config",
+    "config:verify": "tsx src/standalone.ts check",
+    "example": "tsx examples/basic-server.ts",
+    "generate:nginx": "tsx scripts/generate-nginx.ts",
+    "release:next": "node scripts/next-version.mjs --explain",
+    "docker:build": "docker build -t hackerpot .",
+    "docker:run": "docker run --rm -p 4004:4004 hackerpot",
+    "prepublishOnly": "npm run build",
+    "prepack": "npm run build",
+    "client:build": "node scripts/build-client.mjs",
+    "client:check": "node scripts/build-client.mjs --check",
+    "prebuild": "npm run client:build",
+    "pretest": "npm run client:build",
+    "pretypecheck": "npm run client:build",
+    "bench:guard": "tsx scripts/bench-guard.ts"
+  },
   "devDependencies": {
     "@biomejs/biome": "^2.5.11",
     "@types/node": "^26.3.0",
     "@types/ssh2": "^1.15.5",
     "@types/ws": "^8.18.1",
     "@vitest/coverage-v8": "^4.1.11",
+    "esbuild": "^0.28.2",
     "tsup": "^8.5.1",
     "tsx": "^4.23.12",
     "typescript": "^7.0.2",
@@ -98,10 +161,8 @@
   "engines": {
     "node": ">=20"
   },
-  "sideEffects": "false",
-  "bin": {
-    "hackerpot": "./dist/standalone.js"
-  },
+  "module": "./dist/index.js",
+  "sideEffects": false,
   "overrides": {
     "esbuild": "^0.28.2"
   },

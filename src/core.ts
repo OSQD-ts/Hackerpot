@@ -8,10 +8,14 @@ import type { Detection, DetectionContext, Detector, RequestFacts } from "./dete
 import { defaultResponseActions, defaultResponsePolicy } from "./responses/index.js";
 import type { PolicyContext, ResponseAction, ResponsePolicy } from "./responses/types.js";
 import { computeFingerprint } from "./fingerprint.js";
+import { MAX_RAW_PATH_CHARS, boundedQuery, normalizePath } from "./http-request.js";
+import { withDeadline } from "./internal/async.js";
 import { defaultIpEnricher, type IpEnricher } from "./enrichment.js";
 import { ActivityRegistry, FingerprintRegistry, IpTracker } from "./state.js";
 import { MemoryStore } from "./stores/index.js";
-import type { HitStore, HoneypotConfig, HoneypotHit } from "./types.js";
+import { ServiceTokens, type ServiceTokenOptions } from "./service-tokens.js";
+import type { TrafficAudit } from "./audit.js";
+import type { HitStore, HoneypotConfig, HoneypotHit, ShadowEvent } from "./types.js";
 
 /**
  * Which of `evaluate()`'s once-per-request side effects to perform.
@@ -37,6 +41,31 @@ export interface EvaluateOptions {
   trackActivity?: boolean;
   /** Record the hit in the store, enrich it, and announce it via `onHit`. Default true. */
   recordHit?: boolean;
+  /**
+   * How the tracked request is marked. Default `seen`, which counts toward every
+   * volume detector. Middleware passes `passed` so a path the app serves normally
+   * does not count as enumeration. See `MiddlewareOptions.countOnlyMissedPaths`.
+   */
+  activityStatus?: "seen" | "passed";
+  /**
+   * Refuse to let the policy choose `block` unless a detection is proof (`certain`). The
+   * request gets `unprovenBlockFallback` instead and the hit records `downgradedFrom`.
+   * Default false; middleware turns it on. See `MiddlewareOptions.blockRequiresProof`.
+   */
+  blockRequiresProof?: boolean;
+  /** Action id run instead of an unproven block. Default "tarpit". */
+  unprovenBlockFallback?: string;
+  /**
+   * When the request happened. Default: now. A log replay passes each line's own time, so
+   * the sliding windows see traffic spread the way it arrived rather than all at once.
+   */
+  now?: Date;
+  /**
+   * Count this request in the configured `TrafficAudit`. Default true. A front end that
+   * evaluates a request a second time outside the usual two passes (`trapFormGuard`)
+   * passes false, so the audit counts it once.
+   */
+  audit?: boolean;
 }
 
 export interface EvaluationResult {
@@ -48,6 +77,46 @@ export interface EvaluationResult {
   action: ResponseAction | undefined;
   /** The request's actor fingerprint (header order + UA family). See `computeFingerprint`. */
   fingerprint: string;
+  /**
+   * The normalised path detection matched against. Front ends use this instead of
+   * normalising again: decoding twice would turn `%252e` into `.`.
+   */
+  path: string;
+  /** Set to `"block"` when the policy chose a block that `blockRequiresProof` refused. */
+  downgradedFrom?: string;
+  /** Findings from shadowed detectors: reported, never acted on. See `HoneypotConfig.shadowDetectors`. */
+  shadowDetections: Detection[];
+  /** The name of the service token that exempted this request, if one did. */
+  serviceToken?: string;
+}
+
+/** True for a promise, or any other thenable a detector hands back. */
+function isThenable<T>(value: T | PromiseLike<T>): value is PromiseLike<T> {
+  return typeof (value as { then?: unknown } | null | undefined)?.then === "function";
+}
+
+/**
+ * Sum of detection scores, counting each family once at its highest score.
+ *
+ * One act often shows through several detectors (an encoded traversal is both a
+ * traversal payload and an evasively spelled target), and adding those up scored one
+ * request as independent reasons. A detection with no family counts on its own.
+ */
+function combinedScore(detections: Detection[]): number {
+  let total = 0;
+  const best = new Map<string, number>();
+  for (const detection of detections) {
+    if (detection.family === undefined) total += detection.score;
+    else best.set(detection.family, Math.max(best.get(detection.family) ?? 0, detection.score));
+  }
+  for (const score of best.values()) total += score;
+  return total;
+}
+
+function toServiceTokens(value: ServiceTokenOptions | ServiceTokens | undefined): ServiceTokens | undefined {
+  if (value === undefined) return undefined;
+  const tokens = value instanceof ServiceTokens ? value : new ServiceTokens(value);
+  return tokens.size > 0 ? tokens : undefined;
 }
 
 export class HoneypotEngine {
@@ -56,6 +125,8 @@ export class HoneypotEngine {
   detectors: Detector[];
   actions: Map<string, ResponseAction>;
   policy: ResponsePolicy;
+  /** Ids of detectors whose findings are reported but never acted on. See `HoneypotConfig.shadowDetectors`. */
+  shadowed: Set<string>;
   // Live state — deliberately NOT reconfigurable: rebuilding these would drop the
   // suspicion scores, block list, and activity windows an attacker has accrued.
   readonly store: HitStore;
@@ -67,6 +138,18 @@ export class HoneypotEngine {
   private readonly onHit: ((hit: HoneypotHit) => void | Promise<void>) | undefined;
   private readonly onError: ((error: unknown, context: { source: string }) => void) | undefined;
   private readonly trustProxy: boolean;
+  private readonly detectorTimeoutMs: number;
+  private readonly onShadow: ((event: ShadowEvent) => void) | undefined;
+  /** Accepted service tokens. Replaced by `reconfigure`. See `HoneypotConfig.serviceTokens`. */
+  serviceTokens: ServiceTokens | undefined;
+  readonly audit: TrafficAudit | undefined;
+  /**
+   * Failures and timeouts per detector id since the engine started, for `/metrics`. Bounded
+   * by the number of detectors, since only detector ids are counted.
+   */
+  readonly detectorFailures = new Map<string, number>();
+  /** Listeners told about every recorded hit. See `subscribe`. */
+  private readonly listeners = new Set<(hit: HoneypotHit) => void>();
 
   constructor(config: HoneypotConfig = {}) {
     this.detectors = config.detectors ?? [...defaultDetectors(), ...(config.extraDetectors ?? [])];
@@ -83,6 +166,11 @@ export class HoneypotEngine {
     this.onHit = config.onHit;
     this.onError = config.onError;
     this.trustProxy = config.trustProxy ?? false;
+    this.detectorTimeoutMs = config.detectorTimeoutMs ?? 2000;
+    this.shadowed = new Set(config.shadowDetectors ?? []);
+    this.onShadow = config.onShadow;
+    this.serviceTokens = toServiceTokens(config.serviceTokens);
+    this.audit = config.audit;
   }
 
   /**
@@ -99,11 +187,20 @@ export class HoneypotEngine {
     responseActions?: ResponseAction[];
     policy?: ResponsePolicy;
     allowlist?: string[];
+    shadowDetectors?: string[];
+    serviceTokens?: ServiceTokenOptions | ServiceTokens;
   }): void {
     if (patch.detectors) this.detectors = patch.detectors;
     if (patch.responseActions) this.actions = new Map(patch.responseActions.map((a) => [a.id, a]));
     if (patch.policy) this.policy = patch.policy;
     if (patch.allowlist) this.allowlist = new IpAllowlist(patch.allowlist);
+    if (patch.shadowDetectors) this.shadowed = new Set(patch.shadowDetectors);
+    if (patch.serviceTokens) this.serviceTokens = toServiceTokens(patch.serviceTokens);
+  }
+
+  /** The name of the valid service token these headers present, or undefined. */
+  serviceTokenFor(headers: Readonly<Record<string, string | string[] | undefined>>): string | undefined {
+    return this.serviceTokens?.identify(headers);
   }
 
   /** True when this IP is exempt from all detection (an allowlisted known-good source). */
@@ -167,7 +264,20 @@ export class HoneypotEngine {
    * provided (the body phase) — callers omit it on the first pass so a
    * downstream app never has its request stream consumed unnecessarily.
    */
-  async evaluate(facts: RequestFacts, options: EvaluateOptions = {}): Promise<EvaluationResult> {
+  async evaluate(input: RequestFacts, options: EvaluateOptions = {}): Promise<EvaluationResult> {
+    // Normalised exactly once, here, for every front end. See `normalizePath`.
+    const path = normalizePath(input.path);
+    const rawPath = input.rawPath ?? (path !== input.path ? input.path.slice(0, MAX_RAW_PATH_CHARS) : undefined);
+    // Bounded here too, so no front end can hand every detector an unbounded query. See `boundedQuery`.
+    const { query, dropped } = boundedQuery(input.query);
+    const facts: RequestFacts = {
+      ...input,
+      path,
+      query,
+      ...(rawPath !== undefined ? { rawPath } : {}),
+      ...(dropped > 0 ? { queryParamsDropped: dropped } : {}),
+    };
+
     const trackActivity = options.trackActivity ?? true;
     const recordHit = options.recordHit ?? true;
     const tracker = this.registry.for(facts.ip);
@@ -175,30 +285,56 @@ export class HoneypotEngine {
 
     // Allowlisted sources are fully exempt: no detection, no scoring, no footprint.
     if (this.allowlist.allows(facts.ip)) {
-      return { detections: [], score: 0, totalScore: 0, tracker, actionId: "", action: undefined, fingerprint };
+      return { detections: [], score: 0, totalScore: 0, tracker, actionId: "", action: undefined, fingerprint, path, shadowDetections: [] };
+    }
+    // So is a request presenting one of your service tokens, whatever its address.
+    const serviceToken = this.serviceTokens?.identify(facts.headers);
+    if (serviceToken !== undefined) {
+      return { detections: [], score: 0, totalScore: 0, tracker, actionId: "", action: undefined, fingerprint, path, shadowDetections: [], serviceToken };
     }
 
-    const now = new Date();
-    if (trackActivity) tracker.record({ method: facts.method, path: facts.path, status: "seen" }, now.getTime());
+    const now = options.now ?? new Date();
+    if (trackActivity) tracker.record({ method: facts.method, path: facts.path, status: options.activityStatus ?? "seen" }, now.getTime());
 
     const ctx: DetectionContext = { ...facts, tracker, timestamp: now, fingerprint, fingerprintRegistry: this.fingerprints };
     const detections: Detection[] = [];
+    const shadowDetections: Detection[] = [];
+    const failed: string[] = [];
     for (const detector of this.detectors) {
       let detection: Detection | undefined;
       try {
-        detection = await detector.inspect(ctx);
+        const pending = detector.inspect(ctx);
+        // Only an asynchronous result gets a deadline; synchronous detectors pay nothing.
+        detection =
+          isThenable(pending) && this.detectorTimeoutMs > 0
+            ? await withDeadline(pending, this.detectorTimeoutMs, `detector "${detector.id}"`)
+            : await pending;
       } catch (err) {
         // A detector must never throw; if one does (crafted input, a latent bug), isolate
         // it — skip only this detector — so an attacker can't crash evaluation or bypass
         // every other detector by feeding one a poison input. The rest still run.
         this.onError?.(err, { source: detector.id });
+        failed.push(detector.id);
         continue;
       }
-      if (detection) detections.push(detection);
+      if (detection) (this.shadowed.has(detector.id) ? shadowDetections : detections).push(detection);
     }
 
+    // Reported once per request, by the pass that commits (a deferred pass writes nothing).
+    if (shadowDetections.length > 0 && recordHit) this.reportShadow(facts, shadowDetections, detections.length > 0, now);
+
+    // Counted by the pass that decides this request: the committing one, or a first pass
+    // nothing flagged (no second pass follows it). A deferred pass that flagged something
+    // is evaluated again, and that pass counts.
+    const settle = (actionId: string, downgraded: boolean): void => {
+      for (const id of failed) this.detectorFailures.set(id, (this.detectorFailures.get(id) ?? 0) + 1);
+      if (options.audit === false || this.audit === undefined) return;
+      this.audit.record({ at: now.getTime(), ip: facts.ip, path: facts.path, flagged: detections.length > 0, blocked: actionId === "block", downgraded, failures: failed.length });
+    };
+
     if (detections.length === 0) {
-      return { detections, score: 0, totalScore: await this.safeScore(facts.ip), tracker, actionId: "", action: undefined, fingerprint };
+      settle("", false);
+      return { detections, score: 0, totalScore: await this.safeScore(facts.ip), tracker, actionId: "", action: undefined, fingerprint, path, shadowDetections };
     }
 
     // Record this fingerprint→IP only now that the request has scored — the registry
@@ -206,7 +342,7 @@ export class HoneypotEngine {
     if (recordHit) this.fingerprints.record(fingerprint, facts.ip, now.getTime());
 
     detections.sort((a, b) => b.score - a.score);
-    const score = detections.reduce((sum, detection) => sum + detection.score, 0);
+    const score = combinedScore(detections);
     const priorScore = await this.safeScore(facts.ip);
     const totalScore = priorScore + score;
 
@@ -218,13 +354,25 @@ export class HoneypotEngine {
       totalScore,
       tracker,
     };
-    const actionId = this.policy(policyCtx);
+    let actionId = this.policy(policyCtx);
+    // Blocking writes the address to the blocklist (and the firewall enforcer), refusing
+    // every later request from it, the host app's own pages included. Summed guesses
+    // reached that for real visitors more than once, so a front end in front of real
+    // users can require proof: without a `certain` detection the block becomes a
+    // response to this one request and nothing is blocklisted.
+    let downgradedFrom: string | undefined;
+    if (actionId === "block" && options.blockRequiresProof === true && !detections.some((detection) => detection.certain === true)) {
+      downgradedFrom = actionId;
+      actionId = options.unprovenBlockFallback ?? "tarpit";
+    }
 
     // A deferred pass reports what it found but writes nothing: the caller is going to
     // evaluate this same request again, and that pass is the one that commits.
     if (!recordHit) {
-      return { detections, score, totalScore, tracker, actionId, action: this.actions.get(actionId), fingerprint };
+      return { detections, score, totalScore, tracker, actionId, action: this.actions.get(actionId), fingerprint, path, shadowDetections, ...(downgradedFrom !== undefined ? { downgradedFrom } : {}) };
     }
+
+    settle(actionId, downgradedFrom !== undefined);
 
     let enrichment: HoneypotHit["enrichment"];
     try {
@@ -239,14 +387,17 @@ export class HoneypotEngine {
       ip: facts.ip,
       method: facts.method,
       path: facts.path,
+      ...(facts.rawPath !== undefined ? { rawPath: facts.rawPath } : {}),
       headers: facts.headers,
       body: facts.body,
       fingerprint,
       ...(enrichment ? { enrichment } : {}),
       detections,
+      ...(shadowDetections.length > 0 ? { shadowDetections } : {}),
       score,
       totalScore,
       respondedWith: actionId,
+      ...(downgradedFrom !== undefined ? { downgradedFrom } : {}),
     };
     // Recording is best-effort: a flaky store or a throwing onHit must not fail the
     // evaluation (and, in middleware mode, must not reject into the host app) — the
@@ -261,8 +412,53 @@ export class HoneypotEngine {
     } catch (err) {
       this.onError?.(err, { source: "onHit" });
     }
+    this.publish(hit);
 
-    return { detections, score, totalScore, tracker, actionId, action: this.actions.get(actionId), fingerprint };
+    return { detections, score, totalScore, tracker, actionId, action: this.actions.get(actionId), fingerprint, path, shadowDetections, ...(downgradedFrom !== undefined ? { downgradedFrom } : {}) };
+  }
+
+  /**
+   * Hands shadowed findings to `onShadow`. A throwing callback is reported, never raised.
+   *
+   * Public for front ends that defer a pass: a deferred first pass reports nothing, and
+   * when only shadowed detectors fired no committing pass follows, so the front end
+   * reports them itself.
+   */
+  reportShadow(facts: Pick<RequestFacts, "ip" | "method" | "path">, detections: Detection[], alsoHit: boolean, at: Date = new Date()): void {
+    if (!this.onShadow) return;
+    try {
+      this.onShadow({ timestamp: at.toISOString(), ip: facts.ip, method: facts.method, path: facts.path, detections, alsoHit });
+    } catch (err) {
+      this.onError?.(err, { source: "onShadow" });
+    }
+  }
+
+  /**
+   * Calls `listener` with every hit this engine records, after `onHit`, and returns the way
+   * to stop. For consumers attached after construction, such as a dashboard; `onHit` stays the
+   * place for the one handler a deployment configures. A throwing listener is reported and
+   * never reaches the request.
+   */
+  subscribe(listener: (hit: HoneypotHit) => void): () => void {
+    this.listeners.add(listener);
+    return () => {
+      this.listeners.delete(listener);
+    };
+  }
+
+  /**
+   * Tells subscribers about a hit recorded somewhere else, such as an SSH or SMTP honeypot
+   * sharing this engine's store, so they see the whole deployment rather than only HTTP.
+   * Records nothing itself.
+   */
+  publish(hit: HoneypotHit): void {
+    for (const listener of this.listeners) {
+      try {
+        listener(hit);
+      } catch (err) {
+        this.onError?.(err, { source: "subscriber" });
+      }
+    }
   }
 
   /** Read an IP's prior score without letting a flaky store crash evaluation — degrades to 0. */

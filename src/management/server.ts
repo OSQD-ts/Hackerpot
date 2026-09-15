@@ -6,9 +6,10 @@ import { extractApiKey, isAuthorized } from "./auth.js";
 import { IncidentBroker } from "./broker.js";
 import { WebhookDispatcher } from "./webhooks.js";
 import { computeActors, computeIoc, computeSessions, computeStats, getIncident, listIncidents } from "./rest.js";
-import { renderMetrics } from "./metrics.js";
+import { IncidentCounters } from "./metrics.js";
 import { hardenHttpServer } from "../http-hardening.js";
 import type { ManagementConfig } from "./types.js";
+import type { TrafficAnomaly } from "../audit.js";
 
 export interface ManagementServerOptions extends ManagementConfig {
   /** The same store the honeypot writes hits to — REST queries read from it. */
@@ -22,6 +23,11 @@ export interface ManagementServerOptions extends ManagementConfig {
    * Names must be `[a-zA-Z_][a-zA-Z0-9_]*`; each is emitted as `hackerpot_<name>`.
    */
   metrics?: () => Record<string, number> | Promise<Record<string, number>>;
+  /**
+   * Failures and timeouts per detector, for `hackerpot_detector_failures_total`. Pass
+   * `() => engine.detectorFailures`. A failure is not an incident, so the store cannot supply it.
+   */
+  detectorFailures?: () => Map<string, number> | Record<string, number>;
 }
 
 /**
@@ -39,28 +45,49 @@ export class ManagementServer {
   private readonly wsEnabled: boolean;
   private readonly onError: ((error: Error) => void) | undefined;
   private readonly metricsProvider: (() => Record<string, number> | Promise<Record<string, number>>) | undefined;
+  private readonly detectorFailures: (() => Map<string, number> | Record<string, number>) | undefined;
   private server?: http.Server;
   private wss?: WebSocketServer;
   private webhooks?: WebhookDispatcher;
   private readonly webhookConfigs;
+  private readonly webhookGlobalMaxPerMinute: number | undefined;
   /** Failed-auth timestamps per peer IP, for rate-limiting API-key brute force. */
   private readonly authFailures = new Map<string, number[]>();
   private static readonly AUTH_WINDOW_MS = 60_000;
   private static readonly AUTH_MAX_FAILURES = 20;
+  /** Unread bytes a live-feed viewer may accumulate before incidents are dropped for it. */
+  private static readonly WS_MAX_BUFFERED_BYTES = 1024 * 1024;
+  /** How long a viewer may stay over that ceiling before it is disconnected. */
+  private static readonly WS_STALL_MS = 20_000;
+  private streamDroppedTotal = 0;
+  /** `/metrics` numbers, counted as incidents are published rather than read from the store. */
+  private readonly counters = new IncidentCounters();
 
   constructor(options: ManagementServerOptions) {
     this.store = options.store;
     // A broker we create reports a misbehaving subscriber on the server's own error
     // channel; a broker passed in keeps whatever channel its owner gave it.
     this.broker = options.broker ?? new IncidentBroker((err) => options.onError?.(err as Error));
+    // Subscribed at construction, so incidents published before `listen()` still count.
+    this.broker.subscribe((incident) => this.counters.record(incident));
     this.apiKeys = options.apiKeys ?? [];
     this.host = options.host ?? "127.0.0.1";
     this.port = options.port ?? 9500;
     this.wsEnabled = options.websocket ?? true;
     this.webhookConfigs = options.webhooks ?? [];
+    this.webhookGlobalMaxPerMinute = options.webhookGlobalMaxPerMinute;
     this.onError = options.onError;
     this.metricsProvider = options.metrics;
+    this.detectorFailures = options.detectorFailures;
   }
+
+  /**
+   * Sends a traffic anomaly (see `TrafficAudit`) to every webhook that accepts them. Does
+   * nothing before `listen()` or without webhooks. Never throws.
+   */
+  announce = (anomaly: TrafficAnomaly): void => {
+    this.webhooks?.announce(anomaly);
+  };
 
   /** Feed an incident into the live feed + webhooks. Wire the engine's onHit to this. */
   publish = (incident: Parameters<IncidentBroker["publish"]>[0]): void => {
@@ -79,6 +106,7 @@ export class ManagementServer {
     if (this.webhookConfigs.length > 0) {
       this.webhooks = new WebhookDispatcher({
         webhooks: this.webhookConfigs,
+        ...(this.webhookGlobalMaxPerMinute ? { globalMaxPerMinute: this.webhookGlobalMaxPerMinute } : {}),
         onError: (url, err) => this.onError?.(new Error(`webhook ${url}: ${err.message}`)),
       });
       this.webhooks.attach(this.broker);
@@ -230,8 +258,7 @@ export class ManagementServer {
         return;
       }
       if (method === "GET" && path === "/metrics") {
-        const extra = this.metricsProvider ? await this.metricsProvider() : undefined;
-        const body = await renderMetrics(this.store, extra);
+        const body = await this.metricsText();
         res.statusCode = 200;
         res.setHeader("Content-Type", "text/plain; version=0.0.4; charset=utf-8");
         res.end(body);
@@ -315,13 +342,50 @@ export class ManagementServer {
     this.wss.handleUpgrade(req, socket, head, (ws) => this.onWsConnection(ws));
   }
 
+  /** Live-feed incidents dropped because a viewer was not reading fast enough. */
+  get streamDropped(): number {
+    return this.streamDroppedTotal;
+  }
+
   private onWsConnection(ws: WebSocket): void {
     ws.send(JSON.stringify({ type: "connected", ts: new Date().toISOString() }));
+    // `ws.send` never refuses. A viewer that stops reading (a frozen tab, a closed laptop,
+    // a deliberately stalled client holding an API key) made every send queue in this
+    // process: during a flood, one serialized incident per request, per stalled viewer,
+    // with no bound. So past a buffer ceiling incidents are dropped for that viewer, it
+    // is told how many it missed once it catches up, and a viewer stuck over the ceiling
+    // for WS_STALL_MS is disconnected.
+    let dropped = 0;
+    let stalledSince: number | undefined;
     const unsubscribe = this.broker.subscribe((incident) => {
-      if (ws.readyState === ws.OPEN) ws.send(JSON.stringify({ type: "incident", incident }));
+      if (ws.readyState !== ws.OPEN) return;
+      if (ws.bufferedAmount > ManagementServer.WS_MAX_BUFFERED_BYTES) {
+        dropped += 1;
+        this.streamDroppedTotal += 1;
+        const now = Date.now();
+        stalledSince ??= now;
+        if (now - stalledSince >= ManagementServer.WS_STALL_MS) ws.terminate();
+        return;
+      }
+      stalledSince = undefined;
+      if (dropped > 0) {
+        ws.send(JSON.stringify({ type: "lagged", dropped }));
+        dropped = 0;
+      }
+      ws.send(JSON.stringify({ type: "incident", incident }));
     });
     ws.on("close", unsubscribe);
     ws.on("error", unsubscribe);
+  }
+
+  /**
+   * The Prometheus exposition `GET /metrics` serves: counted as incidents are published, so it
+   * never reads the store and its counters only rise. Public so an in-process dashboard shows
+   * the same numbers the scrape does.
+   */
+  async metricsText(): Promise<string> {
+    const extra = this.metricsProvider ? await this.metricsProvider() : undefined;
+    return this.counters.render(extra, { stream_dropped_total: this.streamDroppedTotal }, this.detectorFailures?.());
   }
 
   address(): ReturnType<http.Server["address"]> {

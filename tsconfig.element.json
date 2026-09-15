@@ -1,0 +1,17 @@
+{
+  // Declarations for `src/element`, a published entry point (`@osqd/hackerpot/element`) that
+  // speaks DOM. The main project withholds the DOM lib so a stray `document` in the rest of
+  // `src/` cannot type-check and then fail in Node; the element gets its own project rather
+  // than a hole in that one. `src/dashboard/client` never needs this: it is bundled into a
+  // string and is not a public entry. Adapted from bothandlerjs.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "emitDeclarationOnly": true,
+    "declaration": true,
+    "outDir": "dist",
+    "rootDir": "src"
+  },
+  "include": ["src/element/**/*"],
+  "exclude": ["dist", "node_modules", "**/*.test.ts"]
+}

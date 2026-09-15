@@ -58,10 +58,47 @@ include_body = false
 # back path-bruteforce, credential-bruteforce, and rate-spike can see, so it
 # must be at least as large as the largest detector window below.
 activity_window_ms = 60000
+# Longest an asynchronous detector may run before it is skipped for that request
+# and reported, in ms. Every built-in detector is synchronous; this bounds custom
+# detectors that call out to something slow. 0 disables the limit.
+detector_timeout_ms = 2000
+# Detector ids that run in shadow: they inspect every request, but their findings
+# are only reported (logged as kind "shadow", and attached to hits other detectors
+# caused). They add no score, choose no response and record no hit of their own.
+# Use it to trial a new or retuned detector on real traffic. Reloads on SIGHUP.
+# shadow_detectors = ["target-integrity"]
 # How long the actor registry remembers which IPs a fingerprint attacked from.
 # Bounds repeat-actor's correlation horizon and the registry's memory footprint.
 fingerprint_window_ms = 3600000
 
+
+# ── Traffic audit ────────────────────────────────────────────────────────────
+# Compares the last window_seconds with the baseline_seconds before it, every
+# interval_seconds, and logs an anomaly (kind "anomaly") when the flagged share,
+# request rate, blocks, proof-guard refusals or detector failures jump. Nothing is
+# said until the window holds min_samples requests, and each check then stays quiet
+# for cooldown_seconds. It also reports a probe campaign: campaign_min_ips different
+# addresses probing, inside one window, a path nothing probed before, which is what a
+# newly published exploit looks like (0 turns that check off). Anomalies also go to
+# every webhook without anomalies = false.
+[audit]
+enabled = true
+window_seconds = 300
+baseline_seconds = 3600
+interval_seconds = 60
+min_samples = 50
+cooldown_seconds = 900
+campaign_min_ips = 10
+
+# ── Service tokens ───────────────────────────────────────────────────────────
+# Shared secrets for your own services, such as an uptime monitor whose address you
+# cannot allowlist. A request presenting one in `header` is exempt from detection and
+# is never recorded. Compared in constant time; names appear in the startup log,
+# secrets nowhere. Use at least 16 random characters. Reloads on SIGHUP.
+[service_tokens]
+header = "x-hackerpot-token"
+# [service_tokens.tokens]
+# uptime-monitor = "replace-with-a-long-random-string"
 
 # ── Escalation policy ────────────────────────────────────────────────────────
 # Cumulative per-IP score decides the response: at or above block_threshold the
@@ -317,8 +354,9 @@ timeout_ms = 5000
 
 # ── Detectors ────────────────────────────────────────────────────────────────
 # Each section takes `enabled`, plus `score` and `respond_with` overrides
-# (`respond_with` names a response action: decoy-content, not-found, redirect,
-# block, tarpit, drip-feed, large-payload).
+# (`respond_with` names any enabled response action under [responses]: decoy-content,
+# not-found, redirect, block, tarpit, drip-feed, large-payload, fake-success,
+# fake-data, gzip-bomb, chaos, rate-limit).
 
 # Bait paths only an attacker would know. Scores and responses are per-decoy,
 # so `score` and `respond_with` are not accepted here.
@@ -443,12 +481,68 @@ score = 9
 # patterns = ["/(c99|r57|wso)\\w*\\.php$"]
 
 # Protocol-level abnormalities: absolute-form request target, Shellshock in a
-# header, Content-Length + Transfer-Encoding smuggling, missing Host. The
-# highest-confidence cases carry their own higher scores; `score` sets the floor.
+# header, Content-Length + Transfer-Encoding smuggling, missing Host, and a query of
+# more than 256 parameters (only the first 256 are inspected, so the flood itself is
+# flagged). The highest-confidence cases carry their own higher scores; `score` sets
+# the floor.
 [detectors.header-anomaly]
 enabled = true
 score = 7
 flag_missing_host = true
+
+# Protocol violations read from what the request contains: a repeated Host or
+# Content-Length, or a connection-specific header over HTTP/2. No browser or HTTP
+# library emits these, so they are marked as proof. A header no browser repeats
+# (User-Agent, Accept, ...) sent twice over HTTP/1.x scores duplicate_score instead;
+# set it to 0 to ignore those.
+[detectors.header-integrity]
+enabled = true
+score = 9
+duplicate_score = 3
+
+# A request target spelled to get past path filters. Double-encoding, an encoded
+# control character or an encoded traversal score `score`; a plain `..` or an encoded
+# slash, which broken clients also send, score weak_score. Every other detector
+# matches the normalised path, so this is the one that reads the target as sent. An
+# encoded traversal also trips payload-injection and is counted once.
+[detectors.target-integrity]
+enabled = true
+score = 7
+weak_score = 3
+
+# Verifies a User-Agent claiming to be a well-known crawler (Googlebot, Bingbot,
+# Applebot, ...) by forward-confirmed reverse DNS. A refuted claim is an impersonation
+# and counts as proof. A confirmed crawler is exempt from rate-spike and
+# path-bruteforce, so its normal pace never gets it blocked; decoys still apply. DNS is
+# only consulted for requests claiming one of those crawlers, and answers are cached.
+# A lookup that times out proves nothing and flags nothing. Off by default because it
+# makes network lookups.
+#
+# published_ranges also checks the address lists crawler operators publish (Google,
+# Bing, OpenAI, DuckDuckGo), fetched over HTTPS every ranges_refresh_hours. An address
+# inside a list is confirmed with no DNS lookup, and it is the only way to verify the
+# crawlers that publish no DNS records (GPTBot, OAI-SearchBot, ChatGPT-User,
+# DuckDuckBot). A list that fails to fetch or looks wrong leaves the previous one in
+# place. Off by default because it makes outbound requests.
+[detectors.crawler-verification]
+enabled = false
+score = 10
+treat_missing_ptr_as_forgery = true
+published_ranges = false
+ranges_refresh_hours = 12
+
+# Hidden traps: links and form fields in your HTML that no person can reach. A
+# request for a trap path, a filled-in trap field, or the trap header is proof of
+# automation. Only true if the trap is really hidden (use renderTrapLink /
+# renderTrapField), disallowed in robots.txt (generateRobotsTxt({ trapPaths })), and
+# never serves anything real. Off by default for that reason. In middleware mode a
+# POST form's fields are seen only through trapFormGuard, mounted after your body parser.
+[detectors.trap]
+enabled = false
+score = 15
+paths = ["/internal/export.csv", "/api/v1/all-users", "/sitemap-index-full.xml"]
+form_fields = []
+# header_name = "x-trap"
 
 # Host-header injection: a manipulated Host (or X-Forwarded-Host) used to poison
 # password-reset links, absolute URLs, or a web cache.
@@ -509,14 +603,11 @@ attempt_threshold = 8
 # One IP walking a wordlist: many *distinct* paths in a short window, so a busy
 # client polling a single endpoint never trips it.
 #
-# ⚠️ These defaults are sized for STANDALONE mode, where nothing serves real assets and
-# many distinct paths genuinely is probing. In MIDDLEWARE mode this detector sees every
-# request your application serves, and one ordinary page load of a modern SPA is easily
-# 20+ distinct paths — past the threshold below on its own. Measured against these
-# defaults, a single 22-request page load scores the visitor 64, and [policy]
-# block_threshold is 40, so an ordinary first-time visitor is blocked. Mounted as
-# middleware, raise this well above your heaviest page (200 is a sane starting point)
-# or set enabled = false and let the per-request detectors carry the load.
+# In MIDDLEWARE mode a path handed to your application counts only once the app answers
+# it with 404 (a path the honeypot answers itself always counts), so the 20+ asset paths
+# of an ordinary page load do not add up to enumeration. Standalone mode serves nothing
+# real and counts every distinct path. A library caller can count every path in
+# middleware too, with createMiddleware(engine, { countOnlyMissedPaths: false }).
 [detectors.path-bruteforce]
 enabled = true
 score = 8
@@ -955,8 +1046,56 @@ websocket = true
 # every other endpoint here except /health). Standalone adds live active_blocks
 # and tracked_ips gauges on top of the store-derived counters.
 
+# ── Dashboard ────────────────────────────────────────────────────────────────
+# The operator dashboard: the live incident feed, statistics, attack sessions,
+# actors and indicators. It is a separate listener from the honeypot and from the
+# management API.
+#
+# Two ways to run it from this file:
+#
+#   hackerpot serve         with enabled = true, served by this process, reading
+#                           its engine directly. No management API needed.
+#   hackerpot dashboard     on its own, beside a running stack, reading that
+#                           stack's management API (management_url and
+#                           management_api_key below, or this file's own
+#                           [management] listener and its first key). The key
+#                           stays in this process; the browser never sees it.
+#
+# On 127.0.0.1 it may run without authentication, because the operating system is
+# the access control. Bound anywhere else it refuses to start until you set
+# username and password, a token, or auth = "none" (say that only when something
+# in front of it authenticates). Secrets are better given as environment variables:
+# DASHBOARD_USERNAME, DASHBOARD_PASSWORD, DASHBOARD_TOKEN, and
+# DASHBOARD_MANAGEMENT_API_KEY.
+#
+# redact_credentials hides Authorization, Cookie, API-key headers and password
+# fields from the page; mask_ip shows addresses as their /24 or /48. hide withholds
+# sections on the server: overview, incidents, statistics, sessions, actors, intel.
+[dashboard]
+enabled = false
+host = "127.0.0.1"
+port = 9501
+base_path = "/"
+title = "hackerpot"
+# instance = "honeypot-eu-1"
+# username = "ops"
+# password = "…"            # or DASHBOARD_PASSWORD
+# token = "…"               # or DASHBOARD_TOKEN, at least 16 characters
+# auth = "none"
+refusal = "unauthorized"
+allowed_hosts = []
+allowed_clients = []
+redact_credentials = true
+mask_ip = false
+hide = []
+# management_url = "http://honeypot:9500"
+# management_api_key = "…"  # or DASHBOARD_MANAGEMENT_API_KEY
+
 # Push every incident to your own endpoint as JSON. With `secret` set, the body
-# is signed HMAC-SHA256 and the hex digest sent in X-Hackerpot-Signature.
+# is signed HMAC-SHA256 and the hex digest sent in X-Hackerpot-Signature, and
+# again over "<timestamp>.<body>" in X-Hackerpot-Signature-V2 with the Unix time
+# in X-Hackerpot-Timestamp. Verify the V2 header and reject old timestamps, and a
+# captured delivery cannot be replayed.
 # [[management.webhooks]]
 # url = "https://hooks.example.com/hackerpot"
 # secret = "shared-signing-secret"

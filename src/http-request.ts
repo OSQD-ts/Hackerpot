@@ -87,6 +87,74 @@ export function parseQuery(url: string): Record<string, string> {
   return query;
 }
 
+/** Most query parameters any detector inspects. See `boundedQuery`. */
+export const MAX_QUERY_PARAMS = 256;
+
+/**
+ * The first `MAX_QUERY_PARAMS` parameters of a query bag, and how many were left out.
+ *
+ * Around ten detectors decode and scan every query value, so a request's cost grew with
+ * its parameter count. Measured: 20 parameters cost 0.08 ms to evaluate, and a 16 KB URL
+ * of 4 000 tiny ones cost 9.9 ms, about 130 times an ordinary request, from one
+ * unauthenticated GET. In middleware mode that CPU comes out of the host app's event
+ * loop, and a hundred such requests a second fill a core. Past the cap nothing more is
+ * scanned, and the engine records how many were dropped so `header-anomaly` flags the
+ * flood itself: a payload hidden behind a thousand junk parameters still arrives on a
+ * request no legitimate client sends.
+ */
+export function boundedQuery(query: Record<string, string>): { query: Record<string, string>; dropped: number } {
+  const keys = Object.keys(query);
+  if (keys.length <= MAX_QUERY_PARAMS) return { query, dropped: 0 };
+  const kept: Record<string, string> = Object.create(null);
+  for (const key of keys.slice(0, MAX_QUERY_PARAMS)) kept[key] = query[key]!;
+  return { query: kept, dropped: keys.length - MAX_QUERY_PARAMS };
+}
+
+/** Longest original request target kept as `rawPath` alongside the normalised path. */
+export const MAX_RAW_PATH_CHARS = 2048;
+
+/** `GET http://elsewhere/…`: the form a request addressed to a proxy takes. */
+const ABSOLUTE_FORM = /^[a-z][a-z0-9+.-]*:\/\//i;
+
+/**
+ * The path detection matches against: decoded once, `\` and repeated `/` collapsed,
+ * `.` and `..` resolved, trailing slash dropped.
+ *
+ * Detectors used to match the path exactly as sent, so `//.env`, `/./.env`, `/%2eenv`
+ * and `/foo/../.env` all scored nothing while `/.env` scored 10. A Node server or static
+ * handler in front of a real app resolves every one of those to the same file, so in
+ * middleware mode a probe could fetch the real thing while the honeypot recorded nothing.
+ *
+ * Decoding is single-pass on purpose: decoding until the value stops changing is how
+ * `%252e` becomes `.` and how traversal filters are bypassed. That also means this is
+ * not idempotent, so it must run exactly once per request; the engine does it. An
+ * absolute-form target is returned unchanged, because collapsing its `//` would destroy
+ * the evidence `header-anomaly` reads. Adapted from bothandlerjs.
+ */
+export function normalizePath(rawPath: string): string {
+  if (ABSOLUTE_FORM.test(rawPath)) return rawPath;
+  let path = rawPath;
+  try {
+    path = decodeURIComponent(rawPath);
+  } catch {
+    // Malformed percent-encoding. Keep the raw form rather than guess at a decoding.
+  }
+  path = path.replace(/\\/g, "/").replace(/\/{2,}/g, "/");
+  if (!path.startsWith("/")) path = `/${path}`;
+
+  // `/.` rather than `./`: a target ending in `/..` has no `./` in it and must resolve too.
+  if (path.includes("/.")) {
+    const resolved: string[] = [];
+    for (const segment of path.split("/")) {
+      if (segment === "" || segment === ".") continue;
+      if (segment === "..") resolved.pop();
+      else resolved.push(segment);
+    }
+    path = `/${resolved.join("/")}`;
+  }
+  return path.length > 1 && path.endsWith("/") ? path.slice(0, -1) : path;
+}
+
 /** The path portion of a request URL, without its query string. */
 export function pathOf(url: string): string {
   const queryStart = url.indexOf("?");

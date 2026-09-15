@@ -376,7 +376,10 @@ describe("building from config", () => {
     // A detector or action added to the library but not to the schema would be
     // unreachable from a config file; this fails the moment that happens.
     const config = defaultConfig();
-    expect(Object.keys(config.detectors).filter((id) => id !== "honeytoken").sort()).toEqual(defaultDetectors().map((d) => d.id).sort());
+    // Opt-in detectors live in the schema but not in defaultDetectors(): honeytoken needs
+    // seeded values, crawler-verification makes DNS lookups, and a trap is only proof once it is hidden in your markup.
+    const optIn = new Set(["honeytoken", "crawler-verification", "trap"]);
+    expect(Object.keys(config.detectors).filter((id) => !optIn.has(id)).sort()).toEqual(defaultDetectors().map((d) => d.id).sort());
     expect(Object.keys(config.responses).sort()).toEqual(defaultResponseActions().map((a) => a.id).sort());
   });
 

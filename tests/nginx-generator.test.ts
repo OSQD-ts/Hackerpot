@@ -125,3 +125,31 @@ describe("the generated config states the honeypot-side half of the setup", () =
     expect(output).toMatch(/attributed to nginx's own address/i);
   });
 });
+
+describe("the generated decoy locations are regexes nginx can load", () => {
+  const output = generated();
+  /** Every `location ~ "…"` / `location ~* "…"` line, as its unquoted regex and decoy id. */
+  const regexLocations = output
+    .split("\n")
+    .filter((line) => /^location ~\*? /.test(line))
+    .map((line) => {
+      // The whole pattern must sit inside one quoted string: an anchor or suffix outside it
+      // is not something nginx loads.
+      const match = /^location ~\*? "((?:[^"\\]|\\.)*)" \{ return \d+; \}\s+# (\S+)/.exec(line);
+      expect(match, `malformed location: ${line}`).not.toBeNull();
+      return { id: match![2]!, pattern: match![1]!.replace(/\\(["\\])/g, "$1") };
+    });
+
+  it("quotes and compiles every regex location", () => {
+    expect(regexLocations.length).toBeGreaterThan(10);
+    for (const { id, pattern } of regexLocations) expect(() => new RegExp(pattern, "i"), id).not.toThrow();
+  });
+
+  it("matches a prefix decoy's variants at a boundary, and not a look-alike", () => {
+    const dotenv = regexLocations.find((location) => location.id === "dotenv");
+    expect(dotenv).toBeDefined();
+    const regex = new RegExp(dotenv!.pattern, "i");
+    for (const path of ["/.env", "/.env.production", "/.ENV/", "/.env.bak"]) expect(regex.test(path), path).toBe(true);
+    expect(regex.test("/.environment-guide")).toBe(false);
+  });
+});

@@ -1,6 +1,9 @@
 export { ConfigError, Section, toRegExp } from "./reader.js";
 export { defaultConfig, parseConfig } from "./schema.js";
 export type {
+  AuditConfig,
+  DashboardServiceConfig,
+  ServiceTokensConfig,
   DecoyPathConfig,
   DetectorsConfig,
   ElasticStoreConfig,
@@ -27,6 +30,9 @@ export type {
   Toggle,
 } from "./schema.js";
 export {
+  buildAudit,
+  buildDashboardOptions,
+  buildDashboardSource,
   buildDetectors,
   buildHoneypotConfig,
   buildPolicy,
@@ -41,7 +47,7 @@ export {
   createSyslogSink,
   createStore,
 } from "./build.js";
-export type { BuiltBlocklist, BuiltEngineConfig, BuiltErrorSource, BuiltStore } from "./build.js";
+export type { BuiltBlocklist, BuiltEngineConfig, BuiltErrorSource, BuiltStore, DashboardSourceOverrides, SharedDetectorState } from "./build.js";
 export { applyEnvOverrides } from "./env.js";
 export { planReload } from "./reload.js";
 export type { ReloadPlan } from "./reload.js";

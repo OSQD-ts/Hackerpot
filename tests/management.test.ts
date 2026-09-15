@@ -63,9 +63,9 @@ describe("ManagementServer", () => {
   });
 
   it("serves Prometheus metrics (authenticated) including injected gauges", async () => {
-    const store = new MemoryStore();
-    store.record(hit({ ip: "1.1.1.1", path: "/.env" }));
-    const port = await start(store, { metrics: () => ({ active_blocks: 3 }) });
+    const port = await start(new MemoryStore(), { metrics: () => ({ active_blocks: 3 }) });
+    // Counted as incidents are published, not read back from the store on every scrape.
+    server!.publish(hit({ ip: "1.1.1.1", path: "/.env" }));
 
     expect((await fetch(`http://127.0.0.1:${port}/metrics`)).status).toBe(401); // needs auth
     const res = await fetch(`http://127.0.0.1:${port}/metrics`, { headers: { Authorization: "Bearer secret-key" } });

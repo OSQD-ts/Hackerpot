@@ -45,6 +45,12 @@ services:
       HIT_LOG: "/data/hits.jsonl"
       # Seed the exact fake credentials you planted in decoys (comma-separated).
       HONEYTOKENS: "AKIA_HACKERPOT_HONEYTOKEN_DEMO"
+      # The management API, for the dashboard service below. Bound inside the container and
+      # not published: only services on this compose network can reach it. Leave the key
+      # unset and the API stays off, and so does the dashboard.
+      MANAGEMENT_API_KEYS: "${HACKERPOT_MANAGEMENT_API_KEY:-}"
+      MANAGEMENT_HOST: "0.0.0.0"
+      MANAGEMENT_PORT: "9500"
     volumes:
       - hitlog:/data
       # Your own settings, replacing the default config baked into the image.
@@ -74,6 +80,45 @@ services:
     depends_on:
       redis:
         condition: service_healthy
+
+  # The operator dashboard, as its own service beside the stack:
+  #
+  #   HACKERPOT_MANAGEMENT_API_KEY=… DASHBOARD_PASSWORD=… docker compose --profile dashboard up -d
+  #
+  # It reads the honeypot through its management API on the compose network and holds the
+  # API key itself, so no browser sees it. Published on the host's loopback only; reach it
+  # through an SSH tunnel or a reverse proxy with TLS, and set DASHBOARD_ALLOWED_HOSTS there.
+  # A profile rather than a default service, so `docker compose up` never starts a page
+  # showing captured attacker data without somebody deciding to.
+  dashboard:
+    image: hackerpot
+    profiles: [dashboard]
+    restart: unless-stopped
+    command: ["node", "dist/standalone.js", "dashboard"]
+    ports:
+      - "127.0.0.1:9501:9501"
+    environment:
+      DASHBOARD_HOST: "0.0.0.0"
+      DASHBOARD_PORT: "9501"
+      DASHBOARD_MANAGEMENT_URL: "http://honeypot:9500"
+      DASHBOARD_MANAGEMENT_API_KEY: "${HACKERPOT_MANAGEMENT_API_KEY:?set HACKERPOT_MANAGEMENT_API_KEY to the honeypot's management key}"
+      DASHBOARD_USERNAME: "${DASHBOARD_USERNAME:-ops}"
+      DASHBOARD_PASSWORD: "${DASHBOARD_PASSWORD:?set DASHBOARD_PASSWORD; the dashboard shows captured attacker data}"
+    # Nothing to attack here that the honeypot does not already hold, but the same outer
+    # boundary costs nothing.
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    mem_limit: 256m
+    pids_limit: 128
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('net').connect(9501,'127.0.0.1').on('connect',function(){this.end();process.exit(0)}).on('error',()=>process.exit(1))"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+    depends_on:
+      - honeypot
 
   redis:
     image: redis:7-alpine

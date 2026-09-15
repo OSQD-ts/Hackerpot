@@ -1,6 +1,8 @@
 import { createHmac } from "node:crypto";
-import { renderAlert } from "./alerts.js";
+import { renderAlert, renderAnomaly, renderSuppressedSummary } from "./alerts.js";
+import type { TrafficAnomaly } from "../audit.js";
 import type { IncidentBroker } from "./broker.js";
+import { redactIncident } from "./redact.js";
 import type { Incident, WebhookConfig } from "./types.js";
 
 const BACKOFF_BASE_MS = 500;
@@ -28,19 +30,32 @@ const DEFAULT_TIMEOUT_MS = 10_000;
  */
 const DEFAULT_MAX_IN_FLIGHT = 32;
 
+/**
+ * Client errors worth retrying: the receiver timed out, asked to be retried later, or is
+ * rate-limiting. Any other 4xx is a refusal (a wrong URL, a revoked token, a payload the
+ * receiver rejects) that fails the same way on every attempt, so retrying it only delays
+ * the error report and holds an in-flight slot through the backoff.
+ */
+const RETRYABLE_CLIENT_ERRORS = new Set([408, 425, 429]);
+
+/** Shortest interval between two suppression summaries for one webhook. */
+const MIN_SUMMARY_INTERVAL_MS = 60_000;
+
 export interface WebhookDispatcherOptions {
   webhooks: WebhookConfig[];
   /** Called when a delivery ultimately fails, for logging. */
   onError?: (url: string, error: Error) => void;
+  /**
+   * Cap on deliveries started per minute across every webhook together. Default:
+   * unlimited. Per-hook throttles bound each channel; this bounds the total when several
+   * hooks fire on the same flood.
+   */
+  globalMaxPerMinute?: number;
+  /** Overrides how long suppressed alerts are counted before the summary is sent. Mainly for tests. */
+  summaryIntervalMs?: number;
 }
 
-/**
- * Delivers each incident to the configured webhook URLs as an HTTP POST with a
- * JSON body. When a `secret` is set, the body is signed with HMAC-SHA256 and the
- * hex digest is sent in `X-Hackerpot-Signature` so the receiver can verify
- * authenticity. Failed deliveries retry with exponential backoff.
- */
-/** Per-webhook delivery state for de-duplication and throttling. */
+/** Per-webhook delivery state for de-duplication, throttling and suppression summaries. */
 interface HookState {
   /** Last-alert time per source IP, for de-duplication. */
   recentByIp: Map<string, number>;
@@ -50,18 +65,36 @@ interface HookState {
   inFlight: number;
   /** Deliveries dropped because `maxInFlight` was reached. */
   dropped: number;
+  /** Alerts held back since the last summary: deduplicated, throttled, over the global cap or over the in-flight cap. */
+  suppressed: number;
+  summaryTimer: ReturnType<typeof setTimeout> | undefined;
 }
 
+/**
+ * Delivers each incident to the configured webhook URLs as an HTTP POST with a JSON body.
+ *
+ * With a `secret`, each delivery carries two signatures. `X-Hackerpot-Signature` is
+ * HMAC-SHA256 over the body alone, unchanged for existing receivers; a captured delivery
+ * signed that way can be replayed indefinitely, because nothing in it expires.
+ * `X-Hackerpot-Signature-V2` covers `<timestamp>.<body>`, with the timestamp (Unix seconds)
+ * in `X-Hackerpot-Timestamp`, so a receiver that verifies it and rejects old timestamps is
+ * not open to replay. Failed deliveries retry with exponential backoff, except refusals.
+ */
 export class WebhookDispatcher {
   private readonly webhooks: WebhookConfig[];
   private readonly onError: ((url: string, error: Error) => void) | undefined;
   private readonly state: HookState[];
+  private readonly globalMaxPerMinute: number | undefined;
+  private readonly summaryIntervalMs: number | undefined;
+  private globalSends: number[] = [];
   private unsubscribe: (() => void) | undefined;
 
   constructor(options: WebhookDispatcherOptions) {
     this.webhooks = options.webhooks;
     this.onError = options.onError;
-    this.state = this.webhooks.map(() => ({ recentByIp: new Map(), sends: [], inFlight: 0, dropped: 0 }));
+    this.globalMaxPerMinute = options.globalMaxPerMinute;
+    this.summaryIntervalMs = options.summaryIntervalMs;
+    this.state = this.webhooks.map(() => ({ recentByIp: new Map(), sends: [], inFlight: 0, dropped: 0, suppressed: 0, summaryTimer: undefined }));
   }
 
   attach(broker: IncidentBroker): void {
@@ -75,6 +108,10 @@ export class WebhookDispatcher {
   detach(): void {
     this.unsubscribe?.();
     this.unsubscribe = undefined;
+    for (const state of this.state) {
+      if (state.summaryTimer !== undefined) clearTimeout(state.summaryTimer);
+      state.summaryTimer = undefined;
+    }
   }
 
   private async dispatch(incident: Incident): Promise<void> {
@@ -88,9 +125,13 @@ export class WebhookDispatcher {
       if (state.inFlight >= maxInFlight) {
         state.dropped += 1;
         this.onError?.(hook.url, new Error(`delivery dropped — ${maxInFlight} already in flight (${state.dropped} dropped so far)`));
+        this.suppress(hook, state);
         continue;
       }
-      if (!this.shouldSend(hook, state, incident.ip, now)) continue;
+      if (!this.shouldSend(hook, state, incident.ip, now) || !this.allowGlobal(now)) {
+        this.suppress(hook, state);
+        continue;
+      }
       state.inFlight += 1;
       pending.push(this.deliver(hook, incident).finally(() => (state.inFlight -= 1)));
     }
@@ -122,11 +163,76 @@ export class WebhookDispatcher {
     return true;
   }
 
+  /**
+   * Delivers a traffic anomaly to every hook that has not opted out (`anomalies: false`).
+   * Anomalies are already rate-limited at the source by the audit's cooldown, so per-hook
+   * dedupe, throttle and `minScore` do not apply; the global cap and in-flight cap do.
+   */
+  announce(anomaly: TrafficAnomaly): void {
+    const now = Date.now();
+    for (let i = 0; i < this.webhooks.length; i++) {
+      const hook = this.webhooks[i]!;
+      if (hook.anomalies === false) continue;
+      const state = this.state[i]!;
+      if (state.inFlight >= (hook.maxInFlight ?? DEFAULT_MAX_IN_FLIGHT) || !this.allowGlobal(now)) {
+        this.suppress(hook, state);
+        continue;
+      }
+      state.inFlight += 1;
+      this.post(hook, renderAnomaly(hook.format ?? "hackerpot", anomaly))
+        .catch((err) => this.onError?.(hook.url, err as Error))
+        .finally(() => (state.inFlight -= 1));
+    }
+  }
+
+  /** Counts a delivery against the per-minute cap shared by every webhook, or refuses it. */
+  private allowGlobal(now: number): boolean {
+    if (!this.globalMaxPerMinute) return true;
+    const cutoff = now - 60_000;
+    this.globalSends = this.globalSends.filter((t) => t >= cutoff);
+    if (this.globalSends.length >= this.globalMaxPerMinute) return false;
+    this.globalSends.push(now);
+    return true;
+  }
+
+  /**
+   * Counts an alert this webhook held back, and makes sure the count gets reported.
+   *
+   * Dedupe, throttling and the caps keep a channel readable during a flood by staying
+   * quiet, and silence is ambiguous: somebody watching the channel cannot tell "nothing
+   * happened" from "a lot happened and was held back". So the first suppression in a
+   * window schedules one summary delivery at its end, saying how many.
+   */
+  private suppress(hook: WebhookConfig, state: HookState): void {
+    state.suppressed += 1;
+    if (state.summaryTimer !== undefined) return;
+    const intervalMs =
+      this.summaryIntervalMs ?? Math.max(MIN_SUMMARY_INTERVAL_MS, (hook.dedupeWindowSeconds ?? 0) * 1000, (hook.throttleWindowSeconds ?? 0) * 1000);
+    state.summaryTimer = setTimeout(() => {
+      state.summaryTimer = undefined;
+      const count = state.suppressed;
+      state.suppressed = 0;
+      if (count === 0) return;
+      const body = renderSuppressedSummary(hook.format ?? "hackerpot", count, Math.round(intervalMs / 1000));
+      this.post(hook, body).catch((err) => this.onError?.(hook.url, err as Error));
+    }, intervalMs);
+    // A pending summary must never be what keeps the process alive.
+    state.summaryTimer.unref();
+  }
+
   private async deliver(hook: WebhookConfig, incident: Incident): Promise<void> {
+    // Credentials are stripped from the copy that leaves the process unless the operator
+    // opted out for this hook. See `WebhookConfig.redact`.
+    const outgoing = hook.redact === false ? incident : redactIncident(incident);
     // The renderer owns both the payload shape and the escaping the destination needs:
     // native incident JSON for your own receiver, an escaped and mention-neutered
     // message for a chat platform. It also decides the `omitBody` default per format.
-    const { body } = renderAlert(hook.format ?? "hackerpot", incident, hook.omitBody !== undefined ? { omitBody: hook.omitBody } : {});
+    const { body } = renderAlert(hook.format ?? "hackerpot", outgoing, hook.omitBody !== undefined ? { omitBody: hook.omitBody } : {});
+    await this.post(hook, body);
+  }
+
+  /** POSTs one body: signed, retried with backoff, never retried after a refusal. */
+  private async post(hook: WebhookConfig, body: string): Promise<void> {
     const headers: Record<string, string> = {
       "Content-Type": "application/json",
       "User-Agent": "hackerpot-webhook",
@@ -139,17 +245,33 @@ export class WebhookDispatcher {
     const maxRetries = hook.maxRetries ?? 3;
     const timeoutMs = hook.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      const attemptHeaders = { ...headers };
+      if (hook.secret) {
+        // Signed per attempt, so a retry after a backoff is not rejected as stale.
+        const timestamp = String(Math.floor(Date.now() / 1000));
+        attemptHeaders["X-Hackerpot-Timestamp"] = timestamp;
+        attemptHeaders["X-Hackerpot-Signature-V2"] = `sha256=${createHmac("sha256", hook.secret).update(`${timestamp}.${body}`).digest("hex")}`;
+      }
+
+      let failure: Error;
       try {
-        const res = await fetch(hook.url, { method: "POST", headers, body, signal: AbortSignal.timeout(timeoutMs) });
+        const res = await fetch(hook.url, { method: "POST", headers: attemptHeaders, body, signal: AbortSignal.timeout(timeoutMs) });
+        // The response body is never needed; release the connection instead of leaving it half-read.
+        await res.body?.cancel().catch(() => undefined);
         if (res.ok) return;
-        throw new Error(`HTTP ${res.status}`);
-      } catch (err) {
-        if (attempt === maxRetries) {
-          this.onError?.(hook.url, err as Error);
+        if (res.status >= 400 && res.status < 500 && !RETRYABLE_CLIENT_ERRORS.has(res.status)) {
+          this.onError?.(hook.url, new Error(`HTTP ${res.status}, not retried: the receiver refused the delivery`));
           return;
         }
-        await new Promise((resolve) => setTimeout(resolve, BACKOFF_BASE_MS * 2 ** (attempt - 1)));
+        failure = new Error(`HTTP ${res.status}`);
+      } catch (err) {
+        failure = err as Error;
       }
+      if (attempt === maxRetries) {
+        this.onError?.(hook.url, failure);
+        return;
+      }
+      await new Promise((resolve) => setTimeout(resolve, BACKOFF_BASE_MS * 2 ** (attempt - 1)));
     }
   }
 }

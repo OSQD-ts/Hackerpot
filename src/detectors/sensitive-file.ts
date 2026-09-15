@@ -1,3 +1,4 @@
+import { statelessPattern } from "../internal/pattern.js";
 import type { Detection, DetectionContext, Detector } from "./types.js";
 
 export interface SensitiveFileOptions {
@@ -33,7 +34,7 @@ const DEFAULT_PATTERNS: RegExp[] = [
 ];
 
 export function sensitiveFileDetector(options: SensitiveFileOptions = {}): Detector {
-  const patterns = options.patterns ?? DEFAULT_PATTERNS;
+  const patterns = (options.patterns ?? DEFAULT_PATTERNS).map((pattern) => statelessPattern(pattern));
   const score = options.score ?? 6;
 
   return {

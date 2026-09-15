@@ -1,0 +1,14 @@
+{
+  "//": "The browser code only: the dashboard client and <hackerpot-dashboard>. They speak DOM, and the library targets Node, so adding DOM to the main project would let a stray `document` in src/ pass a type-check and fail at run time. One extra project is cheaper than that. Run with `tsc -p tsconfig.browser.json`.",
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "declaration": false,
+    "rootDir": ".",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "noUnusedLocals": true,
+    "noUnusedParameters": true
+  },
+  "include": ["src/dashboard/client/**/*", "src/element/**/*"],
+  "exclude": ["dist", "node_modules"]
+}

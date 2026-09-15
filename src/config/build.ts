@@ -2,6 +2,7 @@ import { Redis } from "ioredis";
 import {
   PortScanSentinel,
   clientAnomalyDetector,
+  crawlerVerificationDetector,
   credentialBruteforceDetector,
   crlfInjectionDetector,
   decoyPathDetector,
@@ -9,6 +10,7 @@ import {
   graphqlAbuseDetector,
   prototypePollutionDetector,
   headerAnomalyDetector,
+  headerIntegrityDetector,
   honeytokenDetector,
   hostHeaderInjectionDetector,
   insecureDeserializationDetector,
@@ -23,8 +25,13 @@ import {
   sensitiveFileDetector,
   ssrfProbeDetector,
   suspiciousMethodDetector,
+  targetIntegrityDetector,
+  trapDetector,
   webShellDetector,
 } from "../detectors/index.js";
+import { TrafficAudit } from "../audit.js";
+import type { CrawlerRanges } from "../crawler-ranges.js";
+import { managementApiSource, type DashboardOptions, type DashboardSource } from "../dashboard/index.js";
 import type { Detector, PortScanEvent, PortScanSentinelOptions } from "../detectors/index.js";
 import {
   blockAction,
@@ -68,11 +75,25 @@ import type { HackerpotConfig } from "./schema.js";
  * opening Redis connections or binding sockets.
  */
 
+/** Live objects detectors share across reloads, so a rebuilt detector set keeps them. */
+export interface SharedDetectorState {
+  /** Published crawler ranges, filled by the refresher `standalone` starts. */
+  crawlerRanges?: CrawlerRanges;
+}
+
 /** In the same order as `defaultDetectors()`, minus anything switched off. */
-export function buildDetectors(config: HackerpotConfig): Detector[] {
+export function buildDetectors(config: HackerpotConfig, shared: SharedDetectorState = {}): Detector[] {
   const d = config.detectors;
   const detectors: Detector[] = [];
 
+  // First when enabled: a crawler DNS confirms is exempted from the volume detectors after it.
+  if (d["crawler-verification"].enabled) {
+    const options = { ...d["crawler-verification"].options };
+    if (d["crawler-verification"].publishedRanges && shared.crawlerRanges) options.ranges = shared.crawlerRanges;
+    detectors.push(crawlerVerificationDetector(options));
+  }
+  // Early, and before anything that could answer the request first: a trap is proof.
+  if (d.trap.enabled) detectors.push(trapDetector(d.trap.options));
   if (d["decoy-path"].enabled) {
     const custom = d["decoy-path"].decoys;
     const base = d["decoy-path"].replaceDefaults ? [] : defaultDecoyPaths.filter((decoy) => !d["decoy-path"].disabled.includes(decoy.id));
@@ -89,6 +110,8 @@ export function buildDetectors(config: HackerpotConfig): Detector[] {
   if (d["crlf-injection"].enabled) detectors.push(crlfInjectionDetector(d["crlf-injection"].options));
   if (d["web-shell"].enabled) detectors.push(webShellDetector(d["web-shell"].options));
   if (d["header-anomaly"].enabled) detectors.push(headerAnomalyDetector(d["header-anomaly"].options));
+  if (d["header-integrity"].enabled) detectors.push(headerIntegrityDetector(d["header-integrity"].options));
+  if (d["target-integrity"].enabled) detectors.push(targetIntegrityDetector(d["target-integrity"].options));
   if (d["host-header-injection"].enabled) detectors.push(hostHeaderInjectionDetector(d["host-header-injection"].options));
   if (d["sensitive-file"].enabled) detectors.push(sensitiveFileDetector(d["sensitive-file"].options));
   if (d["open-redirect"].enabled) detectors.push(openRedirectDetector(d["open-redirect"].options));
@@ -483,6 +506,7 @@ export function createManagementServer(
   store: HitStore,
   onError?: (error: Error) => void,
   metrics?: () => Record<string, number> | Promise<Record<string, number>>,
+  detectorFailures?: () => Map<string, number> | Record<string, number>,
 ): ManagementServer | undefined {
   const settings = config.management;
   if (!settings.enabled) return undefined;
@@ -493,9 +517,11 @@ export function createManagementServer(
     apiKeys: settings.apiKeys,
     websocket: settings.websocket,
     webhooks: settings.webhooks,
+    webhookGlobalMaxPerMinute: settings.webhookGlobalMaxPerMinute,
   };
   if (onError) options.onError = onError;
   if (metrics) options.metrics = metrics;
+  if (detectorFailures) options.detectorFailures = detectorFailures;
   return new ManagementServer(options);
 }
 
@@ -525,6 +551,7 @@ export function buildHoneypotConfig(
    * operator to the wrong config section.
    */
   onError?: (error: Error, source: BuiltErrorSource) => void,
+  shared: SharedDetectorState = {},
 ): BuiltEngineConfig {
   const built = createStore(config, onError && ((error) => onError(error, "store")));
   const { blocklist, describe: blocklistDescribe, ingestTarget } = createBlocklist(
@@ -533,7 +560,7 @@ export function buildHoneypotConfig(
     onError && ((error) => onError(error, "enforce")),
   );
   const honeypot: HoneypotConfig = {
-    detectors: buildDetectors(config),
+    detectors: buildDetectors(config, shared),
     responseActions: buildResponseActions(config),
     policy: buildPolicy(config),
     store: built.store,
@@ -541,10 +568,67 @@ export function buildHoneypotConfig(
     allowlist: config.allowlist,
     activityWindowMs: config.engine.activityWindowMs,
     fingerprintWindowMs: config.engine.fingerprintWindowMs,
+    detectorTimeoutMs: config.engine.detectorTimeoutMs,
+    shadowDetectors: config.engine.shadowDetectors,
     trustProxy: config.server.trustProxy,
   };
+  if (Object.keys(config.serviceTokens.tokens).length > 0) honeypot.serviceTokens = { header: config.serviceTokens.header, tokens: config.serviceTokens.tokens };
+  if (config.audit.enabled) honeypot.audit = buildAudit(config);
   if (onHit) honeypot.onHit = onHit;
   const result: BuiltEngineConfig = { ...built, config: honeypot, blocklistDescribe };
   if (ingestTarget) result.ingestTarget = ingestTarget;
   return result;
+}
+
+/** The traffic audit `[audit]` describes. Started by the caller, which decides where anomalies go. */
+export function buildAudit(config: HackerpotConfig): TrafficAudit {
+  const a = config.audit;
+  return new TrafficAudit({
+    windowMs: a.windowSeconds * 1000,
+    baselineMs: a.baselineSeconds * 1000,
+    minSamples: a.minSamples,
+    cooldownMs: a.cooldownSeconds * 1000,
+    campaignMinIps: a.campaignMinIps,
+  });
+}
+
+/** The dashboard listener `[dashboard]` describes, for `startDashboard`. */
+export function buildDashboardOptions(config: HackerpotConfig): DashboardOptions {
+  const d = config.dashboard;
+  const options: DashboardOptions = {
+    host: d.host,
+    port: d.port,
+    basePath: d.basePath,
+    title: d.title,
+    refusal: d.refusal,
+    redact: { credentials: d.redactCredentials, maskIp: d.maskIp },
+    sections: Object.fromEntries(d.hide.map((name) => [name, false])),
+  };
+  if (d.instance !== "") options.instance = d.instance;
+  if (d.allowedHosts.length > 0) options.allowedHosts = d.allowedHosts;
+  if (d.allowedClients.length > 0) options.allowedClients = d.allowedClients;
+  if (d.auth.kind === "basic") options.auth = { username: d.auth.username, password: d.auth.password };
+  else if (d.auth.kind === "token") options.auth = { token: d.auth.token };
+  else if (d.auth.kind === "none") options.auth = false;
+  return options;
+}
+
+export interface DashboardSourceOverrides {
+  managementUrl?: string | undefined;
+  apiKey?: string | undefined;
+  onError?: (error: unknown) => void;
+}
+
+/**
+ * Where `hackerpot dashboard` reads from: an explicit management API URL and key, else
+ * `[dashboard] management_url`, else this config's own `[management]` listener with its first
+ * key. A dashboard beside the stack has no engine of its own to read.
+ */
+export function buildDashboardSource(config: HackerpotConfig, overrides: DashboardSourceOverrides = {}): DashboardSource {
+  const m = config.management;
+  const url = overrides.managementUrl || config.dashboard.managementUrl || (m.enabled ? `http://${m.host.includes(":") ? `[${m.host}]` : m.host === "0.0.0.0" ? "127.0.0.1" : m.host}:${m.port}` : "");
+  const apiKey = overrides.apiKey || config.dashboard.managementApiKey || m.apiKeys[0] || "";
+  if (url === "") throw new ConfigError("the dashboard has no management API to read: pass --management-url, set [dashboard] management_url, or enable [management] in this config");
+  if (apiKey === "") throw new ConfigError(`the dashboard needs an API key for ${url}: pass --api-key, set [dashboard] management_api_key, or DASHBOARD_MANAGEMENT_API_KEY`);
+  return managementApiSource({ url, apiKey, ...(overrides.onError ? { onError: overrides.onError } : {}) });
 }
