@@ -7,6 +7,29 @@ import type { ResponseContext } from "./responses/types.js";
 export type NextFn = (err?: unknown) => void;
 export type HoneypotMiddleware = (req: IncomingMessage, res: ServerResponse, next: NextFn) => Promise<void>;
 
+export interface MiddlewareOptions {
+  /**
+   * Count a path toward `path-bruteforce` only once it is known to be a probe. Default true.
+   *
+   * In middleware mode the engine sees every request the app serves. One ordinary page
+   * load of a modern SPA is 20+ distinct asset paths, which past the standalone-sized
+   * default (15 in 30s) blocked a real visitor for loading a page. Path *bruteforce*
+   * means guessing paths that do not exist, so a path handed to the app now counts only
+   * if the app answers 404. A path the honeypot answers itself always counts.
+   *
+   * An app that answers unknown paths with 200 (an SPA history fallback, a catch-all
+   * route) never produces a miss, so there this detector sees only the paths the
+   * honeypot answers. For such an app, set this false and raise the threshold instead.
+   *
+   * `rate-spike` and `credential-bruteforce` still see every request: raw volume and
+   * repeated attempts on one path are what they measure. Because a 404 is known only
+   * once the app has answered, `path-bruteforce` fires from the request after the
+   * threshold is reached rather than on it. Set false to count every path, as
+   * standalone mode does.
+   */
+  countOnlyMissedPaths?: boolean;
+}
+
 /**
  * Builds Express/Connect-compatible middleware. Mount it ahead of your real
  * routes (`app.use(createMiddleware(engine))`). Requests nothing flags fall
@@ -14,7 +37,8 @@ export type HoneypotMiddleware = (req: IncomingMessage, res: ServerResponse, nex
  * traffic is never disturbed. Only once a first-phase detector flags a request
  * that also has body-inspecting detectors is the body read.
  */
-export function createMiddleware(engine: HoneypotEngine): HoneypotMiddleware {
+export function createMiddleware(engine: HoneypotEngine, options: MiddlewareOptions = {}): HoneypotMiddleware {
+  const countOnlyMissedPaths = options.countOnlyMissedPaths ?? true;
   return async function honeypotMiddleware(req, res, next) {
     // Nothing below may reject into the host application. This middleware sits in
     // front of someone else's routes, and an async middleware that rejects is not
@@ -24,7 +48,7 @@ export function createMiddleware(engine: HoneypotEngine): HoneypotMiddleware {
     // that can die mid-write, so both can still throw here. A honeypot that can take
     // the host app down with it is worse than no honeypot.
     try {
-      await handle(engine, req, res, next);
+      await handle(engine, req, res, next, countOnlyMissedPaths);
     } catch (err) {
       // Once we have started answering, the host app cannot render an error page over
       // the top of it — close the response ourselves rather than hand Express a
@@ -38,7 +62,7 @@ export function createMiddleware(engine: HoneypotEngine): HoneypotMiddleware {
   };
 }
 
-async function handle(engine: HoneypotEngine, req: IncomingMessage, res: ServerResponse, next: NextFn): Promise<void> {
+async function handle(engine: HoneypotEngine, req: IncomingMessage, res: ServerResponse, next: NextFn, countOnlyMissedPaths: boolean): Promise<void> {
   const method = req.method ?? "GET";
   const url = req.url ?? "/";
   const path = pathOf(url);
@@ -63,7 +87,8 @@ async function handle(engine: HoneypotEngine, req: IncomingMessage, res: ServerR
   // AND this method can carry one. When it is, the first pass DEFERS recording: it is
   // the same request, and committing both passes counts it twice (see `EvaluateOptions`).
   const bodyPhase = engine.needsBodyPhase && mayHaveBody(method);
-  let result = await engine.evaluate(baseFacts, bodyPhase ? { recordHit: false } : {});
+  const activityStatus = countOnlyMissedPaths ? "passed" : "seen";
+  let result = await engine.evaluate(baseFacts, bodyPhase ? { recordHit: false, activityStatus } : { activityStatus });
 
   if (bodyPhase && result.detections.length > 0) {
     // Something fired, so this request is ours to handle — reading the body can no
@@ -81,10 +106,19 @@ async function handle(engine: HoneypotEngine, req: IncomingMessage, res: ServerR
   }
 
   if (result.detections.length === 0) {
+    if (countOnlyMissedPaths) {
+      // Registered before next(), because the app may answer synchronously.
+      const tracker = result.tracker;
+      res.once("finish", () => {
+        if (res.statusCode === 404) tracker.confirmPath(path);
+      });
+    }
     next();
     return;
   }
 
+  // The honeypot answers this request itself, so it was a probe, not an app page.
+  if (countOnlyMissedPaths) result.tracker.confirmPath(path);
   await dispatch(engine, res, result, ip, path);
 }
 

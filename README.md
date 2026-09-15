@@ -659,21 +659,25 @@ Mount it ahead of your real routes. Anything no detector flags falls through to
 `next()` untouched, body included — the request stream is never consumed on your
 behalf.
 
-> **Tune the volume detectors before putting this in front of real users.** The
-> per-request detectors are conservative, but `path-bruteforce` and `rate-spike` count
-> *traffic*, and in middleware mode they see every request your app serves — static
-> assets included. A single ordinary page load of a modern SPA is easily 20+ distinct
-> paths, which is past `path-bruteforce`'s default of 15 in 30s: measured against the
-> shipped defaults, one 22-request page load scores a visitor 64, and the default block
-> threshold is 40. Standalone mode does not have this problem — nothing there serves
-> real assets, so many distinct paths genuinely is probing — which is why the defaults
-> are set for it. For middleware, raise `unique_path_threshold` well above your
-> heaviest page, or disable `path-bruteforce` and let the per-request detectors do the
-> work:
+> **How the volume detectors behave in front of real users.** In middleware mode the
+> engine sees every request your app serves, static assets included, and one ordinary
+> page load of a modern SPA is easily 20+ distinct paths, past `path-bruteforce`'s
+> default of 15 in 30s. So in middleware mode a path handed to your app counts toward
+> `path-bruteforce` only once the app answers it **404**. A path the honeypot answers
+> itself always counts. A wordlist walk still trips it, from the request after the
+> threshold (a 404 is only known once your app has answered); a page load does not.
+> `rate-spike` (60 requests in 10s) and `credential-bruteforce` still count every
+> request, so raise `rate-spike`'s threshold if one of your pages makes 60+ requests.
 >
-> ```toml
-> [detectors.path-bruteforce]
-> enabled = false           # or: unique_path_threshold = 200
+> If your app answers unknown paths with **200** (an SPA history fallback that serves
+> `index.html` for every route, or a catch-all route), it never produces a miss, so
+> `path-bruteforce` cannot fire on paths your app answers. Decoy paths and the
+> per-request detectors still catch most probes. To catch the enumeration itself, count
+> every distinct path as standalone mode does, and raise `path-bruteforce`'s
+> `uniquePathThreshold` well above your heaviest page:
+>
+> ```ts
+> app.use(createMiddleware(engine, { countOnlyMissedPaths: false }));
 > ```
 
 ```ts

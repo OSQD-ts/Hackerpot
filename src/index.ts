@@ -1,7 +1,7 @@
 export { HoneypotEngine } from "./core.js";
 export type { EvaluateOptions, EvaluationResult } from "./core.js";
 export { createMiddleware, dispatch } from "./middleware.js";
-export type { HoneypotMiddleware, NextFn } from "./middleware.js";
+export type { HoneypotMiddleware, MiddlewareOptions, NextFn } from "./middleware.js";
 export { HoneypotServer } from "./server.js";
 export * from "./stores/index.js";
 export { ActivityRegistry, FingerprintRegistry, IpTracker } from "./state.js";

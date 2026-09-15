@@ -37,6 +37,12 @@ export interface EvaluateOptions {
   trackActivity?: boolean;
   /** Record the hit in the store, enrich it, and announce it via `onHit`. Default true. */
   recordHit?: boolean;
+  /**
+   * How the tracked request is marked. Default `seen`, which counts toward every
+   * volume detector. Middleware passes `passed` so a path the app serves normally
+   * does not count as enumeration. See `MiddlewareOptions.countOnlyMissedPaths`.
+   */
+  activityStatus?: "seen" | "passed";
 }
 
 export interface EvaluationResult {
@@ -179,7 +185,7 @@ export class HoneypotEngine {
     }
 
     const now = new Date();
-    if (trackActivity) tracker.record({ method: facts.method, path: facts.path, status: "seen" }, now.getTime());
+    if (trackActivity) tracker.record({ method: facts.method, path: facts.path, status: options.activityStatus ?? "seen" }, now.getTime());
 
     const ctx: DetectionContext = { ...facts, tracker, timestamp: now, fingerprint, fingerprintRegistry: this.fingerprints };
     const detections: Detection[] = [];

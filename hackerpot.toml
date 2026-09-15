@@ -509,14 +509,11 @@ attempt_threshold = 8
 # One IP walking a wordlist: many *distinct* paths in a short window, so a busy
 # client polling a single endpoint never trips it.
 #
-# ⚠️ These defaults are sized for STANDALONE mode, where nothing serves real assets and
-# many distinct paths genuinely is probing. In MIDDLEWARE mode this detector sees every
-# request your application serves, and one ordinary page load of a modern SPA is easily
-# 20+ distinct paths — past the threshold below on its own. Measured against these
-# defaults, a single 22-request page load scores the visitor 64, and [policy]
-# block_threshold is 40, so an ordinary first-time visitor is blocked. Mounted as
-# middleware, raise this well above your heaviest page (200 is a sane starting point)
-# or set enabled = false and let the per-request detectors carry the load.
+# In MIDDLEWARE mode a path handed to your application counts only once the app answers
+# it with 404 (a path the honeypot answers itself always counts), so the 20+ asset paths
+# of an ordinary page load do not add up to enumeration. Standalone mode serves nothing
+# real and counts every distinct path. A library caller can count every path in
+# middleware too, with createMiddleware(engine, { countOnlyMissedPaths: false }).
 [detectors.path-bruteforce]
 enabled = true
 score = 8
