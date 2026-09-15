@@ -29,6 +29,7 @@
     "dashboard": "tsx scripts/dashboard.ts",
     "serve": "tsx src/standalone.ts",
     "config:check": "tsx src/standalone.ts --print-config",
+    "config:verify": "tsx src/standalone.ts --check",
     "docker:build": "docker build -t hackerpot .",
     "docker:run": "docker run --rm -p 4004:4004 hackerpot",
     "test": "vitest run",

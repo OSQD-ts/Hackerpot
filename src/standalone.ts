@@ -23,6 +23,7 @@ import { formatTextLine } from "./logfmt.js";
 import type { IpAllowlist } from "./allowlist.js";
 import type { Blocklist } from "./blocklist.js";
 import { applyIocEntries, fetchIocFeed } from "./intel/index.js";
+import { checkResponseActions } from "./responses/index.js";
 import type { IntelConfig } from "./config/index.js";
 import type { HoneypotHit } from "./types.js";
 
@@ -46,6 +47,9 @@ Options:
                         the built-in defaults apply.
       --print-config    Print the resolved configuration as JSON and exit.
                         Validates the file without binding any port.
+      --check           Validate the file, then serve every enabled response
+                        action once over loopback and report each one. Exits 1
+                        if any action throws or reports a failure.
   -h, --help            Show this message.
 
 Send SIGHUP to reload detectors, responses, policy, allowlist, and logging from
@@ -58,11 +62,12 @@ Environment variables override the config file — see README.md.
 interface Args {
   configPath: string | undefined;
   printConfig: boolean;
+  check: boolean;
   help: boolean;
 }
 
 export function parseArgs(argv: string[]): Args {
-  const args: Args = { configPath: undefined, printConfig: false, help: false };
+  const args: Args = { configPath: undefined, printConfig: false, check: false, help: false };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]!;
     if (arg === "--config" || arg === "-c") {
@@ -74,6 +79,8 @@ export function parseArgs(argv: string[]): Args {
       args.configPath = arg.slice("--config=".length);
     } else if (arg === "--print-config") {
       args.printConfig = true;
+    } else if (arg === "--check") {
+      args.check = true;
     } else if (arg === "--help" || arg === "-h") {
       args.help = true;
     } else {
@@ -202,6 +209,20 @@ async function main(argv: string[]): Promise<void> {
 
   if (args.printConfig) {
     process.stdout.write(`${describeConfig(config)}\n`);
+    return;
+  }
+
+  // A config can validate and still produce a response that breaks once a request is
+  // routed to it. Serve each action once, before real traffic finds out.
+  if (args.check) {
+    const results = await checkResponseActions(buildResponseActions(config));
+    for (const result of results) {
+      const status = result.status !== undefined ? ` (${result.status})` : "";
+      process.stdout.write(`${result.outcome.padEnd(6)} ${result.id}${status}${result.error ? ` — ${result.error}` : ""}\n`);
+    }
+    const failed = results.filter((result) => result.outcome === "failed").length;
+    process.stdout.write(failed > 0 ? `\n${failed} response action(s) failed\n` : `\nall ${results.length} response actions answered\n`);
+    process.exitCode = failed > 0 ? 1 : 0;
     return;
   }
 

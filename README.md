@@ -160,6 +160,7 @@ The npm scripts you'll use most:
 | `npm run dashboard` | serve the management-API test GUI on its own |
 | `npm run attack:all` | fire the whole attack simulator at a running honeypot |
 | `npm run config:check` | validate a TOML config and print the resolved settings |
+| `npm run config:verify` | validate a config, then serve every enabled response action once and report any that fail |
 | `npm run generate:nginx` | emit includable nginx edge-capture config files |
 | `npm test` | run the test suite |
 | `npm run typecheck` | type-check without emitting |
@@ -856,6 +857,23 @@ HACKERPOT_CONFIG=./hackerpot.toml node dist/standalone.js
   npm run config:check -- --config ./hackerpot.toml
   # or: node dist/standalone.js --print-config
   ```
+
+- **Exercise the response actions before real traffic does.** A config can validate
+  and still produce a response that breaks once a request is routed to it. `--check`
+  validates the config, then serves every enabled response action once over a loopback
+  socket, with a throwaway blocklist so nothing is really blocked. Each action is
+  reported as `ok`, `held` (still delaying or streaming when the check stopped waiting,
+  which is the job of `tarpit`, `drip-feed` and `large-payload`), or `failed` (it threw,
+  rejected, or reported an error). A deliberate 5xx, as `chaos` sends, is not a failure.
+  Exits 1 if any action failed:
+
+  ```bash
+  npm run config:verify -- --config ./hackerpot.toml
+  # or: node dist/standalone.js --check
+  ```
+
+  Library callers can run the same check over their own custom actions with
+  `checkResponseActions(actions)`.
 
 - **Section names accept hyphens or underscores** interchangeably
   (`[detectors.rate-spike]` = `[detectors.rate_spike]`). **Regex-valued keys** take a
