@@ -1,3 +1,4 @@
+import { statelessPattern } from "../internal/pattern.js";
 import type { Detection, DetectionContext, Detector } from "./types.js";
 
 export interface ScannerSignatureOptions {
@@ -9,8 +10,11 @@ export interface ScannerSignatureOptions {
   respondWith?: string;
 }
 
-/** User agents belonging to well-known scanning, fuzzing, and exploitation tools. Exported so edge configs (e.g. the nginx generator) can reuse the same list. */
-export const scannerUserAgentPatterns: RegExp[] = [
+/**
+ * Security scanners, fuzzers and exploitation tools. A User-Agent naming one is the
+ * client's own statement of what it is, so a match is marked as proof.
+ */
+export const attackToolUserAgentPatterns: RegExp[] = [
   /sqlmap/i,
   /nikto/i,
   /nmap|masscan|zgrab|zmap/i,
@@ -18,8 +22,13 @@ export const scannerUserAgentPatterns: RegExp[] = [
   /nuclei|acunetix|nessus|openvas|qualys|arachni|w3af/i,
   /metasploit|hydra|havij|nette tester/i,
   /burpsuite|burp collaborator/i,
-  /python-requests|go-http-client|libwww-perl|curl\/|wget\//i,
 ];
+
+/** Bare scripting HTTP clients: automation, but also every legitimate script and API integration, so a match is only suspicion. */
+export const scriptingClientUserAgentPatterns: RegExp[] = [/python-requests|go-http-client|libwww-perl|curl\/|wget\//i];
+
+/** Both lists. Exported so edge configs (e.g. the nginx generator) can reuse the same list. */
+export const scannerUserAgentPatterns: RegExp[] = [...attackToolUserAgentPatterns, ...scriptingClientUserAgentPatterns];
 
 /**
  * Flags requests whose User-Agent identifies a security scanner or a bare
@@ -27,7 +36,8 @@ export const scannerUserAgentPatterns: RegExp[] = [
  * is catching unsophisticated automation and corroborating other detections.
  */
 export function scannerSignatureDetector(options: ScannerSignatureOptions = {}): Detector {
-  const patterns = [...scannerUserAgentPatterns, ...(options.extraPatterns ?? [])];
+  const patterns = [...scannerUserAgentPatterns, ...(options.extraPatterns ?? [])].map((pattern) => statelessPattern(pattern));
+  const attackTools = new Set<RegExp>(attackToolUserAgentPatterns);
   const score = options.score ?? 6;
   const flagMissing = options.flagMissingUserAgent ?? true;
 
@@ -39,7 +49,8 @@ export function scannerSignatureDetector(options: ScannerSignatureOptions = {}):
       const userAgent = Array.isArray(raw) ? raw[0] : raw;
 
       if (!userAgent) {
-        if (!flagMissing) return undefined;
+        // A partial header set (a log line) may simply not have recorded one.
+        if (!flagMissing || ctx.partialHeaders) return undefined;
         const detection: Detection = {
           detectorId: "scanner-signature",
           reason: "Request sent no User-Agent header",
@@ -59,6 +70,9 @@ export function scannerSignatureDetector(options: ScannerSignatureOptions = {}):
         score,
         metadata: { userAgent, pattern: matched.source },
       };
+      // A tool naming itself is its own statement of what it is. Extra patterns from
+      // config, a bare scripting client and a missing User-Agent stay suspicion.
+      if (attackTools.has(matched)) detection.certain = true;
       if (options.respondWith) detection.respondWith = options.respondWith;
       return detection;
     },

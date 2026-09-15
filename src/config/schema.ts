@@ -3,11 +3,13 @@ import { IpAllowlist } from "../allowlist.js";
 import { defaultDecoyPaths } from "../detectors/index.js";
 import type {
   ClientAnomalyOptions,
+  CrawlerVerificationOptions,
   CredentialBruteforceOptions,
   CrlfInjectionOptions,
   DecoyPath,
   GraphqlAbuseOptions,
   HeaderAnomalyOptions,
+  HeaderIntegrityOptions,
   HostHeaderInjectionOptions,
   HoneytokenOptions,
   InsecureDeserializationOptions,
@@ -23,6 +25,8 @@ import type {
   SensitiveFileOptions,
   SsrfProbeOptions,
   SuspiciousMethodOptions,
+  TargetIntegrityOptions,
+  TrapOptions,
   WebShellOptions,
 } from "../detectors/index.js";
 import type {
@@ -73,6 +77,10 @@ export interface EngineConfig {
   activityWindowMs: number;
   /** How long the actor registry remembers a fingerprint's IPs — bounds repeat-actor's horizon and its memory. */
   fingerprintWindowMs: number;
+  /** Longest an asynchronous detector may run before it is skipped for that request, in ms. 0 disables the limit. */
+  detectorTimeoutMs: number;
+  /** Detector ids whose findings are reported but never acted on. */
+  shadowDetectors: string[];
 }
 
 export interface PolicyConfig {
@@ -206,6 +214,13 @@ export interface DecoyPathConfig {
 
 export interface DetectorsConfig {
   "decoy-path": DecoyPathConfig;
+  "crawler-verification": Toggle<CrawlerVerificationOptions> & {
+    /** Also verify against the address ranges operators publish, fetched over HTTPS on a schedule. */
+    publishedRanges: boolean;
+    /** How often published ranges are refreshed, in hours. */
+    rangesRefreshHours: number;
+  };
+  trap: Toggle<TrapOptions>;
   "payload-injection": Toggle<PayloadInjectionOptions>;
   "ssrf-probe": Toggle<SsrfProbeOptions>;
   "nosql-injection": Toggle<NosqlInjectionOptions>;
@@ -216,6 +231,8 @@ export interface DetectorsConfig {
   "crlf-injection": Toggle<CrlfInjectionOptions>;
   "web-shell": Toggle<WebShellOptions>;
   "header-anomaly": Toggle<HeaderAnomalyOptions>;
+  "header-integrity": Toggle<HeaderIntegrityOptions>;
+  "target-integrity": Toggle<TargetIntegrityOptions>;
   "host-header-injection": Toggle<HostHeaderInjectionOptions>;
   "sensitive-file": Toggle<SensitiveFileOptions>;
   "open-redirect": Toggle<OpenRedirectOptions>;
@@ -363,6 +380,8 @@ export interface ManagementApiConfig {
   apiKeys: string[];
   websocket: boolean;
   webhooks: WebhookConfig[];
+  /** Cap on webhook deliveries started per minute across all hooks together. 0 disables it. */
+  webhookGlobalMaxPerMinute: number;
 }
 
 export interface PortScanConfig {
@@ -376,6 +395,45 @@ export interface PortScanConfig {
   maxTrackedIps: number;
   /** How long an IP's touched-port set is remembered, in ms. */
   retentionMs: number;
+}
+
+export interface AuditConfig {
+  enabled: boolean;
+  windowSeconds: number;
+  baselineSeconds: number;
+  intervalSeconds: number;
+  minSamples: number;
+  cooldownSeconds: number;
+  campaignMinIps: number;
+}
+
+export interface ServiceTokensConfig {
+  header: string;
+  /** Name → secret. */
+  tokens: Record<string, string>;
+}
+
+export interface DashboardServiceConfig {
+  /** Serve the dashboard from the standalone service, reading this process's engine. */
+  enabled: boolean;
+  host: string;
+  port: number;
+  basePath: string;
+  title: string;
+  /** Empty means the machine's hostname. */
+  instance: string;
+  /** `none` must be written to run without authentication on a non-loopback bind. */
+  auth: { kind: "basic"; username: string; password: string } | { kind: "token"; token: string } | { kind: "none" } | { kind: "default" };
+  refusal: "unauthorized" | "not-found" | "close";
+  allowedHosts: string[];
+  allowedClients: string[];
+  redactCredentials: boolean;
+  maskIp: boolean;
+  /** Section names switched off on the server. */
+  hide: Array<"overview" | "incidents" | "statistics" | "sessions" | "actors" | "intel">;
+  /** For `hackerpot dashboard`: the management API to read, and its key. */
+  managementUrl: string;
+  managementApiKey: string;
 }
 
 export interface HackerpotConfig {
@@ -392,6 +450,10 @@ export interface HackerpotConfig {
   allowlist: string[];
   detectors: DetectorsConfig;
   responses: ResponsesConfig;
+  /** Anomaly watch over the traffic the engine evaluates. */
+  audit: AuditConfig;
+  /** Shared secrets that exempt your own services from detection. */
+  serviceTokens: ServiceTokensConfig;
   portScan: PortScanConfig;
   smtp: SmtpConfig;
   ssh: SshConfig;
@@ -400,6 +462,8 @@ export interface HackerpotConfig {
   /** Forward every incident to a syslog collector. Independent of the management API. */
   syslog: SyslogConfig;
   management: ManagementApiConfig;
+  /** The operator dashboard: served by `serve` when enabled, or on its own by `hackerpot dashboard`. */
+  dashboard: DashboardServiceConfig;
 }
 
 /** Assigns only when a value was actually supplied, so optional fields stay absent. */
@@ -490,6 +554,31 @@ function parseHoneytokens(section: Section): Toggle<HoneytokenOptions> {
 }
 
 function parseDetectors(section: Section): DetectorsConfig {
+  const crawlerSection = child(section, "crawler-verification");
+  const crawlerOptions: CrawlerVerificationOptions = {};
+  put(crawlerOptions, "treatMissingPtrAsForgery", crawlerSection.boolean("treat_missing_ptr_as_forgery"));
+  // Off by default: it makes DNS lookups for requests that claim to be a known crawler.
+  const crawlerToggle = toggle(crawlerSection, false, crawlerOptions);
+  const rangesRefreshHours = crawlerSection.integer("ranges_refresh_hours", 12);
+  // The library floors the interval at an hour; saying so here beats silently polling less often than asked.
+  if (rangesRefreshHours < 1) crawlerSection.fail("ranges_refresh_hours", "must be at least 1");
+  const crawlerVerification = { ...crawlerToggle, publishedRanges: crawlerSection.boolean("published_ranges", false), rangesRefreshHours };
+  crawlerSection.done();
+
+  const trapSection = child(section, "trap");
+  const trapOptions: TrapOptions = {};
+  const trapPaths = trapSection.stringArray("paths");
+  if (trapPaths !== undefined) {
+    const relative = trapPaths.filter((path) => !path.startsWith("/"));
+    if (relative.length > 0) trapSection.fail("paths", `${relative.map((p) => `"${p}"`).join(", ")} must begin with "/": it is matched against the request path`);
+    put(trapOptions, "paths", trapPaths);
+  }
+  put(trapOptions, "formFields", trapSection.stringArray("form_fields"));
+  put(trapOptions, "headerName", trapSection.string("header_name"));
+  // Off by default: a trap is only proof once it is linked from hidden markup and disallowed in robots.txt.
+  const trap = toggle(trapSection, false, trapOptions);
+  trapSection.done();
+
   const decoyPath = parseDecoyPaths(child(section, "decoy-path"));
 
   const injection = child(section, "payload-injection");
@@ -564,6 +653,18 @@ function parseDetectors(section: Section): DetectorsConfig {
   put(headerOptions, "flagMissingHost", header.boolean("flag_missing_host"));
   const headerAnomaly = toggle(header, true, headerOptions);
   header.done();
+
+  const integritySection = child(section, "header-integrity");
+  const integrityOptions: HeaderIntegrityOptions = {};
+  put(integrityOptions, "duplicateScore", integritySection.integer("duplicate_score"));
+  const headerIntegrity = toggle(integritySection, true, integrityOptions);
+  integritySection.done();
+
+  const targetSection = child(section, "target-integrity");
+  const targetOptions: TargetIntegrityOptions = {};
+  put(targetOptions, "weakScore", targetSection.integer("weak_score"));
+  const targetIntegrity = toggle(targetSection, true, targetOptions);
+  targetSection.done();
 
   const hostHeader = child(section, "host-header-injection");
   const hostOptions: HostHeaderInjectionOptions = {};
@@ -644,6 +745,8 @@ function parseDetectors(section: Section): DetectorsConfig {
 
   section.done();
   return {
+    "crawler-verification": crawlerVerification,
+    trap,
     "decoy-path": decoyPath,
     "payload-injection": payloadInjection,
     "ssrf-probe": ssrfProbe,
@@ -655,6 +758,8 @@ function parseDetectors(section: Section): DetectorsConfig {
     "crlf-injection": crlfInjection,
     "web-shell": webShell,
     "header-anomaly": headerAnomaly,
+    "header-integrity": headerIntegrity,
+    "target-integrity": targetIntegrity,
     "host-header-injection": hostHeaderInjection,
     "sensitive-file": sensitiveFile,
     "open-redirect": openRedirect,
@@ -1005,6 +1110,8 @@ function parseWebhook(section: Section): WebhookConfig {
   put(webhook, "minScore", section.integer("min_score"));
   put(webhook, "dedupeWindowSeconds", section.integer("dedupe_window_seconds"));
   put(webhook, "omitBody", section.boolean("omit_body"));
+  put(webhook, "redact", section.boolean("redact"));
+  put(webhook, "anomalies", section.boolean("anomalies"));
 
   // Throttling needs both halves; setting one alone silently does nothing, which
   // is the failure an operator would only discover when a flood pages them 400 times.
@@ -1043,6 +1150,7 @@ function parseManagement(section: Section): ManagementApiConfig {
     apiKeys,
     websocket: section.boolean("websocket", true),
     webhooks: (section.sections("webhooks") ?? []).map(parseWebhook),
+    webhookGlobalMaxPerMinute: section.integer("webhook_global_max_per_minute", 0),
   };
   // The API serves captured attacker data; with no keys every request is denied,
   // so an enabled-but-keyless API is a misconfiguration, not a permissive one.
@@ -1083,6 +1191,8 @@ export function parseConfig(raw: Record<string, unknown>, source: string): Hacke
   const engineConfig: EngineConfig = {
     activityWindowMs: engine.integer("activity_window_ms", 60_000),
     fingerprintWindowMs: engine.integer("fingerprint_window_ms", 3_600_000),
+    detectorTimeoutMs: engine.integer("detector_timeout_ms", 2_000),
+    shadowDetectors: engine.stringArray("shadow_detectors", []),
   };
   engine.done();
 
@@ -1277,7 +1387,40 @@ export function parseConfig(raw: Record<string, unknown>, source: string): Hacke
   allowlistSection.done();
 
   const detectors = parseDetectors(root.section("detectors"));
+  // Checked here rather than with the rest of [engine], which is parsed before the detector
+  // set exists. A misspelled id would otherwise shadow nothing, silently.
+  const unknownShadow = engineConfig.shadowDetectors.filter((id) => !Object.hasOwn(detectors, id));
+  if (unknownShadow.length > 0) {
+    throw new ConfigError(
+      `${source}: [engine.shadow_detectors] ${unknownShadow.map((id) => `"${id}"`).join(", ")} is not a detector id; use one of ${Object.keys(detectors).join(", ")}`,
+    );
+  }
   const responses = parseResponses(root.section("responses"));
+
+  const auditSection = root.section("audit");
+  const audit: AuditConfig = {
+    enabled: auditSection.boolean("enabled", true),
+    windowSeconds: auditSection.integer("window_seconds", 300),
+    baselineSeconds: auditSection.integer("baseline_seconds", 3600),
+    intervalSeconds: auditSection.integer("interval_seconds", 60),
+    minSamples: auditSection.integer("min_samples", 50),
+    cooldownSeconds: auditSection.integer("cooldown_seconds", 900),
+    campaignMinIps: auditSection.integer("campaign_min_ips", 10),
+  };
+  if (audit.windowSeconds < 1) auditSection.fail("window_seconds", "must be at least 1");
+  if (audit.baselineSeconds < audit.windowSeconds) auditSection.fail("baseline_seconds", `(${audit.baselineSeconds}) must be at least window_seconds (${audit.windowSeconds}); a shorter baseline has nothing to compare against`);
+  if (audit.intervalSeconds < 1) auditSection.fail("interval_seconds", "must be at least 1");
+  auditSection.done();
+
+  const tokensSection = child(root, "service-tokens");
+  const serviceTokens: ServiceTokensConfig = {
+    header: tokensSection.string("header", "x-hackerpot-token").toLowerCase(),
+    tokens: tokensSection.stringTable("tokens") ?? {},
+  };
+  if (!/^[a-z0-9-]+$/.test(serviceTokens.header)) tokensSection.fail("header", `"${serviceTokens.header}" is not a valid header name`);
+  const emptyTokens = Object.entries(serviceTokens.tokens).filter(([, secret]) => secret === "").map(([name]) => name);
+  if (emptyTokens.length > 0) tokensSection.fail("tokens", `${emptyTokens.join(", ")} has an empty secret, which would match nothing`);
+  tokensSection.done();
   const portScan = parsePortScan(child(root, "port-scan"));
   const smtp = parseSmtp(root.section("smtp"));
   const ssh = parseSsh(root.section("ssh"));
@@ -1285,6 +1428,7 @@ export function parseConfig(raw: Record<string, unknown>, source: string): Hacke
   const telnet = parseTelnet(root.section("telnet"));
   const syslog = parseSyslog(root.section("syslog"));
   const management = parseManagement(root.section("management"));
+  const dashboard = parseDashboard(root.section("dashboard"));
 
   root.done();
 
@@ -1305,6 +1449,7 @@ export function parseConfig(raw: Record<string, unknown>, source: string): Hacke
   if (ftp.enabled) claim(ftp.port, "[ftp]");
   if (telnet.enabled) claim(telnet.port, "[telnet]");
   if (management.enabled) claim(management.port, "[management]");
+  if (dashboard.enabled) claim(dashboard.port, "[dashboard]");
 
   return {
     source,
@@ -1318,6 +1463,8 @@ export function parseConfig(raw: Record<string, unknown>, source: string): Hacke
     allowlist,
     detectors,
     responses,
+    audit,
+    serviceTokens,
     portScan,
     smtp,
     ssh,
@@ -1325,7 +1472,57 @@ export function parseConfig(raw: Record<string, unknown>, source: string): Hacke
     telnet,
     syslog,
     management,
+    dashboard,
   };
+}
+
+const DASHBOARD_SECTIONS = ["overview", "incidents", "statistics", "sessions", "actors", "intel"] as const;
+
+function parseDashboard(section: Section): DashboardServiceConfig {
+  const username = section.string("username", "");
+  const password = section.string("password", "");
+  const token = section.string("token", "");
+  const authMode = section.enum("auth", ["default", "basic", "token", "none"] as const, "default");
+  let auth: DashboardServiceConfig["auth"];
+  if (authMode === "none") auth = { kind: "none" };
+  else if (authMode === "token" || (authMode === "default" && token !== "")) {
+    if (token.length < 16) section.fail("token", "must be at least 16 characters from a random source");
+    auth = { kind: "token", token };
+  } else if (authMode === "basic" || (authMode === "default" && (username !== "" || password !== ""))) {
+    if (username === "" || password === "") section.fail(username === "" ? "username" : "password", "is required for basic auth");
+    auth = { kind: "basic", username, password };
+  } else auth = { kind: "default" };
+
+  const hide = section.stringArray("hide", []);
+  const unknown = hide.filter((name) => !(DASHBOARD_SECTIONS as readonly string[]).includes(name));
+  if (unknown.length > 0) section.fail("hide", `${unknown.join(", ")} is not a section; use ${DASHBOARD_SECTIONS.join(", ")}`);
+
+  const config: DashboardServiceConfig = {
+    enabled: section.boolean("enabled", false),
+    host: section.string("host", "127.0.0.1"),
+    port: section.port("port", 9501),
+    basePath: section.string("base_path", "/"),
+    title: section.string("title", "hackerpot"),
+    instance: section.string("instance", ""),
+    auth,
+    refusal: section.enum("refusal", ["unauthorized", "not-found", "close"] as const, "unauthorized"),
+    allowedHosts: section.stringArray("allowed_hosts", []),
+    allowedClients: section.ipList("allowed_clients", []),
+    redactCredentials: section.boolean("redact_credentials", true),
+    maskIp: section.boolean("mask_ip", false),
+    hide: hide as DashboardServiceConfig["hide"],
+    managementUrl: section.string("management_url", ""),
+    managementApiKey: section.string("management_api_key", ""),
+  };
+  const loopback = ["127.0.0.1", "::1", "localhost"].includes(config.host);
+  // Checked here so the service fails at startup with the config section named, rather than
+  // with the dashboard's own message after every other listener is already bound.
+  if (config.enabled && !loopback && config.auth.kind === "default") {
+    section.fail("auth", `is required when the dashboard binds ${config.host}: set username and password, a token, or auth = "none" if something in front of it authenticates`);
+  }
+  if (config.auth.kind === "basic" && config.refusal !== "unauthorized") section.fail("refusal", "must be \"unauthorized\" with basic auth, or no browser could ever prompt for the password");
+  section.done();
+  return config;
 }
 
 /** The configuration used when no file is present — identical to hackerpot.toml as shipped. */

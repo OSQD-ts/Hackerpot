@@ -45,6 +45,8 @@ export function crlfInjectionDetector(options: CrlfInjectionOptions = {}): Detec
     description: "A CRLF sequence was smuggled into the path, query, or a header",
     inspect(ctx: DetectionContext): Detection | undefined {
       const targets: Array<{ location: string; value: string }> = [{ location: "path", value: ctx.path }];
+      // The target as sent keeps its `%0d%0a` escapes, which normalisation decodes away.
+      if (ctx.rawPath !== undefined) targets.push({ location: "path (as sent)", value: ctx.rawPath });
       for (const [key, value] of Object.entries(ctx.query)) targets.push({ location: `query.${key}`, value });
       for (const name of inspectHeaders) {
         const raw = ctx.headers[name];

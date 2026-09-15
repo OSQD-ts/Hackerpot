@@ -1,3 +1,4 @@
+import type { TrafficAnomaly } from "../audit.js";
 import type { Incident } from "./types.js";
 
 /**
@@ -142,4 +143,28 @@ export function renderAlert(format: AlertFormat, incident: Incident, options: { 
     }),
     includesBody,
   };
+}
+
+/**
+ * A traffic anomaly for one destination. The summary is our own sentence, but a campaign
+ * anomaly quotes the probed path, which is attacker-chosen, so the chat formats escape it
+ * like any alert line.
+ */
+export function renderAnomaly(format: AlertFormat, anomaly: TrafficAnomaly): string {
+  if (format === "hackerpot") return JSON.stringify({ type: "anomaly", anomaly });
+  const marker = anomaly.severity === "critical" ? "\u{1F6A8}" : anomaly.severity === "warning" ? "⚠️" : "\u{1F50E}";
+  const lines = [`${marker} hackerpot anomaly — ${anomaly.id}`, anomaly.summary, `at ${anomaly.timestamp}`];
+  if (format === "slack") return JSON.stringify({ text: truncate(lines.map(escapeSlack).join("\n"), SLACK_LIMIT), unfurl_links: false, unfurl_media: false });
+  return JSON.stringify({ content: truncate(lines.map(escapeDiscord).join("\n"), DISCORD_LIMIT), allowed_mentions: { parse: [] }, flags: SUPPRESS_EMBEDS });
+}
+
+/**
+ * The delivery saying how many alerts a webhook held back, so a quiet channel is not read
+ * as quiet traffic. The text is ours, not attacker input, so it needs no escaping.
+ */
+export function renderSuppressedSummary(format: AlertFormat, count: number, windowSeconds: number): string {
+  const text = `hackerpot: ${count} alert${count === 1 ? "" : "s"} held back in the last ${windowSeconds}s (deduplicated, throttled, or over a delivery cap)`;
+  if (format === "slack") return JSON.stringify({ text, unfurl_links: false, unfurl_media: false });
+  if (format === "discord") return JSON.stringify({ content: text, allowed_mentions: { parse: [] }, flags: SUPPRESS_EMBEDS });
+  return JSON.stringify({ type: "suppressed", count, windowSeconds });
 }

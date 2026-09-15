@@ -18,7 +18,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        node: [20, 22]
+        node: [20, 22, 24]
     name: node ${{ matrix.node }}
     steps:
       - uses: actions/checkout@v4
@@ -31,6 +31,12 @@ jobs:
       # A fresh checkout of the commit is the archive-verify: it runs against the
       # committed tree, not a working directory, so a stale staged state can't hide.
       - run: npm ci
+
+      # First, and deliberately so: `pretest`, `pretypecheck` and `prebuild` all regenerate
+      # the dashboard's client bundle, so any later step would quietly repair a stale commit
+      # instead of failing on it.
+      - name: The committed dashboard client bundle is current
+        run: npm run client:check
 
       - name: Lint
         run: npm run lint
@@ -49,10 +55,90 @@ jobs:
       - name: Verify build output
         run: |
           test -f dist/index.js && test -f dist/index.cjs && test -f dist/index.d.ts
+          test -f dist/adapters/index.js && test -f dist/cli.js && test -f dist/cli.d.ts
           test -f dist/standalone.js
           if ls dist/**/*.test.d.ts dist/*.test.d.ts 2>/dev/null; then
             echo "test declarations leaked into dist" && exit 1
           fi
 
-      - name: Pack (dry run)
-        run: npm pack --dry-run
+      # The command line is a published entry point, so a broken launcher is a broken release.
+      - name: Smoke-test the command line
+        run: |
+          node bin/hackerpot.mjs --version
+          node bin/hackerpot.mjs detectors | grep -q decoy-path
+          node bin/hackerpot.mjs robots | grep -q 'Disallow: /.env'
+          node bin/hackerpot.mjs explain "sqlmap/1.7" --url /.env --json | grep -q '"decoy-path"'
+          printf '%s\n' '203.0.113.9 - - [30/Aug/2026:09:00:00 +0000] "GET /.git/config HTTP/1.1" 404 1 "-" "curl/8.4.0"' > /tmp/access.log
+          node bin/hackerpot.mjs replay /tmp/access.log --json | grep -q '"decoy-path"'
+          node dist/standalone.js check | grep -q "response actions answered"
+
+  # What installing the package actually does in somebody else's project. Split out
+  # because it is a property of the package rather than of the code.
+  package:
+    runs-on: ubuntu-latest
+    name: package
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: No high-severity advisories reach a consumer
+        run: npm audit --omit=dev --audit-level=high
+      - name: Pack, and stay small
+        run: |
+          npm pack --silent
+          tarball=$(ls osqd-hackerpot-*.tgz)
+          size=$(stat -c%s "$tarball")
+          echo "$tarball: $size bytes"
+          test "$size" -lt 4000000
+          rm -f "$tarball"
+      # Everything above checks what is in the package. This checks it can be loaded:
+      # installs the tarball into an empty project and imports it as ESM and CommonJS.
+      - name: The packed tarball installs and loads
+        run: npm run check:package
+
+  # A renamed heading leaves links elsewhere pointing at nothing, and reads fine in a diff.
+  docs:
+    runs-on: ubuntu-latest
+    name: docs
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Every local link and anchor in the markdown resolves
+        run: npm run docs:check
+
+  # evaluate() runs inline on every request in middleware mode. The budgets are ratios
+  # against a reference loop measured in the same process, so they mean the same thing on
+  # a laptop and on whatever hardware this runner is today.
+  performance:
+    runs-on: ubuntu-latest
+    name: performance
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: The request path is within budget
+        run: npm run bench:guard
+
+  # The thresholds in vitest.config.ts are a ratchet, not a target: they sit just under
+  # where the suite stands, so a change that tests less than the code it replaces has to
+  # say so. Raise them when the number rises; never lower them to make a build pass.
+  coverage:
+    runs-on: ubuntu-latest
+    name: coverage
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Test with coverage
+        run: npm run test:coverage

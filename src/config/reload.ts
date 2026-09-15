@@ -22,6 +22,7 @@ const RESTART_REQUIRED: Array<{ key: string; select: (c: HackerpotConfig) => unk
   { key: "blocklist", select: (c) => c.blocklist, why: "swapping the blocklist would drop active blocks" },
   { key: "engine.activity_window_ms", select: (c) => c.engine.activityWindowMs, why: "the sliding windows hold live per-IP history" },
   { key: "engine.fingerprint_window_ms", select: (c) => c.engine.fingerprintWindowMs, why: "the actor registry holds live fingerprint→IP history" },
+  { key: "engine.detector_timeout_ms", select: (c) => c.engine.detectorTimeoutMs, why: "the engine reads it once when it is built" },
   { key: "port-scan", select: (c) => c.portScan, why: "the sentinel ports are already bound" },
   { key: "smtp", select: (c) => c.smtp, why: "the SMTP listener is already bound" },
   { key: "ssh", select: (c) => c.ssh, why: "the SSH listener is already bound" },
@@ -31,22 +32,31 @@ const RESTART_REQUIRED: Array<{ key: string; select: (c: HackerpotConfig) => unk
   // opened at startup, and a rebuild would drop whatever the reconnect loop is holding.
   { key: "syslog", select: (c) => c.syslog, why: "the syslog transport is opened at startup" },
   { key: "management", select: (c) => c.management, why: "the management listener is already bound" },
+  { key: "dashboard", select: (c) => c.dashboard, why: "the dashboard listener is already bound" },
   // Turning ingest on/off or flipping enforce changes how the blocklist itself is
   // composed (whether a non-enforcing feed child exists at all), which is decided
   // when the engine is built. The feed list and schedule are reloadable; these are not.
   { key: "intel.enabled", select: (c) => c.intel.enabled, why: "the blocklist composition is built at startup" },
   { key: "intel.enforce", select: (c) => c.intel.enforce, why: "whether ingest can reach the firewall is fixed at startup" },
+  { key: "audit", select: (c) => c.audit, why: "the audit's windows and timer are built at startup" },
+  {
+    key: "detectors.crawler-verification.published_ranges",
+    select: (c) => [c.detectors["crawler-verification"].publishedRanges, c.detectors["crawler-verification"].rangesRefreshHours],
+    why: "the range refresher is started at startup",
+  },
 ];
 
 /** Sections a reload applies. */
 const RELOADABLE: Array<{ key: string; select: (c: HackerpotConfig) => unknown }> = [
   { key: "detectors", select: (c) => c.detectors },
+  { key: "engine.shadow_detectors", select: (c) => c.engine.shadowDetectors },
   { key: "responses", select: (c) => c.responses },
   { key: "policy", select: (c) => c.policy },
   { key: "allowlist", select: (c) => c.allowlist },
   // Feeds, schedule, and limits — the poller is rebuilt in place from these.
   { key: "intel", select: (c) => [c.intel.feeds, c.intel.refreshSeconds, c.intel.minScore, c.intel.apiKey, c.intel.ttlSeconds, c.intel.maxEntries] },
   { key: "logging", select: (c) => c.logging },
+  { key: "service_tokens", select: (c) => c.serviceTokens },
 ];
 
 /**

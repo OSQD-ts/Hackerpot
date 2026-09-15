@@ -10,14 +10,15 @@ import { readBody } from "../src/http-request.js";
 import { applyEnvOverrides, createBlocklist, parseConfigText } from "../src/config/index.js";
 import type { HackerpotConfig } from "../src/config/index.js";
 import type { HoneypotHit } from "../src/types.js";
-import type { NextFn } from "../src/middleware.js";
+import type { MiddlewareOptions, NextFn } from "../src/middleware.js";
 
 /** Drive a middleware over a real socket and report what the host app saw. */
 async function throughMiddleware(
   engine: HoneypotEngine,
   init: { path: string; method?: string; body?: string },
+  options: MiddlewareOptions = {},
 ): Promise<{ status: number; nexted: boolean; nextErr: unknown }> {
-  const middleware = createMiddleware(engine);
+  const middleware = createMiddleware(engine, options);
   let nexted = false;
   let nextErr: unknown;
   const next: NextFn = (err) => {
@@ -101,19 +102,34 @@ describe("the body phase re-evaluates a request without counting it twice", () =
 describe("the middleware never rejects into the host application", () => {
   // An async middleware that rejects is not caught by Express 4 — the request hangs
   // until it times out. The engine isolates detectors and the store, but the blocklist
-  // is a live backend call that can throw on its own.
-  it("routes a failing blocklist to next(err) instead of hanging the request", async () => {
+  // is a live backend call that can throw on its own. By default the request then goes on
+  // to the app and the failure is reported; `failOpen: false` hands it to next(err).
+  const failingBlocklist = {
+    block: () => undefined,
+    isBlocked: (): boolean => {
+      throw new Error("redis is down");
+    },
+  };
+
+  it("lets the request through to the app and reports the failure", async () => {
+    const errors: Array<{ error: unknown; source: string }> = [];
     const engine = new HoneypotEngine({
       store: new MemoryStore(),
-      blocklist: {
-        block: () => undefined,
-        isBlocked: () => {
-          throw new Error("redis is down");
-        },
-      },
+      blocklist: failingBlocklist,
+      onError: (error, context) => void errors.push({ error, source: context.source }),
     });
     const result = await throughMiddleware(engine, { path: "/.env", method: "GET" });
     expect(result.nexted).toBe(true);
+    expect(result.nextErr).toBeUndefined();
+    expect(result.status).toBe(204);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]!.source).toBe("middleware");
+    expect((errors[0]!.error as Error).message).toBe("redis is down");
+  });
+
+  it("routes the failure to next(err) when failOpen is false", async () => {
+    const engine = new HoneypotEngine({ store: new MemoryStore(), blocklist: failingBlocklist });
+    const result = await throughMiddleware(engine, { path: "/.env", method: "GET" }, { failOpen: false });
     expect((result.nextErr as Error).message).toBe("redis is down");
     expect(result.status).toBe(500);
   });

@@ -1,8 +1,27 @@
 export { HoneypotEngine } from "./core.js";
 export type { EvaluateOptions, EvaluationResult } from "./core.js";
-export { createMiddleware, dispatch } from "./middleware.js";
+export { createMiddleware, dispatch, trapFormGuard } from "./middleware.js";
 export type { HoneypotMiddleware, MiddlewareOptions, NextFn } from "./middleware.js";
+export { koaHoneypot } from "./adapters/koa.js";
+export type { KoaHoneypotMiddleware, KoaLikeContext } from "./adapters/koa.js";
+export { fastifyHoneypot } from "./adapters/fastify.js";
+export type { FastifyHoneypotHook, FastifyLikeReply, FastifyLikeRequest } from "./adapters/fastify.js";
+export { fetchHoneypot, withFetchHoneypot } from "./adapters/fetch.js";
+export { formatReplaySummary, parseLogLine, readLogLines, replayLog } from "./replay.js";
+export { explainRequest, formatExplanation, parseRequestText } from "./explain.js";
+export type { ExplainOverrides } from "./explain.js";
+export { DEFAULT_AUDIT_CHECKS, TrafficAudit } from "./audit.js";
+export type { AnomalySeverity, AuditCheck, AuditContext, AuditRecord, AuditWindow, TrafficAnomaly, TrafficAuditOptions } from "./audit.js";
+export { DEFAULT_SERVICE_TOKEN_HEADER, MIN_SERVICE_TOKEN_LENGTH, ServiceTokens } from "./service-tokens.js";
+export type { ServiceTokenOptions } from "./service-tokens.js";
+export { CrawlerRanges, PUBLISHED_CRAWLER_RANGES, fetchCrawlerRanges, refreshCrawlerRanges, startCrawlerRangeRefresh, validateRanges } from "./crawler-ranges.js";
+export type { FetchRangesOptions, PublishedRangeSource, RefreshOptions, RefreshResult, ScheduleOptions } from "./crawler-ranges.js";
+export type { LogRequest, ReplayOptions, ReplaySummary } from "./replay.js";
+export type { FetchHandler, FetchHoneypot, FetchHoneypotContext } from "./adapters/fetch.js";
 export { HoneypotServer } from "./server.js";
+// The operator dashboard: its own listener, a handler to mount, and the data sources behind
+// either. The embeddable element is `@osqd/hackerpot/element`.
+export * from "./dashboard/index.js";
 export * from "./stores/index.js";
 export { ActivityRegistry, FingerprintRegistry, IpTracker } from "./state.js";
 export type { RequestEvent } from "./state.js";
@@ -38,7 +57,7 @@ export { VERSION } from "./version.js";
 export { computeFingerprint, headerOrder, uaClass } from "./fingerprint.js";
 export { defaultIpEnricher } from "./enrichment.js";
 export type { IpEnricher, IpEnrichment } from "./enrichment.js";
-export type { HitQuery, HitStore, HoneypotConfig, HoneypotHit } from "./types.js";
+export type { HitQuery, HitStore, HoneypotConfig, HoneypotHit, ShadowEvent } from "./types.js";
 
 export * from "./detectors/index.js";
 export * from "./responses/index.js";

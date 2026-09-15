@@ -180,9 +180,10 @@ function expandClass(body: string): string {
   if (inner.startsWith("^")) return body;
   const extra = new Set<string>();
   for (let i = 0; i < inner.length; i++) {
-    const ch = inner[i];
+    const ch = inner[i]!;
     if (ch === "\\") {
       const next = inner[++i];
+      if (next === undefined) break;
       if (next === "s") for (const form of WHITESPACE_FORMS) extra.add(form);
       else for (const form of PERCENT_FORMS[next] ?? []) extra.add(form);
       continue;
@@ -196,7 +197,7 @@ function expandClass(body: string): string {
 function percentTolerant(source: string): string {
   let out = "";
   for (let i = 0; i < source.length; i++) {
-    const ch = source[i];
+    const ch = source[i]!;
     if (ch === "\\") {
       const next = source[++i];
       if (next === "s") out += `(?:\\s|${WHITESPACE_FORMS.join("|")})`;
@@ -368,9 +369,17 @@ function buildHttpFile(opts: Options): string {
 // server {} context — guard + decoy locations
 // ---------------------------------------------------------------------------
 
-function decoyLocations(path: string | RegExp, id: string, method: string | undefined): string[] {
+function decoyLocations(path: string | RegExp, id: string, method: string | undefined, match?: "exact" | "prefix"): string[] {
   const note = `  # ${id}${method && method !== "*" ? ` (${method})` : ""}`;
   const body = `{ return ${DIVERT_CODE}; }`;
+  if (typeof path === "string" && match === "prefix") {
+    // The detector matches the path itself and anything under it at a `/` or `.`
+    // boundary, ignoring case: one case-insensitive regex location says the same.
+    const bare = path.replace(/\/+$/, "");
+    // The whole pattern goes through toNginxRegex, which quotes it: an anchor or suffix
+    // left outside the quotes is not a regex nginx will load.
+    return [`location ~* ${toNginxRegex(`^${bare.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?:[./]|$)`)} ${body}${note}`];
+  }
   if (typeof path === "string") {
     // The honeypot matches decoy paths trailing-slash-insensitively; `location =`
     // does not, so emit both forms to keep the edge in step with the detector.
@@ -490,13 +499,14 @@ function buildServerFile(opts: Options): string {
   lines.push("");
 
   lines.push("# --- Decoy paths: a hit is a hit regardless of how well-behaved the client looks ---");
-  const exact = defaultDecoyPaths.filter((d) => typeof d.path === "string");
-  const regex = defaultDecoyPaths.filter((d) => typeof d.path !== "string");
+  // A prefix decoy becomes a regex location, so it belongs with the regex ones for priority.
+  const exact = defaultDecoyPaths.filter((d) => typeof d.path === "string" && d.match !== "prefix");
+  const regex = defaultDecoyPaths.filter((d) => typeof d.path !== "string" || d.match === "prefix");
   for (const decoy of exact) lines.push(...decoyLocations(decoy.path, decoy.id, decoy.method));
   lines.push("");
-  lines.push("# Regex decoys — lower priority than the exact matches above, higher than any");
-  lines.push("# prefix location in your vhost, so keep an eye out for overlaps with your app.");
-  for (const decoy of regex) lines.push(...decoyLocations(decoy.path, decoy.id, decoy.method));
+  lines.push("# Regex and prefix decoys — lower priority than the exact matches above, higher");
+  lines.push("# than any prefix location in your vhost, so keep an eye out for overlaps with your app.");
+  for (const decoy of regex) lines.push(...decoyLocations(decoy.path, decoy.id, decoy.method, decoy.match));
   return lines.join("\n") + "\n";
 }
 

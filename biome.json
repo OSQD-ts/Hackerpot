@@ -8,8 +8,10 @@
   "files": {
     "includes": [
       "src/**/*.ts",
+      "!src/dashboard/client.generated.ts",
       "tests/**/*.ts",
       "scripts/**/*.ts",
+      "demo/**/*.ts",
       "examples/**/*.ts"
     ]
   },

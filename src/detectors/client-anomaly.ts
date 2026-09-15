@@ -37,6 +37,8 @@ export function clientAnomalyDetector(options: ClientAnomalyOptions = {}): Detec
       const raw = ctx.headers["user-agent"];
       const ua = Array.isArray(raw) ? raw[0] : raw;
       if (!ua || !BROWSER_UA.test(ua)) return undefined;
+      // This reasons entirely from absent headers, which a partial header set (a log line) never had.
+      if (ctx.partialHeaders) return undefined;
 
       const missing = required.filter((name) => !has(ctx, name));
       // Only flag when ALL of the required headers are absent — one missing header can

@@ -1,0 +1,98 @@
+name: Docker
+
+# Builds the standalone honeypot image on every pull request and push to main, and runs
+# it before anything is pushed. Release images (the version tags and `latest`) are pushed
+# by the publish workflow once the same version is on npm; this one pushes `edge` and a
+# `sha-…` tag from main.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docker-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  IMAGE: ghcr.io/osqd-ts/hackerpot
+
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      # An image that builds is not an image that runs. Build the runner's own architecture,
+      # start it, and check it answers like a honeypot before any tag leaves this job.
+      - name: Build for the smoke test
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: hackerpot:smoke
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Smoke test the container
+        run: |
+          docker run -d --name hackerpot -p 4004:4004 hackerpot:smoke
+          served=no
+          for attempt in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:4004/.env | grep -q APP_ENV; then served=yes; break; fi
+            sleep 2
+          done
+          if [ "$served" != yes ]; then
+            docker logs hackerpot
+            echo "::error::the container never served the .env decoy"
+            exit 1
+          fi
+          # The image's HEALTHCHECK is a TCP connect every 30s; wait for its first verdict.
+          status=starting
+          for attempt in $(seq 1 45); do
+            status=$(docker inspect -f '{{.State.Health.Status}}' hackerpot)
+            if [ "$status" = healthy ]; then break; fi
+            sleep 2
+          done
+          if [ "$status" != healthy ]; then
+            docker logs hackerpot
+            echo "::error::the container healthcheck reports $status"
+            exit 1
+          fi
+          docker rm -f hackerpot
+
+      - name: Log in to GHCR
+        if: github.event_name == 'push'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Image tags
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=edge,branch=main
+            type=sha,format=short
+
+      - name: Build and push edge (linux/amd64, linux/arm64)
+        if: github.event_name == 'push'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          provenance: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha

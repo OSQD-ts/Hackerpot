@@ -60,6 +60,7 @@ export function honeytokenDetector(options: HoneytokenOptions): Detector {
 
       const haystacks: Array<{ location: string; value: string }> = [
         { location: "path", value: ctx.path },
+        ...(ctx.rawPath !== undefined ? [{ location: "path (as sent)", value: ctx.rawPath }] : []),
         ...Object.entries(ctx.query).map(([key, value]) => ({ location: `query.${key}`, value })),
       ];
       for (const [name, raw] of Object.entries(ctx.headers)) {
@@ -80,6 +81,8 @@ export function honeytokenDetector(options: HoneytokenOptions): Detector {
           detectorId: "honeytoken",
           reason: `Honeytoken "${token.label}" replayed in ${found.location}`,
           score,
+          // No legitimate client has ever been given this value.
+          certain: true,
           metadata: { label: token.label, location: found.location },
         };
         if (options.respondWith) detection.respondWith = options.respondWith;

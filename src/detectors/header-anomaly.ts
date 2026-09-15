@@ -1,3 +1,4 @@
+import { MAX_QUERY_PARAMS } from "../http-request.js";
 import type { Detection, DetectionContext, Detector } from "./types.js";
 
 export interface HeaderAnomalyOptions {
@@ -19,6 +20,7 @@ function headerValue(ctx: DetectionContext, name: string): string | undefined {
  *   - Shellshock payload (`() {`) in any header (CVE-2014-6271)
  *   - request smuggling: both Content-Length and Transfer-Encoding present
  *   - missing Host header on an HTTP/1.1-style request
+ *   - more query parameters than the engine inspects (a flood no client sends)
  * These are cheap, header-only checks with very low false-positive rates.
  */
 export function headerAnomalyDetector(options: HeaderAnomalyOptions = {}): Detector {
@@ -60,10 +62,18 @@ export function headerAnomalyDetector(options: HeaderAnomalyOptions = {}): Detec
         return build("Both Content-Length and Transfer-Encoding present (request-smuggling indicator)", "smuggling", 9);
       }
 
+      // Past the engine's cap nothing more of the query is scanned, so the flood is itself
+      // the signal: a payload hidden behind hundreds of junk parameters is still caught here.
+      if (ctx.queryParamsDropped !== undefined && ctx.queryParamsDropped > 0) {
+        const total = MAX_QUERY_PARAMS + ctx.queryParamsDropped;
+        return build(`Request carried ${total} query parameters; only the first ${MAX_QUERY_PARAMS} are inspected`, "query-flood");
+      }
+
       // Missing Host on a non-OPTIONS request. HTTP/2 uses :authority instead,
       // so accept either to avoid false positives on h2 traffic.
       const hasAuthority = Boolean(headerValue(ctx, "host") || headerValue(ctx, ":authority"));
-      if (flagMissingHost && ctx.method.toUpperCase() !== "OPTIONS" && !hasAuthority) {
+      // Not for a partial header set: a log line records no Host, whatever the client sent.
+      if (flagMissingHost && !ctx.partialHeaders && ctx.method.toUpperCase() !== "OPTIONS" && !hasAuthority) {
         return build("Request omitted the Host header", "missing-host");
       }
 

@@ -1,0 +1,239 @@
+name: Publish
+
+# Two ways to release. Both end with the package on npm and the image on GHCR.
+#
+#   push to main   The version is derived from the commits since the last `v*` tag by
+#                  scripts/next-version.mjs: feat:/fix:/perf: → patch, `type!:` or a
+#                  BREAKING CHANGE footer → major (minor while 0.x), and a `Release-As:`
+#                  footer overrides. Commits that change nothing publish nothing. The
+#                  release commit and its tag are pushed back to main.
+#   push v1.2.3    Publishes exactly the tagged version from the tagged commit. Nothing
+#                  is committed back; the automatic path builds on the newest tag.
+#
+# Run it by hand (workflow_dispatch) for a dry run: it works out the version and packs the
+# tarball, and publishes nothing.
+#
+# Needs an NPM_TOKEN repository secret with publish rights on the @osqd scope.
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        description: "Work out the version and pack it, publish nothing"
+        type: boolean
+        default: true
+
+# One release at a time: two pushes landing together would race for the same version.
+concurrency:
+  group: publish
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  # Nothing reaches the registry that has not just passed everything, on this commit.
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Lint
+        run: npm run lint
+      - name: Type-check
+        run: npm run typecheck
+      - name: Test
+        run: npm test
+      - name: The packed tarball installs and loads
+        run: npm run check:package
+      - name: No high-severity advisories reach a consumer
+        run: npm audit --omit=dev --audit-level=high
+
+  publish:
+    needs: verify
+    runs-on: ubuntu-latest
+    permissions:
+      # The automatic path commits the version and its tag back to main.
+      contents: write
+      # Provenance: npm records which workflow built this tarball from which commit.
+      id-token: write
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      published: ${{ steps.published.outputs.published }}
+    steps:
+      # Full history: the automatic version is derived from the commits since the last tag.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          registry-url: https://registry.npmjs.org
+      - run: npm ci
+
+      - name: Work out the version
+        id: version
+        run: |
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            version="${GITHUB_REF_NAME#v}"
+            if ! printf '%s' "$version" | grep -Eq '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?$'; then
+              echo "::error::tag $GITHUB_REF_NAME is not v followed by a semver version"
+              exit 1
+            fi
+            echo "Releasing $version from tag $GITHUB_REF_NAME." >> "$GITHUB_STEP_SUMMARY"
+            { echo "mode=tag"; echo "release=yes"; echo "version=$version"; } >> "$GITHUB_OUTPUT"
+          else
+            next=$(node scripts/next-version.mjs --explain)
+            if [ -z "$next" ]; then
+              echo "No commit since the last release changes what the package does. Nothing is published." >> "$GITHUB_STEP_SUMMARY"
+              { echo "mode=auto"; echo "release=no"; } >> "$GITHUB_OUTPUT"
+            else
+              { echo "mode=auto"; echo "release=yes"; echo "version=$next"; } >> "$GITHUB_OUTPUT"
+            fi
+          fi
+
+      # A published version is immutable; this also makes a re-run safe.
+      - name: That version is not already published
+        if: steps.version.outputs.release == 'yes'
+        run: |
+          name=$(node -p "require('./package.json').name")
+          if npm view "$name@${{ steps.version.outputs.version }}" version >/dev/null 2>&1; then
+            echo "::error::$name@${{ steps.version.outputs.version }} is already on the registry"
+            exit 1
+          fi
+
+      # Set here and not committed yet: that waits until the package is on the registry.
+      - name: Set the version
+        if: steps.version.outputs.release == 'yes'
+        run: node scripts/set-version.mjs "${{ steps.version.outputs.version }}"
+
+      - name: Build
+        if: steps.version.outputs.release == 'yes'
+        run: npm run build
+
+      # `files` is an allowlist, and the easiest thing in a package to get wrong expensively.
+      - name: Inspect the tarball
+        if: steps.version.outputs.release == 'yes'
+        run: |
+          npm pack --silent
+          tarball=$(ls osqd-hackerpot-*.tgz)
+          size=$(stat -c%s "$tarball")
+          echo "$tarball: $size bytes"
+          test "$size" -lt 4000000
+          for required in package/dist/index.js package/dist/index.cjs package/dist/index.d.ts package/dist/standalone.js package/dist/cli.js package/dist/adapters/index.js package/bin/hackerpot.mjs package/docs/index.md package/hackerpot.toml package/README.md package/LICENSE; do
+            tar -tzf "$tarball" | grep -qx "$required" || { echo "::error::$required is missing from the tarball"; exit 1; }
+          done
+          if tar -tzf "$tarball" | grep -E '\.env$|/\.git/|node_modules/|\.tsbuildinfo$|\.test\.'; then
+            echo "::error::the tarball contains something it should not"
+            exit 1
+          fi
+          rm -f "$tarball"
+
+      - name: Publish (dry run)
+        if: steps.version.outputs.release == 'yes' && github.event_name == 'workflow_dispatch' && inputs.dry-run
+        run: npm publish --provenance --access public --dry-run
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Publish
+        id: published
+        if: steps.version.outputs.release == 'yes' && (github.event_name != 'workflow_dispatch' || !inputs.dry-run)
+        run: |
+          version="${{ steps.version.outputs.version }}"
+          # A prerelease goes to `next`, so a plain install keeps resolving the last stable version.
+          dist_tag=latest
+          case "$version" in *-*) dist_tag=next ;; esac
+          npm publish --provenance --access public --tag "$dist_tag"
+          echo "published=yes" >> "$GITHUB_OUTPUT"
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      # Automatic releases only. The branch goes first and the tag only once it has landed,
+      # so the tag can only name a commit that is on main. A push that arrived meanwhile is
+      # handled by replaying the release commit on top of it. A push made with GITHUB_TOKEN
+      # starts no workflow, so this tag does not trigger a second, tag-based release.
+      - name: Commit, tag and push the release
+        if: steps.published.outputs.published == 'yes' && steps.version.outputs.mode == 'auto'
+        run: |
+          version="${{ steps.version.outputs.version }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add package.json package-lock.json src/version.ts
+          git commit -m "Release $version [skip ci]"
+          landed=no
+          for attempt in 1 2 3 4 5; do
+            if git push origin HEAD:main; then landed=yes; break; fi
+            echo "::warning::push $attempt was refused; replaying the release commit on top of main"
+            if ! git pull --rebase origin main; then
+              git rebase --abort 2>/dev/null || true
+            fi
+          done
+          if [ "$landed" != yes ]; then
+            echo "::error::$version is published, but its release commit could not be pushed. Push it and tag it v$version by hand: the next release is derived from that tag."
+            exit 1
+          fi
+          git tag -a "v$version" -m "v$version"
+          git push origin "v$version"
+
+      - name: Say what happened
+        if: steps.published.outputs.published == 'yes'
+        run: |
+          version="${{ steps.version.outputs.version }}"
+          {
+            echo "### Published \`@osqd/hackerpot@$version\`"
+            echo ""
+            echo "<https://www.npmjs.com/package/@osqd/hackerpot/v/$version>"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # The release image for the version that just reached npm, built from its tag.
+  docker:
+    needs: publish
+    if: needs.publish.outputs.published == 'yes'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: v${{ needs.publish.outputs.version }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      # A tagged release is not committed back, so its tree can carry an older version.
+      - name: Set the version
+        run: node scripts/set-version.mjs "${{ needs.publish.outputs.version }}"
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Image tags
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/osqd-ts/hackerpot
+          flavor: |
+            latest=false
+          tags: |
+            type=semver,pattern={{version}},value=v${{ needs.publish.outputs.version }}
+            type=semver,pattern={{major}}.{{minor}},value=v${{ needs.publish.outputs.version }}
+            type=raw,value=latest,enable=${{ !contains(needs.publish.outputs.version, '-') }}
+      - name: Build and push (linux/amd64, linux/arm64)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          provenance: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}

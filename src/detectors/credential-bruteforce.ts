@@ -1,3 +1,4 @@
+import { statelessPattern } from "../internal/pattern.js";
 import type { Detection, DetectionContext, Detector } from "./types.js";
 
 export interface CredentialBruteforceOptions {
@@ -19,7 +20,7 @@ const DEFAULT_AUTH_PATHS = /(login|signin|sign-in|auth|token|oauth|session|passw
  * methods so ordinary navigation to a login page never trips it.
  */
 export function credentialBruteforceDetector(options: CredentialBruteforceOptions = {}): Detector {
-  const authPaths = options.authPaths ?? DEFAULT_AUTH_PATHS;
+  const authPaths = statelessPattern(options.authPaths ?? DEFAULT_AUTH_PATHS);
   const windowMs = options.windowMs ?? 60_000;
   const threshold = options.attemptThreshold ?? 8;
   const score = options.score ?? 9;

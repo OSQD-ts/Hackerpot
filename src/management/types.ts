@@ -53,6 +53,25 @@ export interface WebhookConfig {
    * being rendered to everyone in a channel. Set it explicitly to override either way.
    */
   omitBody?: boolean;
+  /**
+   * Strip credentials from the incident before it leaves the process. Default true.
+   *
+   * A captured request carries whatever was sent: `Authorization`, `Cookie`, API-key
+   * headers, a login form's password. Detection and the store keep all of it; only the
+   * copy sent to this webhook is reduced. Credential headers, any header whose name reads
+   * as a secret (`secret`, `token`, `api-key`, `passw`, `credential`) and secret-named
+   * form or JSON body fields become `[redacted]`, and those values are scrubbed from
+   * detection reasons and metadata too. A body that is neither form-encoded nor valid
+   * JSON is sent unchanged. Set false only for a receiver you control that needs the
+   * captured credentials themselves.
+   */
+  redact?: boolean;
+  /**
+   * Also deliver traffic anomalies (a spike in flagged traffic, a new probe campaign, failing
+   * detectors) raised by the audit. Default true. They bypass `minScore`, dedupe and the
+   * throttle, which are about incidents; the audit's own cooldown keeps them rare.
+   */
+  anomalies?: boolean;
 }
 
 export interface ManagementConfig {
@@ -74,4 +93,6 @@ export interface ManagementConfig {
   websocket?: boolean;
   /** Webhook destinations pushed to on every incident. */
   webhooks?: WebhookConfig[];
+  /** Cap on webhook deliveries started per minute across all hooks together. Unset or 0: unlimited. */
+  webhookGlobalMaxPerMinute?: number;
 }

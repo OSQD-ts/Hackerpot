@@ -24,6 +24,8 @@ export function rateSpikeDetector(options: RateSpikeOptions = {}): Detector {
     id: "rate-spike",
     description: "Abnormally high request rate from a single IP",
     inspect(ctx: DetectionContext): Detection | undefined {
+      // A crawler DNS has confirmed crawls fast by design. See `crawler-verification`.
+      if (ctx.verifiedCrawler !== undefined) return undefined;
       const count = ctx.tracker.countIn(windowMs, ctx.timestamp.getTime());
       if (count < threshold) return undefined;
       const detection: Detection = {
