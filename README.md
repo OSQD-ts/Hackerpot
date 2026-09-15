@@ -1035,7 +1035,7 @@ or `X-API-Key: <key>`.
 | `GET /incidents/:id` | a single incident by id (`404` if unknown) |
 | `GET /stats` | summary: totals, unique IPs, counts by detector and by response, top offender IPs by score, first/last seen |
 | `GET /metrics` | Prometheus text-format metrics — `hackerpot_incidents_total`, `_by_detector`/`_by_response`, `_unique_ips`, `_top_offender_score`, plus any injected gauges (e.g. `active_blocks`) |
-| `GET /ioc` | **Indicators of Compromise** — every source IP aggregated with cumulative `score`, incident count, the detectors it tripped, and first/last seen, highest score first. Filter with `?min_score=`. A feed your firewall or other honeypots can pull. |
+| `GET /ioc` | **Indicators of Compromise** — every source IP aggregated with cumulative `score`, incident count, the detectors it tripped, and first/last seen, highest score first. Filter with `?min_score=`. A feed your firewall or other honeypots can pull. Only IPs this instance saw attack it first-hand are listed: an IP ingested from a peer's feed is blocked at the door without a recorded hit, so it is never republished and a poisoned feed cannot spread from one honeypot to the next. |
 | `GET /ioc.txt` | the same IPs as a plain newline-separated list (`?min_score=` too) — pipe straight into an `ipset`, a firewall rule, or a blocklist |
 | `GET /sessions` | every IP's activity grouped into an **attack session**: an ordered timeline of what it did plus the detectors/responses seen and its score, newest activity first |
 | `GET /sessions/:ip` | the single session for one IP (`404` if that IP has no incidents) — read the attack as a narrative instead of scanning a flat incident list |
