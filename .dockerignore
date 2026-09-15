@@ -15,5 +15,7 @@ data
 # Not COPYed into any stage — excluded so they stay out of the build context too.
 tests
 scripts
+# Except the one script the build runs: it bundles the dashboard client.
+!scripts/build-client.mjs
 examples
 .github
