@@ -332,6 +332,7 @@ where `payload` is the fake content served (`{ status?, contentType?, body?, loc
 **`honeytokenDetector({ tokens, score? })`**
 - `tokens` — the seeded bait values: `["AKIA…"]` or `[{ value, label }]`
 - `score` (default `15`) — very high; no legitimate client ever possesses these
+- Matches the path, query values, every header and the body. A token replayed as an HTTP Basic credential is caught too: `Authorization` and `Proxy-Authorization` Basic values are base64-decoded before matching. Nothing else is decoded, since guessing at base64 inside arbitrary values would produce false positives.
 
 **`PortScanSentinel({ ports, host?, scanThreshold?, banner?, onEvent? })`**
 - `ports` — decoy TCP ports nothing legitimate should touch
