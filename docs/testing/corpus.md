@@ -220,6 +220,44 @@ an unproven guess is allowed to do. A human false positive is a false positive i
 
 ---
 
+## Comparing two runs
+
+A passing corpus answers "does this configuration behave?". It does not answer the question an
+upgrade actually asks: **did anything that used to be served stop being served?** A case can
+meet its expectations before and after a change and still move from "answered normally" to
+"tarpitted", because the corpus deliberately does not pin every case to an exact action — if it
+did, no tuning would be possible at all.
+
+Record a run, then compare the next one against it:
+
+```bash
+npm run corpus -- --json > before.json     # today's behaviour
+# …change a threshold, add a detector, edit a rule…
+npm run corpus -- --baseline before.json
+```
+
+```text
+──────────────────────────────────────────────────────────────────────────────
+  against before.json
+──────────────────────────────────────────────────────────────────────────────
+
+  REGRESSIONS: 1. Traffic that changed side since that run.
+    human-rss-reader (human): served -> tarpit
+```
+
+A regression is traffic that lost service, or a case that stopped meeting its expectations;
+either exits non-zero, so this belongs in the check you run before a release. Traffic that
+*gained* service is listed too, and never fails — a change that serves more people is reported
+so you can confirm it was the one you meant.
+
+Cases the two runs do not share are reported and not failed: a corpus that grew, or a filtered
+run (`--audience`, `--tag`), is not lost service. Skipped cases are left out of a baseline
+entirely — a case that ran nothing has no behaviour to record, and "not skipped any more" is
+not a change in how traffic is treated.
+
+The baseline is the `--json` output itself, whose `cases` array holds one record per case: its
+id, audience, whether it was served, the action it received and which detectors fired.
+
 ## Against your own configuration
 
 The script above tests the defaults. The point of the corpus is to test **the configuration you run**:

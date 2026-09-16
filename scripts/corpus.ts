@@ -6,7 +6,8 @@
  *   npx tsx scripts/corpus.ts --standalone          # evaluate without the proof guard
  *   npx tsx scripts/corpus.ts --audience human --verbose
  *   npx tsx scripts/corpus.ts --tag verification
- *   npx tsx scripts/corpus.ts --json
+ *   npx tsx scripts/corpus.ts --json > before.json
+ *   npx tsx scripts/corpus.ts --baseline before.json   # what changed side since that run
  *
  * The section to read first is FALSE POSITIVES. Everything else is diagnostics; that one
  * is benign traffic this configuration would have caught in a decoy.
@@ -18,6 +19,8 @@ import type { DnsResolver } from "../src/internal/dns.js";
 import { AUDIENCE_STAKES, CORPUS, CORPUS_CRAWLER_RANGES, CORPUS_HONEYTOKEN, CORPUS_TRAP_FIELD, CORPUS_TRAP_PATH, runCorpus } from "../src/corpus/index.js";
 import type { Audience } from "../src/corpus/schema.js";
 import type { CaseResult, Scorecard } from "../src/corpus/runner.js";
+import { baselineOf, compareToBaseline, parseBaseline } from "../src/corpus/compare.js";
+import { readFileSync } from "node:fs";
 
 const flags = new Map<string, string>();
 for (let i = 2; i < process.argv.length; i++) {
@@ -35,6 +38,7 @@ const tagFilter = flags.get("tag");
 const verbose = flags.has("verbose");
 const asJson = flags.has("json");
 const standalone = flags.has("standalone");
+const baselineFile = flags.get("baseline");
 
 const cases = CORPUS.filter((item) => (audienceFilter === undefined || item.audience === audienceFilter) && (tagFilter === undefined || item.tags?.includes(tagFilter) === true));
 
@@ -149,9 +153,55 @@ const scorecard = await runCorpus({ create: makeCreate(), provides: CAPABILITIES
 if (asJson) {
   const { results, ...summary } = scorecard;
   void results;
-  out(JSON.stringify({ ...summary, falsePositives: scorecard.falsePositives.map((r) => r.case.id), knownCosts: scorecard.knownCosts.map((r) => r.case.id), skipped: scorecard.skipped.map((r) => r.case.id) }, null, 2));
+  // `cases` is what makes this file usable as a baseline: one record per case, saying which
+  // side of the line it came down on. Everything else here is a summary for a human.
+  const { cases, version } = baselineOf(scorecard);
+  out(
+    JSON.stringify(
+      {
+        version,
+        ...summary,
+        falsePositives: scorecard.falsePositives.map((r) => r.case.id),
+        knownCosts: scorecard.knownCosts.map((r) => r.case.id),
+        skipped: scorecard.skipped.map((r) => r.case.id),
+        cases,
+      },
+      null,
+      2,
+    ),
+  );
 } else {
   report(scorecard);
 }
 
-process.exitCode = scorecard.falsePositives.length > 0 || scorecard.failed > 0 ? 1 : 0;
+let regressed = false;
+if (baselineFile !== undefined && baselineFile !== "true") {
+  let comparison: ReturnType<typeof compareToBaseline>;
+  try {
+    comparison = compareToBaseline(parseBaseline(JSON.parse(readFileSync(baselineFile, "utf8")) as unknown), scorecard);
+  } catch (error) {
+    out(`  cannot read baseline ${baselineFile}: ${(error as Error).message}`);
+    process.exit(2);
+  }
+  regressed = comparison.regressions.length > 0;
+  if (!asJson) {
+    out(RULE);
+    out(`  against ${baselineFile}`);
+    out(RULE);
+    out();
+    if (comparison.regressions.length === 0) {
+      out("  no regressions: nothing that was served before is refused now.");
+    } else {
+      out(`  REGRESSIONS: ${comparison.regressions.length}. Traffic that changed side since that run.`);
+      for (const change of comparison.regressions) out(`    ${change.id} (${change.audience}): ${change.was} -> ${change.now}`);
+    }
+    for (const change of comparison.improvements) out(`    + ${change.id} (${change.audience}): ${change.was} -> ${change.now}`);
+    if (comparison.missing.length > 0) out(`    baseline had ${comparison.missing.length} case(s) this run did not exercise: ${comparison.missing.slice(0, 5).join(", ")}${comparison.missing.length > 5 ? ", …" : ""}`);
+    if (comparison.added.length > 0) out(`    ${comparison.added.length} case(s) the baseline had never seen`);
+    out();
+  } else {
+    out(JSON.stringify(comparison, null, 2));
+  }
+}
+
+process.exitCode = scorecard.falsePositives.length > 0 || scorecard.failed > 0 || regressed ? 1 : 0;
