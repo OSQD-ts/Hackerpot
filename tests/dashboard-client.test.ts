@@ -320,12 +320,12 @@ describe("query", () => {
   });
 
   it("builds incident queries and matches live incidents the same way", () => {
-    expect(incidentQuery({ limit: 5000, detector: " decoy-path ", ip: "" })).toBe("limit=1000&detector=decoy-path");
-    expect(incidentQuery({ limit: Number.NaN, detector: "", ip: "1.2.3.4" })).toBe("limit=100&ip=1.2.3.4");
+    expect(incidentQuery({ limit: 5000, detector: " decoy-path ", ip: "", query: "" })).toBe("limit=1000&detector=decoy-path");
+    expect(incidentQuery({ limit: Number.NaN, detector: "", ip: "1.2.3.4", query: "" })).toBe("limit=100&ip=1.2.3.4");
     const hit = incident();
-    expect(matchesFilter(hit, { limit: 1, detector: "decoy-path", ip: "203.0.113.1" })).toBe(true);
-    expect(matchesFilter(hit, { limit: 1, detector: "other", ip: "" })).toBe(false);
-    expect(matchesFilter(hit, { limit: 1, detector: "", ip: "9.9.9.9" })).toBe(false);
+    expect(matchesFilter(hit, { limit: 1, detector: "decoy-path", ip: "203.0.113.1", query: "" })).toBe(true);
+    expect(matchesFilter(hit, { limit: 1, detector: "other", ip: "", query: "" })).toBe(false);
+    expect(matchesFilter(hit, { limit: 1, detector: "", ip: "9.9.9.9", query: "" })).toBe(false);
   });
 
   it("validates stream frames", () => {

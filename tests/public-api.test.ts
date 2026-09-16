@@ -47,6 +47,7 @@ const EXPORTS = [
   "buildDashboardOptions", "buildDashboardSource", "DashboardConfigError", "createDashboardHandler", "maskIp", "startDashboard",
   "brokerSource", "engineSource", "managementApiSource", "managementServerSource", "storeSource", "toDashboardSource",
   "DASHBOARD_CSS", "DASHBOARD_MARKUP", "renderDashboardPage", "ManualClock", "systemClock",
+  "candidatePolicy", "parseRules", "previewPolicy", "FeedCounts",
   "compileMatch", "rulePolicy", "ladderPolicy",
   "SiteBaseline", "DEFAULT_MIN_OBSERVATIONS", "DEFAULT_MIN_SERVED_PATHS", "pathNoveltyDetector",
   "ActorLabels", "buildActorLabels", "buildMarkerCookie",

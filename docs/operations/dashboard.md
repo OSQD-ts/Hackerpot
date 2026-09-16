@@ -53,6 +53,20 @@ The incident table: time, source address, method, path, detectors, score and res
 detector or source address, and choose how many rows to show (50 to 1000). New incidents enter at the
 top as they happen when they match the filter.
 
+The **search box** takes an expression: fielded terms (`ip:198.51.100`, `detector:decoy-path`,
+`path:/wp-`, `action:tarpit`, `rule:admin-bruteforce`, `score:>20`, `ua:curl`, `actor:uptime`),
+quoted phrases, parentheses, and `$and` / `$or` / `$not`, with adjacent terms meaning `$and`. A
+bare word searches the path, address, detectors, response, User-Agent and actor name.
+
+Two things to know about it. The operators carry a `$` because a bare "or" is a word that appears
+in User-Agents and paths, and a language where an ordinary search word silently becomes an
+operator is one that lies about what it matched. And the detector and address boxes narrow what is
+**fetched** from the API, while the expression narrows what is **shown** — so it can only search
+what the server already sent. Widen `Show` to search further back.
+
+The count beside the Incidents tab is how many incidents were **recorded**, not how many rows the
+table is holding; hover it to see both.
+
 Open a row (click it, or focus it and press Enter) and it explains itself:
 
 - **Why this fired**: one card per detection, with the reason the detector gave, the score it added,
@@ -385,6 +399,32 @@ so it cannot map the endpoints. A custom `authorize` sends no `WWW-Authenticate`
 prompt; send people to your own sign-in page. The dashboard is read-only and keeps no audit trail, so a
 viewer name returned by `authorize` admits them and is not recorded anywhere.
 
+### What a viewer may do
+
+[Sections](#sections-withheld-on-the-server) say what a viewer may *see*. `controls` says what they
+may *do*, and the two are separate questions: somebody who may read every incident is not
+automatically somebody who may change what the honeypot does to the next request.
+
+| Control | Default | What it grants |
+| --- | --- | --- |
+| `testRequest` | off | run a pasted request through the detectors as a dry run — nothing recorded, no score moved, no response served |
+| `previewPolicy` | off | replay the incidents already on screen against a candidate rule set |
+| `editPolicy` | off | replace the running policy from the page |
+
+**Every control is off unless you turn it on** — the opposite of sections, which are on unless you
+turn them off. A section reveals something the dashboard already holds; a control reaches back into
+the engine, so silence has to mean no.
+
+`editPolicy` additionally requires authentication: a dashboard with `auth: false` refuses to start
+with it on, loopback or not. Reading captured data behind no authentication is a decision a
+deployment can make; deciding what the honeypot does to every later request is a larger power, and
+"anything that can open this page" is the wrong set of people to hand it to.
+
+There is no role model here, deliberately. A role is one listener per capability over the same
+handler — a read-only dashboard on one port, an editing one on another, each with its own `auth`
+and `allowedClients`. A second copy of your user table, quietly disagreeing with the first, is
+worse than not having one.
+
 ### Saying less to a stranger
 
 | `refusal` | What a refused caller gets |
@@ -538,6 +578,22 @@ All relative to `basePath`, all behind the same checks and authentication as the
 | `/api/events` | the live feed: `text/event-stream` with `hello`, `incident`, `lagged` and `skipped` events |
 | `/api/incidents` | `{ incidents }`, redacted. The management API's filters: `ip`, `detector`, `since`, `limit` (default 100; at most 5000 here, and a remote management API caps at 1000) |
 | `/api/incidents/:id` | `{ incident }`, or `404` |
+| `/api/notices` | `{ notices }` — what the honeypot has said about itself: startup warnings, settings that would quietly do nothing, and every runtime change with the part it replaced and who made it. Engine-backed only; a dashboard reading another process's management API answers `404`, because "no notices" and "no engine to ask" are different facts. Follows the `overview` section |
+| `/api/counts` | `{ total, oldest, series }` — how many incidents happened, in minute buckets. Counted apart from the incidents themselves, so a window longer than what the store retained can still be counted, and a muted actor is still tallied. No addresses, no headers: a bucket is an integer and a timestamp |
+| `POST /api/test` | `{ text }` — a curl command, a request line with headers, a header block or a User-Agent — run through the detectors. Answers the detections, score, confidence and decision. A **dry run**: nothing recorded, no score moved, no response served. Needs the `testRequest` control and an engine in this process |
+| `POST /api/policy/preview` | `{ rules }` — replays the last 1000 incidents against a candidate rule set and answers `{ total, changed, unchanged, skipped }`. Reads only. Needs `previewPolicy` |
+| `POST /api/policy/apply` | `{ rules }` — replaces the running policy, attributed to the viewer. Needs `editPolicy`, which needs authentication |
+
+The three `POST` endpoints require a same-origin request, like every unsafe method here, and each
+answers `404` when its [control](#what-a-viewer-may-do) is off — the endpoint does not exist on that
+dashboard, and "forbidden" would tell a caller there is something to be let into. Any other `POST`
+is still `405`.
+
+A preview is faithful about **which rule matches, what it decides, and whether the proof guard
+would refuse a block it asks for** — that is the decision, and the decision is what is being tuned.
+It is not faithful about what the action would *do* (a tarpit's delay, a decoy's bait, a blocklist
+entry are not replayed), and a rule that reads the live activity window sees an empty one, because
+a recorded incident carries its scores but not the window they came from.
 | `/api/stats` | the management API's `/stats` |
 | `/api/sessions`, `/api/sessions/:ip` | `{ sessions }`, `{ session }` |
 | `/api/actors`, `/api/actors/:fingerprint` | `{ actors }`, `{ actor }` |

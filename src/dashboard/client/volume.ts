@@ -1,5 +1,6 @@
 import type { Analysis } from "./analysis.js";
 import { dataTable, noData, replace, timeChart } from "./charts.js";
+import type { ChartMark } from "./charts.js";
 import { fmtDateTime, fmtDur, fmtInt } from "./format.js";
 
 /**
@@ -16,7 +17,28 @@ export function bucketLabel(ms: number, size: number): string {
   return d.toLocaleTimeString();
 }
 
-export function volumeChart(target: HTMLElement, a: Analysis, table: HTMLElement | null, label: string): void {
+/**
+ * Runtime changes, placed on the axis of the traffic they changed.
+ *
+ * Positioned from the bucket span rather than by index, so a change lands where it happened
+ * however coarse the buckets are. Anything outside the window is dropped: a mark clamped to
+ * the edge would claim a change happened inside a range it did not.
+ */
+function marksFor(a: Analysis, changes: ReadonlyArray<{ timestamp: string; message: string }>): ChartMark[] {
+  const first = a.buckets[0]?.start;
+  const last = a.buckets[a.buckets.length - 1]?.start;
+  if (first === undefined || last === undefined) return [];
+  const span = last - first;
+  const marks: ChartMark[] = [];
+  for (const change of changes) {
+    const at = Date.parse(change.timestamp);
+    if (Number.isNaN(at) || at < first || at > last + a.bucketSize) continue;
+    marks.push({ at: span === 0 ? 0.5 : (at - first) / span, label: change.message });
+  }
+  return marks;
+}
+
+export function volumeChart(target: HTMLElement, a: Analysis, table: HTMLElement | null, label: string, changes: ReadonlyArray<{ timestamp: string; message: string }> = []): void {
   if (a.n === 0) {
     replace(target, noData());
     if (table !== null) replace(table);
@@ -30,7 +52,7 @@ export function volumeChart(target: HTMLElement, a: Analysis, table: HTMLElement
       { name: "incidents", values: a.buckets.map((b) => b.n), slot: 0 },
       { name: "distinct source IPs", values: a.buckets.map((b) => b.ips.size), slot: 1 },
     ],
-    { height: 210, label },
+    { height: 210, label, marks: marksFor(a, changes) },
   );
   dataTable(
     table,

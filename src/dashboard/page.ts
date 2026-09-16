@@ -234,6 +234,8 @@ button.sm { padding: 4px 10px; font-size: 12px; }
 .chart .ring { stroke: var(--surface); stroke-width: 2; }
 .chart .hit { fill: transparent; cursor: crosshair; }
 .chart .cross { stroke: var(--faint); stroke-width: 1; opacity: 0; pointer-events: none; }
+.chart .mark { stroke: var(--accent); stroke-width: 1.5; stroke-dasharray: 3 2; opacity: .55; }
+.chart .mark:hover { opacity: 1; }
 .chart .marker { opacity: 0; pointer-events: none; }
 .chart .cross.on, .chart .marker.on { opacity: 1; }
 .heat .cell { stroke: var(--surface); stroke-width: 2; }
@@ -446,6 +448,12 @@ export const DASHBOARD_MARKUP = String.raw`<div id="hp-app" class="hp-app">
         <div id="p-offenders"></div><div class="datatable" id="ov-off-table" hidden></div></div>
     </div>
 
+    <div class="panel wide" data-needs="overview">
+      <h3>Notices<span class="hint" id="notice-count"></span></h3>
+      <p class="sub">What this honeypot has said about itself: startup warnings, settings that would quietly do nothing, and every runtime change with who made it. Held in memory for this run.</p>
+      <div id="p-notices"></div>
+    </div>
+
     <div class="grid2">
       <div class="panel"><h3>Response actions served</h3>
         <p class="sub">What the honeypot answered with: the escalation policy's output.</p>
@@ -461,6 +469,7 @@ export const DASHBOARD_MARKUP = String.raw`<div id="hp-app" class="hp-app">
     <div class="toolbar">
       <label class="field">Detector <select id="f-detector"></select></label>
       <label class="field">Source IP <input id="f-ip" type="text" autocomplete="off" spellcheck="false" placeholder="any"></label>
+      <label class="field">Search <input id="f-query" type="search" autocomplete="off" spellcheck="false" placeholder="path:/wp- $or detector:web-shell"></label>
       <label class="field">Show <select id="f-limit"></select></label>
       <button id="f-clear" type="button" class="sm">Clear filter</button>
     </div>

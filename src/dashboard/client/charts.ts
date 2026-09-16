@@ -76,6 +76,18 @@ function gridlines(svg: SVGSVGElement, scale: { step: number; ticks: number; max
   }
 }
 
+/**
+ * Something that happened at a moment, drawn across the plot.
+ *
+ * A panel answers "was there a change?"; a mark on the traffic answers "did the traffic
+ * change because of it", which is the question somebody actually has after tuning a rule.
+ */
+export interface ChartMark {
+  /** Where it falls, as a fraction of the axis: 0 is the first bucket, 1 the last. */
+  at: number;
+  label: string;
+}
+
 export interface Series {
   name: string;
   values: readonly number[];
@@ -87,7 +99,12 @@ export interface Series {
  * are lines with a legend, so identity is never colour alone. A crosshair and a marker per
  * series follow the hovered bucket, and the tooltip reads every series at once.
  */
-export function timeChart(target: HTMLElement, buckets: ReadonlyArray<{ label: string; full: string }>, series: readonly Series[], options: { height?: number; label: string }): void {
+export function timeChart(
+  target: HTMLElement,
+  buckets: ReadonlyArray<{ label: string; full: string }>,
+  series: readonly Series[],
+  options: { height?: number; label: string; marks?: readonly ChartMark[] },
+): void {
   draw(target, (W) => {
     if (buckets.length === 0) return [noData()];
     const H = options.height ?? 190;
@@ -118,6 +135,14 @@ export function timeChart(target: HTMLElement, buckets: ReadonlyArray<{ label: s
     label(0);
     if (n > 2) label(Math.floor((n - 1) / 2));
     if (n > 1) label(n - 1);
+
+    // Drawn under the crosshair and the hit areas, so a mark never swallows a hover.
+    for (const mark of options.marks ?? []) {
+      const mx = P.l + Math.min(1, Math.max(0, mark.at)) * iw;
+      const line = svgEl("line", { class: "mark", x1: mx.toFixed(1), x2: mx.toFixed(1), y1: P.t, y2: P.t + ih });
+      setTip(line, { title: mark.label, lines: [] });
+      svg.append(line);
+    }
 
     const cross = svgEl("line", { class: "cross", x1: 0, x2: 0, y1: P.t, y2: P.t + ih });
     const markers = series.map((s) => svgEl("circle", { class: `marker ring fill-${slot(s.slot)}`, r: 4, cx: 0, cy: 0 }));

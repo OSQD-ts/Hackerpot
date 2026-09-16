@@ -4,7 +4,7 @@ import { detectorBadges, responseBadge } from "./badges.js";
 import { buildDetail } from "./detail.js";
 import { $, byId, clear, el, maybe } from "./dom.js";
 import { fmtCompact, fmtInt, fmtTime, sevClass } from "./format.js";
-import { explainFailure, incidentQuery, isIncident, LIMITS, matchesFilter } from "./query.js";
+import { explainFailure, incidentQuery, INCIDENT_VOCABULARY, isIncident, LIMITS, matchesFilter, matchesQuery, parseFilter } from "./query.js";
 import { state } from "./store.js";
 import type { Incident } from "./types.js";
 
@@ -37,6 +37,8 @@ export function initIncidents(): void {
   }
   setDetectorOptions([]);
   ip.value = state.filter.ip;
+  const query = byId<HTMLInputElement>("f-query");
+  query.value = state.filter.query;
 
   detector.addEventListener("change", () => {
     state.filter.detector = detector.value;
@@ -51,6 +53,13 @@ export function initIncidents(): void {
   ip.addEventListener("keydown", (event) => {
     if (event.key === "Enter") applyIp();
   });
+  // The expression filters what has already been fetched, so typing in it re-renders rather
+  // than re-requesting: the API has no grammar, and asking it again would return the same rows.
+  query.addEventListener("input", () => {
+    if (query.value === state.filter.query) return;
+    state.filter.query = query.value;
+    renderIncidentRows();
+  });
   limit.addEventListener("change", () => {
     state.filter.limit = Number(limit.value) || 100;
     void loadIncidents();
@@ -58,8 +67,10 @@ export function initIncidents(): void {
   $("f-clear").addEventListener("click", () => {
     state.filter.detector = "";
     state.filter.ip = "";
+    state.filter.query = "";
     detector.value = "";
     ip.value = "";
+    query.value = "";
     void loadIncidents();
   });
 
@@ -183,16 +194,37 @@ function setOpen(row: HTMLTableRowElement, open: boolean): void {
   }
 }
 
+/**
+ * The Incidents pill.
+ *
+ * It used to show `state.incidents.length`, which is the number of rows this table is
+ * holding — bounded by the page size, so a busy honeypot displayed the same number all day
+ * and it read as a count of incidents. The count now comes from the server's minute buckets;
+ * the title says what the table itself is showing, so neither number pretends to be the other.
+ */
+function updateIncidentPill(): void {
+  const pill = maybe("tc-incidents");
+  if (pill === null) return;
+  const held = state.incidents.length;
+  const counted = state.counts?.total;
+  pill.textContent = fmtCompact(counted ?? held);
+  pill.title = counted === undefined ? `${held} incidents loaded` : `${counted} incidents recorded · ${held} shown here`;
+}
+
 export function renderIncidentRows(): void {
   const body = tbody();
   clear(body);
-  const pill = maybe("tc-incidents");
-  if (pill !== null) pill.textContent = fmtCompact(state.incidents.length);
-  if (state.incidents.length === 0) {
-    body.append(emptyRow(state.filter.ip !== "" || state.filter.detector !== "" ? "No incidents match this filter." : "No incidents yet. Run `npm run attack:all` against the honeypot to see some."));
+  updateIncidentPill();
+  // Parsed once per render rather than once per row. The detector and address boxes already
+  // narrowed what was requested; the expression narrows what is shown.
+  const expression = parseFilter(state.filter.query, INCIDENT_VOCABULARY);
+  const visible = state.filter.query.trim() === "" ? state.incidents : state.incidents.filter((incident) => matchesQuery(incident, expression, INCIDENT_VOCABULARY));
+  if (visible.length === 0) {
+    const filtered = state.filter.ip !== "" || state.filter.detector !== "" || state.filter.query.trim() !== "";
+    body.append(emptyRow(filtered ? "No incidents match this filter." : "No incidents yet. Run `npm run attack:all` against the honeypot to see some."));
     return;
   }
-  for (const incident of state.incidents) {
+  for (const incident of visible) {
     const row = buildRow(incident, false);
     body.append(row);
     if (state.openIncidents.has(incident.id)) setOpen(row, true);
@@ -201,6 +233,8 @@ export function renderIncidentRows(): void {
 
 /** A live incident at the top of the table, if the filter wants it, keeping the row limit. */
 export function prependIncident(incident: Incident): void {
+  // Counted before the filter, because an incident the current filter hides still happened.
+  if (state.counts !== undefined) state.counts = { ...state.counts, total: state.counts.total + 1 };
   if (!matchesFilter(incident, state.filter)) return;
   if (state.incidents.some((existing) => existing.id === incident.id)) return;
   state.incidents.unshift(incident);
@@ -217,6 +251,5 @@ export function prependIncident(incident: Incident): void {
     last.remove();
     if (dropped !== undefined) state.openIncidents.delete(dropped.id);
   }
-  const pill = maybe("tc-incidents");
-  if (pill !== null) pill.textContent = fmtCompact(state.incidents.length);
+  updateIncidentPill();
 }

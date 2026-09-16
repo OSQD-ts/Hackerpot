@@ -21,6 +21,7 @@ const bootstrap: DashboardBootstrap = {
   instance: "edge-1",
   version: "0.1.0",
   sections: { overview: true, incidents: true, statistics: true, sessions: true, actors: true, intel: true },
+  controls: { testRequest: false, previewPolicy: false, editPolicy: false },
   links: [{ label: "Runbook", href: "https://runbook.example" }],
   source: "this process",
   redaction: { credentials: true, maskIp: false },

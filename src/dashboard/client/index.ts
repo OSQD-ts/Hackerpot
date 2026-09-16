@@ -1,12 +1,13 @@
 import { type Analysis, analyze, CORPUS_LIMIT, chronological, scopeIncidents } from "./analysis.js";
 import { asApiError, getJson, getText } from "./api.js";
+import type { DashboardNotice, FeedCountsSnapshot } from "./store.js";
 import { app } from "./app.js";
 import { applyBoot, BOOT, SECTIONS } from "./boot.js";
 import { repaintVisible } from "./charts.js";
 import { $, all, byId, clear, el, eventTarget, isEmbedded, maybe, rootNode, setRoot, setText, setThemeHost, themeElement } from "./dom.js";
 import { fmtClock, fmtCompact } from "./format.js";
 import { initIncidents, loadIncidents, prependIncident, setDetectorOptions } from "./incidents.js";
-import { initIntel, renderActors, renderIoc, renderMetrics, renderSessions } from "./lists.js";
+import { initIntel, renderActors, renderIoc, renderMetrics, renderNotices, renderSessions } from "./lists.js";
 import { renderOverview } from "./overview.js";
 import { availableTabs, explainFailure, type Failure, isIncident, isTabName, mergeIncident, parseMetrics, safeHref, streamNotice, TAB_ORDER, tabFromHash } from "./query.js";
 import { initStatistics, onStatisticsChange, renderStats } from "./statistics.js";
@@ -94,6 +95,7 @@ function renderTab(tab: TabName): void {
   else if (tab === "actors") renderActors();
   else if (tab === "intel") {
     renderIoc();
+    renderNotices();
     renderMetrics();
   }
 }
@@ -157,6 +159,24 @@ async function loadEverything(): Promise<void> {
         state.stats = stats;
         state.liveSinceStats = 0;
         setDetectorOptions(Object.keys(stats.byDetector ?? {}));
+      }),
+    );
+  }
+  if (SECTIONS.overview || SECTIONS.statistics || SECTIONS.incidents) {
+    // Counted server-side in minute buckets, so this says how many incidents happened rather
+    // than how many the page managed to hold.
+    jobs.push(
+      attempt("/api/counts", getJson<FeedCountsSnapshot>, (counts) => {
+        state.counts = counts;
+      }),
+    );
+  }
+  if (SECTIONS.overview) {
+    // Only an engine in this process keeps notices; a dashboard reading a management API is
+    // answered 404 and simply shows none.
+    jobs.push(
+      attempt("/api/notices", getJson<{ notices?: DashboardNotice[] }>, (data) => {
+        state.notices = Array.isArray(data.notices) ? data.notices : [];
       }),
     );
   }
@@ -301,7 +321,8 @@ function drawNotice(): void {
 
 function drawPills(): void {
   const set = (id: string, n: number): void => setText(id, fmtCompact(n));
-  set("tc-incidents", state.incidents.length);
+  // What happened, when the server could say; what is loaded, when it could not.
+  set("tc-incidents", state.counts?.total ?? state.incidents.length);
   set("tc-sessions", state.sessions.length);
   set("tc-actors", state.actors.length);
   set("tc-ioc", state.ioc.length);

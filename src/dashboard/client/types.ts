@@ -45,6 +45,15 @@ export interface Incident {
   score: number;
   totalScore: number;
   respondedWith: string;
+  /** Id of the policy rule that chose the response, and the sentence it gave. */
+  rule?: string | undefined;
+  reason?: string | undefined;
+  /** How strong the evidence was, in [0, 1]. Only proof reaches 1. */
+  confidence?: number | undefined;
+  /** The name this source is known by, when a label matched. A label never exempts. */
+  actor?: { readonly name: string; readonly note?: string; readonly matchedOn?: string; readonly hidden?: boolean } | undefined;
+  /** The verified marker this client presented. */
+  marker?: string | undefined;
   downgradedFrom?: string | undefined;
 }
 

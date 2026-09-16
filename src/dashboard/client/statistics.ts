@@ -113,7 +113,7 @@ export function renderStats(a: Analysis): void {
   replace($("st-kpis"), ...cards);
 
   setText("st-bucket", a.n ? `${fmtDur(a.bucketSize)} buckets` : "");
-  volumeChart($("st-vol"), a, maybe("st-vol-table"), "Incidents over time");
+  volumeChart($("st-vol"), a, maybe("st-vol-table"), "Incidents over time", state.notices.filter((notice) => notice.change !== undefined));
 
   if (a.n) {
     timeChart(

@@ -7,6 +7,9 @@ import type { ActorGroup, AttackSession, IocEntry, StatsSummary } from "../manag
 import type { ManagementServer } from "../management/server.js";
 import type { Incident } from "../management/types.js";
 import type { HitStore } from "../types.js";
+import type { EvaluationResult, Notice } from "../core.js";
+import type { RequestFacts } from "../detectors/types.js";
+import type { ResponsePolicy } from "../responses/index.js";
 
 /**
  * Where a dashboard reads from.
@@ -33,6 +36,24 @@ export interface DashboardSource {
   metrics(): Promise<string>;
   /** Every new incident, as it happens. Returns the way to stop. */
   subscribe(listener: (incident: Incident) => void): () => void;
+  /**
+   * Runs one request through the detectors without recording anything.
+   *
+   * Present only when the dashboard reads an engine in this process: a management API
+   * serves recorded incidents and has no engine to ask. The routes that need it answer 404
+   * when it is absent, rather than pretending the answer is unavailable for another reason.
+   */
+  evaluate?(facts: RequestFacts): Promise<EvaluationResult>;
+  /** Replaces the running policy. Present only for an engine in this process. */
+  applyPolicy?(policy: ResponsePolicy, by: string): void;
+  /**
+   * What the engine has said about itself: startup warnings, settings that would quietly do
+   * nothing, and every runtime change with who made it.
+   *
+   * Present only for an engine in this process — the history is in memory and belongs to the
+   * engine, so a management API has none to serve.
+   */
+  notices?(): readonly Notice[];
   /** Releases connections the source opened. */
   close?(): Promise<void>;
 }
@@ -77,12 +98,21 @@ export function storeSource(options: StoreSourceOptions): DashboardSource {
  * hits there).
  */
 export function engineSource(engine: HoneypotEngine): DashboardSource {
-  return storeSource({
+  const source = storeSource({
     store: engine.store,
     subscribe: (listener) => engine.subscribe(listener),
     // The live gauges only the engine knows, beside the store's counts.
     metrics: async () => renderMetrics(engine.store, { active_blocks: (await engine.blocklist.size?.()) ?? 0, tracked_ips: engine.registry.size }),
   });
+  return {
+    ...source,
+    // A dry run: every detector runs and the decision is real, including the proof guard,
+    // but nothing is recorded, no score moves and no response is served. Reproducing a
+    // complaint against the live honeypot would change the thing being investigated.
+    evaluate: (facts) => engine.evaluate(facts, { recordHit: false, trackActivity: false, audit: false, blockRequiresProof: true }),
+    applyPolicy: (policy, by) => void engine.reconfigure({ policy }, { by }),
+    notices: () => engine.notices(),
+  };
 }
 
 /** A management server in this process: its store, its broker, and its `/metrics` counters. */
