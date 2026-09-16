@@ -70,6 +70,12 @@ export { hostHeaderInjectionDetector } from "./host-header-injection.js";
 export type { HostHeaderInjectionOptions } from "./host-header-injection.js";
 export { repeatActorDetector } from "./repeat-actor.js";
 export type { RepeatActorOptions } from "./repeat-actor.js";
+// Off by default: it reads the site baseline, which only exists where outcomes are reported.
+export { pathNoveltyDetector } from "./path-novelty.js";
+export type { PathNoveltyOptions } from "./path-novelty.js";
+// Off by default too: it needs markers, which exist only in middleware mode.
+export { markerDriftDetector } from "./marker-drift.js";
+export type { MarkerDriftOptions } from "./marker-drift.js";
 export { crawlerVerificationDetector, verifiableCrawlers } from "./crawler-verification.js";
 export type { CrawlerVerificationOptions, VerifiableCrawler } from "./crawler-verification.js";
 export { cachingResolver, forwardConfirmedReverseDns, nodeDnsResolver } from "../internal/dns.js";

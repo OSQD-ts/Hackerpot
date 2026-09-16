@@ -10,12 +10,90 @@ An incident feed is only useful if it reaches somebody. Three destinations ship,
 assume every field they carry is attacker-written: the request path, the User-Agent, a captured
 shell command, and the detector `reason` strings that quote them back.
 
+## Where alerts are delivered from
+
+Every incident leaves through one fan-out — the notification hub — which the service publishes
+to once per incident and every sink receives from: the management live feed and its counters,
+webhooks, syslog. A sink that fails or hangs is isolated from its neighbours and from the
+request that produced the incident.
+
+The hub exists **whether or not `[management]` is enabled**. That matters for webhooks: they
+were previously delivered by the management server, so getting an alert into a chat channel
+meant standing up a REST API over your captured attacker data. Configure them at the top level
+instead:
+
+```toml
+[[webhooks]]              # delivered with or without the management API
+url = "https://hooks.slack.com/services/T000/B000/xxxx"
+```
+
+`[[management.webhooks]]` still works and is delivered by the management server as before. If
+you have them configured while `[management]` is disabled, nothing delivers them — the service
+says so at startup rather than staying quiet about it.
+
+### What a sink is told
+
+Every sink receives the same shape — an **event** with a type (`hit`, `downgrade`, `anomaly`,
+`error`), the incident it is about, and nothing else to learn. It is the shape
+[bothandlerjs](https://github.com/osqd-ts/bothandlerjs) uses, so a sink written against one
+library is recognisable to somebody who knows the other:
+
+```ts
+import { NotificationHub, consoleNotifier } from "@osqd/hackerpot";
+
+const notify = new NotificationHub({ filter: { types: ["downgrade", "anomaly", "error"] } });
+notify.add(consoleNotifier());
+notify.add({ id: "mine", notify: (event) => void send(event) });
+```
+
+`consoleNotifier()` is the sink to start with: one line for what happened, one for why, and no
+captured request printed — that is attacker-written text going to a terminal, and the store
+already has it. `filter` narrows what arrives: `types`, `minScore` (a cumulative score gate) and
+`certainOnly`. Proof always passes a `minScore` gate it would not otherwise clear, because a
+replayed honeytoken scores little and settles the question.
+
+### To a NotifyJS hub
+
+`notifyJsSink` publishes to [NotifyJS](https://github.com/osqd-ts/notifyjs)'s HTTP ingest, so
+honeypot alerts arrive on the same devices as the rest of your operational notifications:
+
+```ts
+import { notifyJsSink } from "@osqd/hackerpot";
+
+notify.add(notifyJsSink({ url: "https://hub.example.com", token: process.env.NOTIFYJS_TOKEN! }));
+```
+
+Ingest is off on a hub until you turn it on — `notifyjs serve --ingest`, then
+`notifyjs token create --role oncall` for the token. A hub with it switched off answers `404`
+rather than confirming the feature exists, and this sink says exactly that instead of reading
+like a wrong URL. The other refusals are reported as themselves too: `421` (a bearer token over
+plain HTTP from off-box), `401` (unknown or revoked token), `403` (the token's role cannot
+`notify.send`), `429` (per-token rate limit).
+
+What is sent is deliberately thin — who, what, and what the honeypot did. **No headers and no
+captured body**, and the path is clipped: this lands on a lock screen, and the store already
+holds the request in full. One alert per address (`dedupeKey`), the audit's own severity for an
+anomaly, and `error` for anything carrying proof.
+
+### The bounds that keep alerting from becoming the outage
+
+Attack traffic arrives in volumes ordinary alerting was not built for. The hub therefore
+collapses repeats of the same address and response into one event per window (60s by default),
+caps deliveries per window across all addresses (200 by default) for distributed traffic where
+every event genuinely differs, and reports **what it suppressed** when the window rolls — so a
+quiet channel is never mistaken for quiet traffic. Failures and anomalies are never
+deduplicated: two failures with the same shape are two problems, and the audit's own cooldown
+already decided an anomaly was worth saying.
+
+These bounds used to live inside the webhook dispatcher alone, which meant syslog and any sink
+you wrote had none of them.
+
 ## Slack and Discord
 
 Point a [webhook](webhooks.md) at the platform's own incoming-webhook URL and set `format`:
 
 ```toml
-[[management.webhooks]]
+[[webhooks]]
 url = "https://hooks.slack.com/services/T000/B000/xxxx"
 format = "slack"          # or "discord"; default "hackerpot" is the native JSON
 min_score = 20
@@ -59,11 +137,20 @@ hostname = "hackerpot"
 min_score = 0
 max_bytes = 1024          # at least 480
 include_body = false
+redact = true             # strip credentials before the incident leaves
+mask_ip = false           # send 198.51.100.0/24 instead of the address
 ```
 
 This is **deliberately independent of `[management]`**: shipping to a SIEM should not also
 require exposing a REST API over your captured attacker data. It sits directly on the hit path,
 so it forwards HTTP and protocol-honeypot incidents alike.
+
+Credentials are stripped from the copy sent to the collector, the same
+[redaction](dashboard.md#redaction) the dashboard and webhooks apply — and for a stronger
+reason: a SIEM indexes what it receives, keeps it for as long as a retention policy says, and
+shows it to more people than ever touch the honeypot. A captured password sent there once is
+there for years. Detection and the store still keep everything; only the copy that leaves the
+process is reduced. Set `redact = false` for a collector that is meant to see the raw capture.
 
 | Format | Inside the syslog envelope |
 | --- | --- |

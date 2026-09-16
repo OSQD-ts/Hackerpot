@@ -69,6 +69,8 @@ detector quietly switched off.
 | [`[smtp]`, `[ssh]`, `[ftp]`, `[telnet]`](#protocol-honeypots) | the protocol honeypots | no |
 | [`[syslog]`](#syslog) | forwarding to a SIEM | no |
 | [`[management]`](#management) | the operator API and webhooks | no |
+| [`[[webhooks]]`](#webhooks) | alert webhooks, delivered with or without the operator API | no |
+| [`[markers]`](#markers) | the signed marker handed to whoever probes (middleware mode) | no |
 | [`[dashboard]`](#dashboard) | the operator dashboard | no |
 
 ---
@@ -130,6 +132,105 @@ See [scoring](../concepts/scoring.md#the-escalation-ladder).
 | --- | --- | --- |
 | `block_threshold` | `40` | cumulative score at which an address is blocked (in middleware, with proof) |
 | `tarpit_threshold` | `15` | cumulative score past which unrouted detections are tarpitted; must not exceed `block_threshold` |
+| `preset` | – | a shipped rule set to start from: `observe`, `protect-app`, `standalone` |
+
+### `[[policy.rules]]`
+
+Rules are consulted in order and the first that matches decides the response. Your rules come first,
+then the preset's, then the ladder above — so a short list only overrides what it names, and a rule
+sharing an `id` with one of the preset's replaces it. The rule that decided is recorded on the
+incident along with its `reason`, and is shown by the dashboard and `hackerpot explain`. See
+[writing a policy](../responses/policy.md).
+
+| Key | | |
+| --- | --- | --- |
+| `id` | `rule-<n>` | names this rule on every incident it decides; must be unique |
+| `respond_with` | required | a response action id, or `"@detector"` for whatever the detector asked for |
+| `fallback_action` | `not-found` | used when `respond_with = "@detector"` and the detector asked for nothing |
+| `reason` | – | one sentence, recorded on the incident and shown to an operator |
+
+Every match key below is optional; those present must all hold, and a rule with none matches
+everything (which is how a last-resort rule is written).
+
+| Match key | | |
+| --- | --- | --- |
+| `detector` | array | any of these detector ids fired |
+| `certain` | bool | whether at least one detection is [proof](../concepts/the-guard.md) |
+| `min_score` / `max_score` | number | what this request scored on its own |
+| `min_confidence` / `max_confidence` | 0–1 | how *strong* the evidence is, rather than how much of it; see [confidence](../concepts/scoring.md#confidence-how-strong-not-how-much) |
+| `min_total_score` / `max_total_score` | number | the address's cumulative score |
+| `path_prefix` | array | the path starts with any of these |
+| `path_pattern` | array | the path matches any of these regexes (`/pattern/flags` or a bare pattern) |
+| `method` | array | the request method, compared case-insensitively |
+| `ip` | array | source addresses or CIDR ranges |
+
+An unknown or disabled `respond_with` is a hard error: it would otherwise degrade quietly to a 404.
+`respond_with = "block"` is still subject to the [proof guard](../concepts/the-guard.md) in middleware
+mode — a rule cannot vote itself past it.
+
+```toml
+[policy]
+preset = "protect-app"
+
+[[policy.rules]]
+id = "admin-bruteforce"
+detector = ["credential-bruteforce"]
+path_prefix = ["/admin", "/wp-login.php"]
+respond_with = "rate-limit"
+reason = "Password guessing against the admin login: answered like an ordinary rate limit."
+```
+
+## `[markers]`
+
+A signed cookie handed to whoever the honeypot answers, so one client can be correlated across
+changing addresses even when its fingerprint shifts. Middleware mode only — it needs a client
+that keeps cookies. Read by [`marker-drift`](../detection/detectors.md#marker-drift), and
+recorded on each incident as `marker`. See [actors](../concepts/actors.md#markers).
+
+| Key | Default | |
+| --- | --- | --- |
+| `secret` | `""` | HMAC signing secret; **required**, and setting it turns markers on |
+| `enabled` | `true` when `secret` is set | |
+| `name` | `"__hp"` | cookie name |
+| `max_age_seconds` | `86400` | |
+| `secure` | `true` | add `Secure`, so it comes back only over HTTPS |
+| `same_site` | `"Lax"` | `"Lax"`, `"Strict"` or `"None"` |
+
+Markers are set only on the honeypot's own responses to probes, never on a response your
+application produced, so a visitor who trips nothing is never marked. A marker correlates and
+nothing else: it never exempts, and it is never proof — a cookie can be copied.
+
+## `[[actors]]`
+
+Names for sources you already know, shown wherever the address would be. A label **never
+exempts**: the actor is detected, scored and answered exactly as it would be otherwise — that
+is what [`allowlist`](#allowlist) and [service tokens](../integration/service-tokens.md) are
+for. See [actors](../concepts/actors.md#naming-the-ones-you-know).
+
+| Key | | |
+| --- | --- | --- |
+| `name` | required | what replaces the address wherever this actor appears; unique |
+| `ip` | array | addresses or CIDR ranges |
+| `asn` | array | autonomous system numbers, when a data-backed enricher supplies them |
+| `org` | string | owning organisation, as the enricher reports it |
+| `user_agent` | string | the client's User-Agent |
+| `hostname` | string | the source's reverse-DNS name; resolved in the background, never on the request path |
+| `note` | string | a sentence for whoever reads the incident later |
+| `hide_from_feed` | bool | mute this actor in the dashboard's live pane only — still recorded, counted and listed |
+
+Every key you give must match, so a label can be as narrow as one client on one network. A
+value written in `/slashes/` is a regular expression; anything else matches as a
+case-insensitive substring. The first label that matches wins, and a label with nothing to
+match on is an error rather than a label that silently names nobody.
+
+```toml
+[[actors]]
+name = "Our uptime checker"
+ip = ["198.51.100.10"]
+user_agent = "UptimeBot"
+note = "Every 30s against /healthz"
+hide_from_feed = true
+```
 
 ## Stores
 
@@ -255,6 +356,7 @@ is for scanning.
 | `[detectors.suspicious-method]` | on, 6 | `methods` |
 | `[detectors.credential-bruteforce]` | on, 9 | `auth_paths` (regex), `window_ms` (60000), `attempt_threshold` (8) |
 | `[detectors.path-bruteforce]` | on, 8 | `window_ms` (30000), `unique_path_threshold` (15) |
+| `[detectors.path-novelty]` | off, 6 | `window_ms` (60000), `unseen_path_threshold` (5), `walker_threshold` (4), `min_observations` (500), `min_served_paths` (20) |
 | `[detectors.scanner-signature]` | on, 6 | `extra_patterns` (regex list), `flag_missing_user_agent` (true) |
 | `[detectors.client-anomaly]` | on, 4 | `required_browser_headers` |
 | `[detectors.rate-spike]` | on, 4 | `window_ms` (10000), `request_threshold` (60) |
@@ -354,9 +456,28 @@ See [alert sinks](../operations/alert-sinks.md#syslog-and-siem).
 | `facility` | `13` | 0–23 |
 | `severity` | `4` | 0–7 |
 | `hostname` | `"hackerpot"` | in the syslog header |
+| `redact` | `true` | strip credentials before the incident leaves for the collector |
+| `mask_ip` | `false` | send the source address as its network (`/24`, `/48`) rather than in full |
 | `min_score` | `0` | |
 | `max_bytes` | `1024` | at least 480 |
 | `include_body` | `false` | |
+
+## `[[webhooks]]`
+
+Alert webhooks, delivered by the notification hub — which exists whether or not the operator
+API does. Same keys as [`[[management.webhooks]]`](#managementwebhooks) below; the difference is
+only that these need no REST API standing up over your captured data to reach a chat channel.
+
+```toml
+[[webhooks]]
+url = "https://hooks.slack.com/services/T000/B000/xxxx"
+format = "slack"
+min_score = 20
+```
+
+Both surfaces work and are delivered together. `[[management.webhooks]]` configured while
+`[management]` is disabled delivers nothing, and the service says so at startup. See
+[alert sinks](../operations/alert-sinks.md#where-alerts-are-delivered-from).
 
 ## `[management]`
 

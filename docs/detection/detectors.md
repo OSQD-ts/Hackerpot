@@ -41,6 +41,8 @@ Every factory also accepts `score` and `respondWith`, and every TOML section `en
 | [`suspicious-method`](#suspicious-method) | WebDAV, `TRACE`, `TRACK`, `DEBUG`, `CONNECT` | headers | 6 | no | on |
 | [`credential-bruteforce`](#credential-bruteforce) | repeated attempts against one login endpoint | headers | 9 | no | on |
 | [`path-bruteforce`](#path-bruteforce) | many distinct paths in a short window | headers | 8 | no | on |
+| [`path-novelty`](#path-novelty) | paths this site has never served, and walks spread across addresses | headers | 6 | no | opt-in |
+| [`marker-drift`](#marker-drift) | one marked client arriving from several addresses | headers | 7 | no | opt-in |
 | [`scanner-signature`](#scanner-signature) | scanner and scripting-client User-Agents | headers | 6 | **attack tools** | on |
 | [`client-anomaly`](#client-anomaly) | a browser User-Agent missing every browser header | headers | 4 | no | on |
 | [`rate-spike`](#rate-spike) | an abnormal request rate | headers | 4 | no | on |
@@ -427,6 +429,56 @@ several addresses: someone rotating addresses to dodge per-address blocking.
 Safe in front of real users: the registry holds only addresses whose requests already
 scored, and the current address must be one of them. It confirms that suspicious addresses
 are one actor, and never manufactures suspicion. See [actors](../concepts/actors.md#cross-ip-correlation-repeat-actor).
+
+### `path-novelty`
+
+**headers · correlating · 6 · not proof · opt-in · middleware only**
+
+Probing measured against what this site actually serves. `path-bruteforce` counts distinct
+paths, which is a guess about your site dressed as a threshold — fifteen paths in thirty
+seconds is a scanner on a marketing page and one page load on an asset-heavy application.
+This detector instead asks whether the paths are *real here*, using the status codes your
+application already produces.
+
+It fires on either shape: one address asking for several paths the application has never
+served, or one never-served path being asked for by many addresses — a walk spread thin
+enough that no single address trips a volume threshold.
+
+| Option | TOML | Default |
+| --- | --- | --- |
+| `windowMs` | `window_ms` | `60000` |
+| `unseenPathThreshold` | `unseen_path_threshold` | `5` |
+| `walkerThreshold` | `walker_threshold` | `4` |
+| `minObservations` | `min_observations` | `500` |
+| `minServedPaths` | `min_served_paths` | `20` |
+
+It needs [the site baseline](../concepts/baseline.md), which is fed by
+`engine.reportOutcome()` — the middleware does this for every request it passes to your
+routes. In standalone mode nothing answers requests except the honeypot, so the baseline
+stays empty and this detector never fires. It also stands down until the baseline is warm
+(`min_observations` outcomes across `min_served_paths` real paths), skips a crawler DNS has
+confirmed, and shares the `path-probing` family with `path-bruteforce` so one walk seen by
+both is scored once.
+
+### `marker-drift`
+
+**headers · correlating · 7 · not proof · opt-in · middleware only**
+
+One [marker](../concepts/actors.md#markers) presented from several addresses: the same client,
+rotating. [`repeat-actor`](#repeat-actor) does this from the actor fingerprint, which holds
+only while the tooling stays identical — swap tools, or drive the attack from a browser, and
+one actor looks like several. A marker survives that.
+
+| Option | TOML | Default |
+| --- | --- | --- |
+| `distinctIpThreshold` | `distinct_ip_threshold` | `3` |
+| `windowMs` | `window_ms` | `600000` |
+
+Needs [`[markers]`](../reference/configuration.md#markers), which only works in middleware
+mode. Markers are handed out **only** on the honeypot's own responses to probes, so every
+marked client was already an incident and this detector escalates rather than accuses. It
+shares the `actor-rotation` family with `repeat-actor`, so one rotation seen by both is scored
+once, and it is never proof: a cookie can be copied, including out of somebody else's traffic.
 
 ## Planted proof
 

@@ -30,6 +30,93 @@ window.
 (`credential-bruteforce`'s 60 s by default), or that detector sees less history than it
 asks for.
 
+## Naming the ones you know
+
+An incident log is a list of addresses, and the first question about any of them is "who is
+that?" — usually answered by pasting it into a lookup tool. Some answers you already have:
+your uptime checker, a partner's integration, a vendor's scanner, the office. Label them once
+and the feed reads in names, so the unfamiliar addresses are the ones that stand out.
+
+```ts
+import { ActorLabels, HoneypotEngine } from "@osqd/hackerpot";
+
+const labels = new ActorLabels({
+  labels: [
+    { name: "Our uptime checker", match: { ip: ["198.51.100.10"], userAgent: "UptimeBot" },
+      note: "Every 30s against /healthz", hideFromFeed: true },
+    { name: "Acme security scan", match: { org: "Acme Security" }, note: "Contracted, weekly" },
+  ],
+});
+
+new HoneypotEngine({ labels });
+```
+
+```toml
+[[actors]]
+name = "Our uptime checker"
+ip = ["198.51.100.10"]
+user_agent = "UptimeBot"
+hide_from_feed = true
+```
+
+Match on `ip` (addresses or CIDR ranges), `asn`, `org`, `userAgent` or `hostname`; every key
+you give must match, so a label can be as narrow as one client on one network. A value in
+`/slashes/` is a regular expression, anything else is a case-insensitive substring. The first
+label that matches wins, and the name lands on the incident as `actor`.
+
+**A label names; it never exempts.** A labelled actor is detected, scored and answered exactly
+as it would be otherwise — naming a scanner so you can watch what it does is the opposite of
+trusting it. Exemption is the [allowlist](../reference/configuration.md#allowlist) or a
+[service token](../integration/service-tokens.md). The one thing a label changes is
+`hideFromFeed`, which mutes a known constant source in the dashboard's **live pane only**: it
+is still detected, recorded, counted in the statistics and returned by the listings.
+
+Matching on `hostname` needs reverse DNS, which is never awaited on the request path — a
+honeypot that waits on DNS before answering has been handed a way to slow it down. The lookup
+starts in the background, is cached (1 h by default), and the name is available from the next
+request that address makes.
+
+## Markers
+
+A fingerprint correlates a rotating attacker only while their tooling stays identical. Swap
+one tool for another, or drive the attack from a browser, and one actor looks like several. In
+middleware mode — where clients keep cookies — a **marker** survives that: the same signed
+value comes back from wherever the next request is made.
+
+```toml
+[markers]
+secret = "a-long-random-secret"   # required; turns markers on
+name = "__hp"
+max_age_seconds = 86400
+secure = true
+same_site = "Lax"
+
+[detectors.marker-drift]
+enabled = true                    # one marker, several addresses
+```
+
+The rules are the fingerprint's rules, applied harder, because a cookie is a stronger
+identifier than a heuristic:
+
+- **Only somebody the honeypot already answered gets one.** The marker is set on the
+  honeypot's own responses to probes, never on a response your application produced. A visitor
+  who trips nothing is never marked — this is a tag on requests that were already incidents,
+  not analytics attached to your traffic.
+- **It correlates, it never accuses.** `marker-drift` fires on one marker presented from
+  several addresses and adds a modest score. It is never proof: a cookie can be copied,
+  including out of somebody else's traffic.
+- **It never exempts.** A marker is not a token and grants nothing.
+- **It is signed and carries nothing.** A random id plus an HMAC over it, `HttpOnly`, so a
+  forged or edited marker is rejected rather than inventing an actor, and the value holds no
+  address, no timestamp, nothing about the person. An unsigned marker would be one anybody
+  could mint, which is why `secret` is required rather than defaulted.
+
+A rejected marker is indistinguishable from no marker at all: treating a forgery as its own
+event would hand an attacker a signal they can raise whenever they like.
+
+In code: `new MarkerCookie({ secret })`, passed to `HoneypotEngine` as `markers`. The marker a
+request carried is on the incident as `marker`.
+
 ## The actor fingerprint
 
 For every request the engine computes a short hash of:

@@ -1,6 +1,9 @@
 export { ConfigError, Section, toRegExp } from "./reader.js";
 export { defaultConfig, parseConfig } from "./schema.js";
 export type {
+  ActorLabelConfig,
+  MarkersConfig,
+  PolicyRuleConfig,
   AuditConfig,
   DashboardServiceConfig,
   ServiceTokensConfig,
@@ -30,6 +33,8 @@ export type {
   Toggle,
 } from "./schema.js";
 export {
+  buildActorLabels,
+  buildMarkerCookie,
   buildAudit,
   buildDashboardOptions,
   buildDashboardSource,

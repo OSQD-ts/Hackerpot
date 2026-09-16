@@ -1,4 +1,6 @@
 import { promises as dnsPromises } from "node:dns";
+import { systemClock, type Clock } from "./clock.js";
+import { TtlLru } from "./lru.js";
 import { sameAddress } from "../allowlist.js";
 
 /**
@@ -149,6 +151,8 @@ class CachedDnsError extends Error {
 type CacheEntry = { expiresAt: number } & ({ ok: true; value: string[] } | { ok: false; code: string });
 
 export interface CachingResolverOptions {
+  /** Where "now" comes from. Default the system clock. */
+  clock?: Clock;
   /** How long a successful answer is reused, ms. Default 3600000 (1h). */
   ttlMs?: number;
   /** How long a failure that is not a definitive absence is remembered, ms. Default 60000. */
@@ -172,18 +176,16 @@ export function cachingResolver(inner: DnsResolver, options: CachingResolverOpti
   const errorTtlMs = options.errorTtlMs ?? 60_000;
   const max = options.max ?? 10_000;
   const inFlightTtlMs = options.inFlightTtlMs ?? 30_000;
-  const cache = new Map<string, CacheEntry>();
+  const clock = options.clock ?? systemClock;
+  // The cache owns the ceiling and the eviction; each entry still carries its own expiry,
+  // because an answer and a failure are remembered for different lengths of time.
+  const cache = new TtlLru<CacheEntry>(max, Math.max(ttlMs, errorTtlMs), clock);
   const inFlight = new Map<string, Promise<string[]>>();
 
-  const store = (key: string, entry: CacheEntry): void => {
-    cache.set(key, entry);
-    if (cache.size <= max) return;
-    const oldest = cache.keys().next();
-    if (oldest.done !== true) cache.delete(oldest.value);
-  };
+  const store = (key: string, entry: CacheEntry): void => cache.set(key, entry);
 
   const lookup = (key: string, work: () => Promise<string[]>): Promise<string[]> => {
-    const now = Date.now();
+    const now = clock.now();
     const hit = cache.get(key);
     if (hit !== undefined && hit.expiresAt > now) {
       return hit.ok ? Promise.resolve(hit.value) : Promise.reject(new CachedDnsError(hit.code));

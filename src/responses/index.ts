@@ -8,9 +8,15 @@ import { fakeDataAction } from "./fake-data.js";
 import { gzipBombAction } from "./gzip-bomb.js";
 import { chaosAction } from "./chaos.js";
 import { rateLimitAction } from "./rate-limit.js";
-import type { PolicyContext, ResponseAction, ResponsePolicy } from "./types.js";
+import { ladderPolicy } from "./rules.js";
+import type { PolicyContext, ResponseAction, ResponseDecision, ResponsePolicy } from "./types.js";
 
-export type { PolicyContext, ResponseAction, ResponseContext, ResponsePolicy } from "./types.js";
+export type { PolicyContext, ResponseAction, ResponseContext, ResponseDecision, ResponsePolicy } from "./types.js";
+// The policy as data: rules, the ladder they fall back to, and the presets to start from.
+export { compileMatch, ladderPolicy, rulePolicy } from "./rules.js";
+export type { MatchSpec, Rule, RulePolicyOptions } from "./rules.js";
+export { PRESET_NAMES, PRESETS, observe, protectApp, standalone } from "./presets.js";
+export type { PresetName } from "./presets.js";
 export { blockAction } from "./block.js";
 export type { BlockOptions } from "./block.js";
 export { tarpitAction } from "./tarpit.js";
@@ -57,12 +63,14 @@ export function defaultResponseActions(): ResponseAction[] {
  * requested. Below that, a detector's explicit `respondWith` is honored (so
  * decoys keep serving convincing bait); otherwise middling scores are
  * tarpitted and first-touch probes get a plain 404.
+ *
+ * This returns a bare action id, and keeps doing so: wrapping it and comparing the result to
+ * an id (`if (ladder(ctx) === "block")`) is the documented way to write a policy on top of
+ * the default, and that must keep working. {@link ladderPolicy} is the same ladder returning
+ * a {@link ResponseDecision} instead, which is what the engine and `rulePolicy` use so that an
+ * incident can say which rung decided it.
  */
 export function defaultResponsePolicy(blockThreshold = 40, tarpitThreshold = 15): ResponsePolicy {
-  return (ctx: PolicyContext): string => {
-    if (ctx.totalScore >= blockThreshold) return "block";
-    if (ctx.detection.respondWith) return ctx.detection.respondWith;
-    if (ctx.totalScore >= tarpitThreshold) return "tarpit";
-    return "not-found";
-  };
+  const ladder = ladderPolicy(blockThreshold, tarpitThreshold);
+  return (ctx: PolicyContext): string => (ladder(ctx) as ResponseDecision).actionId;
 }

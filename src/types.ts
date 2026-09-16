@@ -1,8 +1,12 @@
 import type { TrafficAudit } from "./audit.js";
+import type { SiteBaseline } from "./baseline.js";
+import type { Clock } from "./internal/clock.js";
 import type { Blocklist } from "./blocklist.js";
 import type { ServiceTokenOptions, ServiceTokens } from "./service-tokens.js";
 import type { Detection, Detector } from "./detectors/types.js";
 import type { IpEnricher, IpEnrichment } from "./enrichment.js";
+import type { ActorLabels, LabelledActor } from "./labels.js";
+import type { MarkerCookie } from "./marker.js";
 import type { ResponseAction, ResponsePolicy } from "./responses/types.js";
 
 export interface HoneypotHit {
@@ -19,6 +23,12 @@ export interface HoneypotHit {
   fingerprint?: string | undefined;
   /** Source-IP annotation (special-use category, and geo/ASN if a data-backed enricher is configured). */
   enrichment?: IpEnrichment | undefined;
+  /** The name this source is known by, when one is configured. See `ActorLabels` — a label never exempts. */
+  actor?: LabelledActor | undefined;
+  /** The verified marker this client presented. See `MarkerCookie` — a marker correlates, it never accuses. */
+  marker?: string | undefined;
+  /** How strong this request's evidence was, in [0, 1]. Only proof reaches 1. See `confidenceOf`. */
+  confidence?: number | undefined;
   /** Every detector that fired on this request. */
   detections: Detection[];
   /** Findings from shadowed detectors, which added nothing to the score. See `HoneypotConfig.shadowDetectors`. */
@@ -29,6 +39,10 @@ export interface HoneypotHit {
   totalScore: number;
   /** Id of the response action that ran. */
   respondedWith: string;
+  /** Id of the policy rule that chose it. `"default"` when the shipped ladder decided. */
+  rule?: string | undefined;
+  /** One sentence saying why, when the policy gave one. */
+  reason?: string | undefined;
   /** `"block"` when the policy chose a block that a proof requirement refused. See `EvaluateOptions.blockRequiresProof`. */
   downgradedFrom?: string | undefined;
 }
@@ -158,6 +172,31 @@ export interface HoneypotConfig {
   serviceTokens?: ServiceTokenOptions | ServiceTokens;
   /** Counts every evaluated request so it can watch for anomalies. See `TrafficAudit`. */
   audit?: TrafficAudit;
+  /**
+   * What this site serves, learned from `reportOutcome()` — see `SiteBaseline`. One is
+   * created by default and stays empty (so nothing reads it) until outcomes are reported.
+   * Pass your own to share it, or `null` to disable it entirely.
+   */
+  baseline?: SiteBaseline | null;
+  /**
+   * Names for sources you already know — your uptime checker, a partner's integration, a
+   * vendor's scanner. A label is shown wherever the address would be and may mute the actor
+   * in live feeds; it never exempts it from detection, scoring or a response. Exemption is
+   * `allowlist` and `serviceTokens`.
+   */
+  labels?: ActorLabels;
+  /**
+   * Hands a signed marker to whoever the honeypot answers, so one client can be correlated
+   * across changing addresses even when its fingerprint shifts. Middleware mode only, since
+   * it needs a client that keeps cookies. It never exempts and is never proof.
+   */
+  markers?: MarkerCookie;
+  /**
+   * Where the engine reads the time: activity windows, the fingerprint registry, block expiry
+   * and hit timestamps. Default the system clock; pass a `ManualClock` to make time-dependent
+   * behaviour testable without sleeping.
+   */
+  clock?: Clock;
 }
 
 /** A request a shadowed detector fired on. See `HoneypotConfig.shadowDetectors`. */

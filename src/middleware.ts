@@ -170,19 +170,24 @@ async function handle(
     // A deferred first pass reports nothing, and with no live detection no second pass
     // follows to report shadowed findings, so they are reported here.
     if (bodyPhase && result.shadowDetections.length > 0) engine.reportShadow({ ip, method, path: result.path }, result.shadowDetections, false);
-    if (countOnlyMissedPaths) {
-      // Registered before next(), because the app may answer synchronously.
-      const { tracker, path: tracked } = result;
-      res.once("finish", () => {
-        if (res.statusCode === 404) tracker.confirmPath(tracked);
-      });
-    }
+    // Registered before next(), because the app may answer synchronously.
+    const { tracker, path: tracked } = result;
+    res.once("finish", () => {
+      // What the application answered is the only ground truth about which paths this site
+      // really has. Nothing else teaches the baseline, and an attacker cannot teach it by
+      // asking: a path is real because the app served it, not because somebody wanted it.
+      engine.reportOutcome({ ip, path: tracked, status: res.statusCode });
+      if (countOnlyMissedPaths && res.statusCode === 404) tracker.confirmPath(tracked);
+    });
     next();
     return;
   }
 
   // The honeypot answers this request itself, so it was a probe, not an app page.
   if (countOnlyMissedPaths) result.tracker.confirmPath(result.path);
+  // Recorded as a miss, and never as served: a decoy answering 200 with convincing bait says
+  // nothing about what the real site has.
+  engine.reportOutcome({ ip, path: result.path, status: 404, fromHoneypot: true });
   await dispatch(engine, res, result, ip, result.path);
 }
 
@@ -210,6 +215,14 @@ export async function dispatch(
     blocklist: engine.blocklist,
     onError: (error, context) => engine.reportError(error, context),
   };
+  // The honeypot is answering this request, so whoever sent it probed. Mark them, and the
+  // next request carrying it is the same client from wherever it is made. Only here: a
+  // response your application produced never carries one, so an ordinary visitor is never
+  // marked.
+  const markers = engine.markers;
+  if (markers !== undefined && !res.headersSent) {
+    res.setHeader("Set-Cookie", markers.header(result.marker ?? markers.issue()));
+  }
   await action.execute(ctx);
   if (!res.writableEnded) res.end();
 }

@@ -12,6 +12,7 @@ import { largePayloadAction } from "../src/responses/index.js";
 import { PortScanSentinel } from "../src/detectors/port-scan.js";
 import { fetchIocFeed } from "../src/intel/index.js";
 import { parseConfig } from "../src/config/schema.js";
+import { ManualClock } from "../src/index.js";
 
 const portOf = (s: { address(): unknown }): number => {
   const a = s.address();
@@ -71,17 +72,23 @@ describe("per-IP state caps are hard ceilings under active traffic", () => {
 
 describe("port-scan sentinel tracking map is bounded", () => {
   it("evicts least-recently-seen sources past the cap", async () => {
-    const sentinel = new PortScanSentinel({ ports: [0], maxTrackedIps: 5 });
-    const remember = (sentinel as unknown as { remember(ip: string, port: number, now: number): Set<number> }).remember.bind(sentinel);
-    for (let i = 0; i < 500; i += 1) remember(`10.0.0.${i % 256}`, 8022 + (i % 3), 1_000 + i);
+    const clock = new ManualClock(1_000);
+    const sentinel = new PortScanSentinel({ ports: [0], maxTrackedIps: 5, clock });
+    const remember = (sentinel as unknown as { remember(ip: string, port: number): Set<number> }).remember.bind(sentinel);
+    for (let i = 0; i < 500; i += 1) {
+      remember(`10.0.0.${i % 256}`, 8022 + (i % 3));
+      clock.advance(1);
+    }
     expect(sentinel.trackedIps).toBeLessThanOrEqual(5);
   });
 
   it("forgets sources whose last touch fell outside the retention window", () => {
-    const sentinel = new PortScanSentinel({ ports: [0], retentionMs: 1_000 });
-    const remember = (sentinel as unknown as { remember(ip: string, port: number, now: number): Set<number> }).remember.bind(sentinel);
-    remember("198.51.100.1", 8022, 0);
-    remember("198.51.100.2", 9200, 10_000);
+    const clock = new ManualClock(0);
+    const sentinel = new PortScanSentinel({ ports: [0], retentionMs: 1_000, clock });
+    const remember = (sentinel as unknown as { remember(ip: string, port: number): Set<number> }).remember.bind(sentinel);
+    remember("198.51.100.1", 8022);
+    clock.advance(10_000);
+    remember("198.51.100.2", 9200);
     expect(sentinel.portsTouchedBy("198.51.100.1")).toBe(0);
     expect(sentinel.portsTouchedBy("198.51.100.2")).toBe(1);
   });

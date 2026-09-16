@@ -46,7 +46,14 @@ const EXPORTS = [
   "renderTrapField", "renderTrapLink", "trapDetector", "trapRobotsEntries", "renderAnomaly", "buildAudit",
   "buildDashboardOptions", "buildDashboardSource", "DashboardConfigError", "createDashboardHandler", "maskIp", "startDashboard",
   "brokerSource", "engineSource", "managementApiSource", "managementServerSource", "storeSource", "toDashboardSource",
-  "DASHBOARD_CSS", "DASHBOARD_MARKUP", "renderDashboardPage",
+  "DASHBOARD_CSS", "DASHBOARD_MARKUP", "renderDashboardPage", "ManualClock", "systemClock",
+  "compileMatch", "rulePolicy", "ladderPolicy",
+  "SiteBaseline", "DEFAULT_MIN_OBSERVATIONS", "DEFAULT_MIN_SERVED_PATHS", "pathNoveltyDetector",
+  "ActorLabels", "buildActorLabels", "buildMarkerCookie",
+  "MarkerCookie", "MIN_MARKER_SECRET_LENGTH", "markerDriftDetector",
+  "confidenceOf", "tierOf", "tierOfConfidence", "TIER_WEIGHT", "SUSPICION_CEILING",
+  "MAX_PATH_CHARS", "MAX_IPS_PER_FINGERPRINT", "DEFAULT_MAX_EVENTS",
+  "NotificationHub", "consoleNotifier", "notifyJsSink", "syslogNotifySink", "webhookNotifySink", "PRESETS", "PRESET_NAMES", "observe", "protectApp", "standalone",
 ];
 
 describe("the public API", () => {

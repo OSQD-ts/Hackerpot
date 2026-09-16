@@ -1,3 +1,6 @@
+import { systemClock, type Clock } from "./internal/clock.js";
+import { TtlLru } from "./internal/lru.js";
+
 export interface RequestEvent {
   at: number;
   method: string;
@@ -17,10 +20,23 @@ export interface RequestEvent {
  * `uniquePathsIn`/`countPathIn` read it, both by equality, so a prefix is enough: two
  * paths that agree for 512 characters are the same probe for detection purposes.
  */
-const MAX_PATH_CHARS = 512;
+export const MAX_PATH_CHARS = 512;
 
-/** Default ceiling on events retained per IP. See `IpTracker.record`. */
-const DEFAULT_MAX_EVENTS = 4096;
+/**
+ * Addresses remembered per fingerprint. `repeat-actor` asks "how many distinct addresses",
+ * and its thresholds are single digits, so a saturated count changes no decision.
+ */
+export const MAX_IPS_PER_FINGERPRINT = 256;
+
+/**
+ * Default ceiling on events retained per IP. See `IpTracker.record`.
+ *
+ * Public, like the two caps above it, and for one reason: a detector threshold set higher
+ * than the cap it counts against can never be reached, so the detector is switched off while
+ * looking configured. That is the failure this refuses to ship — a control that looks set and
+ * is not — so the config rejects such a threshold, and rejecting it means naming the number.
+ */
+export const DEFAULT_MAX_EVENTS = 4096;
 
 /** Sliding-window activity history for a single IP, used by the stateful detectors. */
 export class IpTracker {
@@ -28,11 +44,13 @@ export class IpTracker {
   private events: RequestEvent[] = [];
   private readonly windowMs: number;
   private readonly maxEvents: number;
+  private readonly clock: Clock;
 
-  constructor(ip: string, windowMs: number, maxEvents = DEFAULT_MAX_EVENTS) {
+  constructor(ip: string, windowMs: number, maxEvents = DEFAULT_MAX_EVENTS, clock: Clock = systemClock) {
     this.ip = ip;
     this.windowMs = windowMs;
     this.maxEvents = Math.max(1, maxEvents);
+    this.clock = clock;
   }
 
   /**
@@ -53,7 +71,7 @@ export class IpTracker {
    * so saturating the count changes no decision — it only stops us buying more evidence
    * for a verdict already reached.
    */
-  record(event: Omit<RequestEvent, "at">, now = Date.now()): void {
+  record(event: Omit<RequestEvent, "at">, now = this.clock.now()): void {
     const path = event.path.length > MAX_PATH_CHARS ? event.path.slice(0, MAX_PATH_CHARS) : event.path;
     this.events.push({ ...event, path, at: now });
     this.prune(now);
@@ -67,7 +85,7 @@ export class IpTracker {
     this.events = this.events.filter((event) => event.at >= cutoff);
   }
 
-  recent(now = Date.now()): RequestEvent[] {
+  recent(now = this.clock.now()): RequestEvent[] {
     this.prune(now);
     return this.events;
   }
@@ -83,7 +101,7 @@ export class IpTracker {
    * exist to catch, that is the allocation rate at its worst precisely when the process
    * can least afford it. Counting in place is the same logic with nothing retained.
    */
-  countIn(ms: number, now = Date.now()): number {
+  countIn(ms: number, now = this.clock.now()): number {
     const cutoff = now - ms;
     const events = this.recent(now);
     let count = 0;
@@ -92,7 +110,7 @@ export class IpTracker {
   }
 
   /** Distinct paths in the window, not counting `passed` requests the app may have served. */
-  uniquePathsIn(ms: number, now = Date.now()): number {
+  uniquePathsIn(ms: number, now = this.clock.now()): number {
     const cutoff = now - ms;
     const paths = new Set<string>();
     for (const event of this.recent(now)) if (event.at >= cutoff && event.status !== "passed") paths.add(event.path);
@@ -114,7 +132,7 @@ export class IpTracker {
     }
   }
 
-  countPathIn(path: string, ms: number, now = Date.now()): number {
+  countPathIn(path: string, ms: number, now = this.clock.now()): number {
     const cutoff = now - ms;
     let count = 0;
     for (const event of this.recent(now)) if (event.at >= cutoff && event.path === path) count += 1;
@@ -124,56 +142,29 @@ export class IpTracker {
 
 /** Registry of per-IP trackers. Evicts IPs that have gone quiet so memory stays bounded. */
 export class ActivityRegistry {
-  private trackers = new Map<string, IpTracker>();
+  /**
+   * Trackers, bounded and expiring together.
+   *
+   * A tracker whose window has aged out holds nothing any detector can read, so the
+   * lifetime is the window itself and eviction is least-recently-used: under the flood this
+   * cap exists for, every tracker is active and something has to go, and the one nobody has
+   * touched longest is the cheapest to lose. Block state lives in the blocklist, never here,
+   * so dropping a tracker never releases a block.
+   */
+  private readonly trackers: TtlLru<IpTracker>;
   private readonly windowMs: number;
-  private readonly maxTrackedIps: number;
   private readonly maxEventsPerIp: number;
+  private readonly clock: Clock;
 
-  constructor(windowMs = 60_000, maxTrackedIps = 10_000, maxEventsPerIp = 4096) {
+  constructor(windowMs = 60_000, maxTrackedIps = 10_000, maxEventsPerIp = 4096, clock: Clock = systemClock) {
     this.windowMs = windowMs;
-    this.maxTrackedIps = maxTrackedIps;
     this.maxEventsPerIp = maxEventsPerIp;
+    this.clock = clock;
+    this.trackers = new TtlLru<IpTracker>(Math.max(1, maxTrackedIps), Math.max(1, windowMs), clock);
   }
 
   for(ip: string): IpTracker {
-    let tracker = this.trackers.get(ip);
-    if (!tracker) {
-      if (this.trackers.size >= this.maxTrackedIps) this.evict();
-      tracker = new IpTracker(ip, this.windowMs, this.maxEventsPerIp);
-      this.trackers.set(ip, tracker);
-    }
-    return tracker;
-  }
-
-  /**
-   * Enforces `maxTrackedIps` as a HARD ceiling.
-   *
-   * Dropping only idle trackers was not a cap at all: under the very condition the cap
-   * exists for — a flood of distinct source IPs inside the activity window — every
-   * tracker is active, nothing is idle, so nothing was evicted and the map grew without
-   * bound until the process died. One attacker can drive that directly whenever
-   * `trustProxy` is on (each forged X-Forwarded-For mints a fresh tracker), and a
-   * botnet or spoofed sources can drive it regardless.
-   *
-   * So: evict the idle first (free, and they are worth nothing), then, if that did not
-   * get us under the ceiling, evict the least-recently-active until it does. Map
-   * iteration is insertion-ordered, which for an "evict something" fallback is a fine
-   * approximation of oldest-first. Block state lives in the Blocklist, not here, so
-   * dropping a tracker never releases a block — only the sliding activity window it
-   * accumulated, which is the cheapest thing to lose under memory pressure.
-   */
-  private evict(now = Date.now()): void {
-    for (const [ip, tracker] of this.trackers) {
-      if (tracker.recent(now).length === 0) this.trackers.delete(ip);
-    }
-    if (this.trackers.size < this.maxTrackedIps) return;
-    // Still over the ceiling: every tracker is active. Shed the oldest until we fit,
-    // leaving room for the caller's incoming IP.
-    const target = Math.max(0, this.maxTrackedIps - 1);
-    for (const ip of this.trackers.keys()) {
-      if (this.trackers.size <= target) break;
-      this.trackers.delete(ip);
-    }
+    return this.trackers.getOrCreate(ip, () => new IpTracker(ip, this.windowMs, this.maxEventsPerIp, this.clock));
   }
 
   get size(): number {
@@ -190,24 +181,29 @@ export class ActivityRegistry {
  * capped, so memory stays bounded under a flood of unique fingerprints.
  */
 export class FingerprintRegistry {
-  private map = new Map<string, Map<string, number>>();
+  /** One entry per fingerprint, holding when each address was last seen using it. */
+  private readonly map: TtlLru<Map<string, number>>;
   private readonly windowMs: number;
-  private readonly maxTracked: number;
+  private readonly clock: Clock;
 
-  constructor(windowMs = 3_600_000, maxTracked = 10_000) {
+  constructor(windowMs = 3_600_000, maxTracked = 10_000, clock: Clock = systemClock) {
     this.windowMs = windowMs;
-    this.maxTracked = maxTracked;
+    this.clock = clock;
+    this.map = new TtlLru<Map<string, number>>(Math.max(1, maxTracked), Math.max(1, windowMs), clock);
   }
 
   /** Record that `fp` was just seen from `ip` (call only for scored/suspicious requests). */
-  record(fp: string, ip: string, now = Date.now()): void {
-    let ips = this.map.get(fp);
-    if (!ips) {
-      if (this.map.size >= this.maxTracked) this.evictIdle(now);
-      ips = new Map<string, number>();
-      this.map.set(fp, ips);
+  record(fp: string, ip: string, now = this.clock.now()): void {
+    const ips = this.map.getOrCreate(fp, () => new Map<string, number>());
+    // Bounded per fingerprint too: the addresses are attacker-chosen, and a count that has
+    // passed every threshold buys nothing by growing.
+    if (!ips.has(ip) && ips.size >= MAX_IPS_PER_FINGERPRINT) {
+      const oldest = ips.keys().next();
+      if (!oldest.done) ips.delete(oldest.value);
     }
     ips.set(ip, now);
+    // Re-inserted so the fingerprint's own lifetime restarts while it is still being used.
+    this.map.set(fp, ips);
   }
 
   private freshIps(fp: string, ms: number, now: number): string[] {
@@ -224,35 +220,13 @@ export class FingerprintRegistry {
   }
 
   /** Distinct IPs this fingerprint has been seen from within the last `ms`. */
-  distinctIpsWithin(fp: string, ms: number, now = Date.now()): number {
+  distinctIpsWithin(fp: string, ms: number, now = this.clock.now()): number {
     return this.freshIps(fp, ms, now).length;
   }
 
   /** The distinct IPs this fingerprint has been seen from within the last `ms`. */
-  ipsWithin(fp: string, ms: number, now = Date.now()): string[] {
+  ipsWithin(fp: string, ms: number, now = this.clock.now()): string[] {
     return this.freshIps(fp, ms, now);
-  }
-
-  /**
-   * Enforces `maxTracked` as a HARD ceiling — same reasoning as `ActivityRegistry.evict`.
-   * Expiring only entries older than the (1 hour, by default) window is not a cap: a
-   * flood of distinct fingerprints inside that window expires nothing, and since a
-   * fingerprint is just a hash of header order + UA family, an attacker mints a fresh
-   * one per request simply by varying header order. So expire first, then shed
-   * oldest-first until we are actually under the ceiling.
-   */
-  private evictIdle(now: number): void {
-    const cutoff = now - this.windowMs;
-    for (const [fp, ips] of this.map) {
-      for (const [ip, at] of ips) if (at < cutoff) ips.delete(ip);
-      if (ips.size === 0) this.map.delete(fp);
-    }
-    if (this.map.size < this.maxTracked) return;
-    const target = Math.max(0, this.maxTracked - 1);
-    for (const fp of this.map.keys()) {
-      if (this.map.size <= target) break;
-      this.map.delete(fp);
-    }
   }
 
   get size(): number {

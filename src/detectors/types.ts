@@ -1,3 +1,5 @@
+import type { SiteBaseline } from "../baseline.js";
+import type { EvidenceTier } from "../evidence.js";
 import type { FingerprintRegistry, IpTracker } from "../state.js";
 
 export interface RequestFacts {
@@ -52,6 +54,14 @@ export interface DetectionContext extends RequestFacts {
    * the detectors that run after it: the volume detectors skip a verified crawler.
    */
   verifiedCrawler?: string;
+  /**
+   * What this site actually serves, learned from the statuses the application answered with
+   * (`engine.reportOutcome`). Present only when a baseline is enabled, and worth reading only
+   * once `isWarm()` — see `SiteBaseline`.
+   */
+  baseline?: SiteBaseline;
+  /** The verified marker this client presented, when markers are configured. See `MarkerCookie`. */
+  marker?: string;
 }
 
 export interface Detection {
@@ -74,6 +84,12 @@ export interface Detection {
    * each count on their own.
    */
   family?: string;
+  /**
+   * How strong this finding is, as opposed to how much it scores. Derived from `score` and
+   * `certain` when absent, so a detector need only set it to disagree with that reading —
+   * a high score that is still only suspicion, or a cheap finding that is not. See `tierOf`.
+   */
+  tier?: EvidenceTier;
   metadata?: Record<string, unknown>;
 }
 

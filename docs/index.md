@@ -28,6 +28,7 @@ Read these once and everything else follows from them.
 | [Scores and escalation](concepts/scoring.md) | Detection scores, families, cumulative per-IP totals and the escalation ladder. |
 | [The proof guard](concepts/the-guard.md) | Why a block in front of real users needs proof, and what counts as proof. |
 | [Actors](concepts/actors.md) | Fingerprints, cross-IP correlation, sessions and per-IP memory. |
+| [The site baseline](concepts/baseline.md) | What your application serves, fed back so "unusual" is measured rather than guessed. |
 | [Threat model](concepts/threat-model.md) | What this defends against, what it does not, and what it costs to be wrong. |
 
 ## Detection

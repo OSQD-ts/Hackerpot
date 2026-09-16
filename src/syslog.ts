@@ -1,4 +1,5 @@
 import dgram from "node:dgram";
+import { redactIncident } from "./management/redact.js";
 import net from "node:net";
 import type { HoneypotHit } from "./types.js";
 import { syslogLine } from "./formats.js";
@@ -67,6 +68,23 @@ export interface SyslogSinkOptions {
   maxQueuedBytes?: number;
   /** Include the attacker-controlled request body in the message. Default false. */
   includeBody?: boolean;
+  /**
+   * Send the source address as its network (`/24`, `/48`) rather than in full. Default false.
+   *
+   * Usually wrong for a SIEM, which is your own and exists to answer "who did this" — the
+   * setting is here for a collector that is somebody else's, or one whose retention policy
+   * you would rather not hand full addresses to.
+   */
+  maskIp?: boolean;
+  /**
+   * Strip credentials from the copy sent to the collector. Default true.
+   *
+   * The same redaction the dashboard and webhooks apply, and for a stronger reason: a SIEM
+   * is where a captured password gets indexed, retained for years under a compliance policy,
+   * and read by more people than ever touch the honeypot. Detection and the store still keep
+   * everything — only the copy that leaves the process is reduced.
+   */
+  redact?: boolean;
   /** Surfaces a transport failure. Never throws into the caller regardless. */
   onError?: (error: Error) => void;
 }
@@ -105,6 +123,8 @@ export class SyslogSink {
   private readonly minScore: number;
   private readonly maxBytes: number;
   private readonly includeBody: boolean;
+  private readonly redact: boolean;
+  private readonly maskIp: boolean;
   private readonly maxQueuedBytes: number;
 
   private udp: dgram.Socket | undefined;
@@ -128,6 +148,8 @@ export class SyslogSink {
     this.minScore = options.minScore ?? 0;
     this.maxBytes = options.maxBytes ?? DEFAULT_MAX_BYTES;
     this.includeBody = options.includeBody ?? false;
+    this.redact = options.redact !== false;
+    this.maskIp = options.maskIp === true;
     this.maxQueuedBytes = Math.max(0, options.maxQueuedBytes ?? DEFAULT_MAX_QUEUED_BYTES);
   }
 
@@ -164,7 +186,9 @@ export class SyslogSink {
     if (this.closed) return;
     if (hit.totalScore < this.minScore) return;
     try {
-      const line = truncateBytes(oneLine(this.render(hit)), this.maxBytes);
+      // Reduced on the way out, exactly as for the dashboard and for webhooks.
+      const outgoing = this.redact || this.maskIp ? redactIncident(hit, { credentials: this.redact, maskIp: this.maskIp }) : hit;
+      const line = truncateBytes(oneLine(this.render(outgoing)), this.maxBytes);
       if (this.protocol === "udp") this.sendUdp(line);
       else this.sendTcp(line);
     } catch (err) {

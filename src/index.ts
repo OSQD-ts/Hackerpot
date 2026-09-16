@@ -1,5 +1,5 @@
 export { HoneypotEngine } from "./core.js";
-export type { EvaluateOptions, EvaluationResult } from "./core.js";
+export type { ChangeContext, ChangeEvent, EvaluateOptions, EvaluationResult, HoneypotEngineEvents, Notice } from "./core.js";
 export { createMiddleware, dispatch, trapFormGuard } from "./middleware.js";
 export type { HoneypotMiddleware, MiddlewareOptions, NextFn } from "./middleware.js";
 export { koaHoneypot } from "./adapters/koa.js";
@@ -10,6 +10,18 @@ export { fetchHoneypot, withFetchHoneypot } from "./adapters/fetch.js";
 export { formatReplaySummary, parseLogLine, readLogLines, replayLog } from "./replay.js";
 export { explainRequest, formatExplanation, parseRequestText } from "./explain.js";
 export type { ExplainOverrides } from "./explain.js";
+// Where incidents leave the process: one fan-out, with or without the management API.
+export { NotificationHub, consoleNotifier, notifyJsSink, syslogNotifySink, webhookNotifySink } from "./notify/index.js";
+export type { ConsoleNotifierOptions, NotifyJsSinkOptions, NotificationHubOptions, NotifyEvent, NotifyEventType, NotifyFilter, NotifySink } from "./notify/index.js";
+// Evidence strength, alongside scores: how strong a finding is, not how much it adds up to.
+export { SUSPICION_CEILING, TIER_WEIGHT, confidenceOf, tierOf, tierOfConfidence } from "./evidence.js";
+export type { EvidenceTier } from "./evidence.js";
+export { MIN_MARKER_SECRET_LENGTH, MarkerCookie } from "./marker.js";
+export type { MarkerCookieOptions } from "./marker.js";
+export { ActorLabels } from "./labels.js";
+export type { ActorLabel, ActorLabelMatch, ActorLabelsOptions, LabelSubject, LabelledActor } from "./labels.js";
+export { DEFAULT_MIN_OBSERVATIONS, DEFAULT_MIN_SERVED_PATHS, SiteBaseline } from "./baseline.js";
+export type { BaselineSnapshot, PathStat, RequestOutcome, SiteBaselineOptions } from "./baseline.js";
 export { DEFAULT_AUDIT_CHECKS, TrafficAudit } from "./audit.js";
 export type { AnomalySeverity, AuditCheck, AuditContext, AuditRecord, AuditWindow, TrafficAnomaly, TrafficAuditOptions } from "./audit.js";
 export { DEFAULT_SERVICE_TOKEN_HEADER, MIN_SERVICE_TOKEN_LENGTH, ServiceTokens } from "./service-tokens.js";
@@ -23,7 +35,8 @@ export { HoneypotServer } from "./server.js";
 // either. The embeddable element is `@osqd/hackerpot/element`.
 export * from "./dashboard/index.js";
 export * from "./stores/index.js";
-export { ActivityRegistry, FingerprintRegistry, IpTracker } from "./state.js";
+// The caps are public so a threshold above one can be refused rather than silently ignored.
+export { ActivityRegistry, DEFAULT_MAX_EVENTS, FingerprintRegistry, IpTracker, MAX_IPS_PER_FINGERPRINT, MAX_PATH_CHARS } from "./state.js";
 export type { RequestEvent } from "./state.js";
 export { IpAllowlist } from "./allowlist.js";
 export { MemoryBlocklist, RedisBlocklist, CompositeBlocklist } from "./blocklist.js";
@@ -53,6 +66,10 @@ export { formatTextLine, formatValue } from "./logfmt.js";
 export { MAX_BODY_BYTES, mayHaveBody, parseQuery, pathOf, readBody } from "./http-request.js";
 // Delay helpers, for custom response actions that want the built-in `[min, max]` shape.
 export { randomBetween, resolveDelay, sleep } from "./utils.js";
+// Time, injectable. Everything with a window reads a `Clock`, so a test can move time
+// rather than wait for it; `ManualClock` is exported for your own detectors and actions.
+export { ManualClock, systemClock } from "./internal/clock.js";
+export type { Clock } from "./internal/clock.js";
 export { VERSION } from "./version.js";
 export { computeFingerprint, headerOrder, uaClass } from "./fingerprint.js";
 export { defaultIpEnricher } from "./enrichment.js";

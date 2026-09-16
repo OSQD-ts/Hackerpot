@@ -61,6 +61,42 @@ Stores cap the number of addresses whose scores they keep (`max_score_entries`, 
 100,000), shedding the least recently updated. An address under active attack is never the
 one evicted.
 
+## Confidence: how strong, not how much
+
+Scores answer *how much* evidence there is. They have one failure mode, and this project has
+measured it: an ordinary visitor once reached a cumulative **49** — past the default block
+threshold of 40 — in seven page views, because a shared browser fingerprint and one page load's
+worth of asset paths each contributed a few points. Addition cannot tell one damning finding
+from fifteen forgivable ones.
+
+So every detection also has a **tier** — `weak`, `moderate`, `strong`, `certain` — derived from
+the bands above (3–5 weak, 6–8 moderate, 9+ strong, proof `certain`) unless a detector sets
+`tier` itself. Tiers combine by noisy-OR rather than by addition:
+
+```
+confidence = 1 - Π (1 - weight(tier))      weak .25  moderate .5  strong .8  certain 1
+```
+
+Each finding raises confidence by less than the last, one root cause still counts once
+(families apply here too), and — the point — **suspicion alone is capped at 0.95**. Fifteen weak
+findings are not proof; they are fifteen weak findings. Only a `certain` detection reaches 1.
+
+Confidence is on `HoneypotHit.confidence` and on the evaluation result, and a
+[rule](../responses/policy.md#rules) can match on it:
+
+```toml
+[[policy.rules]]
+id = "strong-evidence"
+min_confidence = 0.8
+respond_with = "tarpit"
+reason = "Strong evidence, rather than a large pile of weak evidence."
+```
+
+Nothing about scores changed: they still drive the ladder, the thresholds and the stored
+per-address total. Confidence is the second view, for a policy that would rather say "act on
+strong evidence" than "act on the number 40". In code: `confidenceOf(detections)`, `tierOf`,
+`tierOfConfidence`.
+
 ## The escalation ladder
 
 The built-in policy, `defaultResponsePolicy(blockThreshold = 40, tarpitThreshold = 15)`:

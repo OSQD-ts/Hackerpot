@@ -122,7 +122,7 @@ describe("config parsing", () => {
     // trust_proxy defaults OFF: on, the client IP comes from an attacker-supplied
     // header, which is what the allowlist, blocklist, and firewall enforcer all act on.
     expect(config.server).toEqual({ host: "0.0.0.0", port: 4004, trustProxy: false });
-    expect(config.policy).toEqual({ blockThreshold: 40, tarpitThreshold: 15 });
+    expect(config.policy).toEqual({ blockThreshold: 40, tarpitThreshold: 15, rules: [] });
     expect(config.logging.format).toBe("json");
     expect(config.store.file.enabled).toBe(false);
     expect(config.store.redis.enabled).toBe(false);
@@ -160,7 +160,7 @@ describe("config parsing", () => {
     expect(config.server).toEqual({ host: "127.0.0.1", port: 8080, trustProxy: false });
     expect(config.logging.format).toBe("text");
     expect(config.logging.includeBody).toBe(true);
-    expect(config.policy).toEqual({ blockThreshold: 50, tarpitThreshold: 20 });
+    expect(config.policy).toEqual({ blockThreshold: 50, tarpitThreshold: 20, rules: [] });
   });
 
   it("rejects an unknown key rather than silently ignoring it", () => {
@@ -378,7 +378,7 @@ describe("building from config", () => {
     const config = defaultConfig();
     // Opt-in detectors live in the schema but not in defaultDetectors(): honeytoken needs
     // seeded values, crawler-verification makes DNS lookups, and a trap is only proof once it is hidden in your markup.
-    const optIn = new Set(["honeytoken", "crawler-verification", "trap"]);
+    const optIn = new Set(["path-novelty", "marker-drift", "honeytoken", "crawler-verification", "trap"]);
     expect(Object.keys(config.detectors).filter((id) => !optIn.has(id)).sort()).toEqual(defaultDetectors().map((d) => d.id).sort());
     expect(Object.keys(config.responses).sort()).toEqual(defaultResponseActions().map((a) => a.id).sort());
   });
@@ -901,7 +901,10 @@ describe("building from config", () => {
     const at = (totalScore: number, respondWith?: string) => {
       const detection: Detection = { detectorId: "test", reason: "test", score: totalScore };
       if (respondWith) detection.respondWith = respondWith;
-      return policy({ detection, detections: [detection], ip: "10.0.0.1", path: "/", totalScore, tracker: new IpTracker("10.0.0.1", 60_000) });
+      // The built policy reports which rung decided, so an incident can say why; the id is
+      // what this test is about.
+      const decided = policy({ detection, detections: [detection], ip: "10.0.0.1", path: "/", totalScore, tracker: new IpTracker("10.0.0.1", 60_000) });
+      return typeof decided === "string" ? decided : decided.actionId;
     };
     expect(at(6)).toBe("block");
     expect(at(6, "decoy-content")).toBe("block"); // a confirmed attacker is blocked regardless

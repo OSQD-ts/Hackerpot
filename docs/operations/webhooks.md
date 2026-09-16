@@ -6,21 +6,22 @@ Signed pushes, retries, deduplication, throttles and redaction.
 
 ---
 
-Each configured URL receives an HTTP `POST` per incident. Webhooks are delivered by the
-management server, so they need `[management]` enabled.
+Each configured URL receives an HTTP `POST` per incident, delivered by the
+[notification hub](alert-sinks.md#where-alerts-are-delivered-from) — which runs whether or not
+the operator API does.
 
 ```toml
 # Every incident at or above a score, signed, to your own receiver:
-[[management.webhooks]]
+[[webhooks]]
 url = "https://hooks.example.com/hackerpot"
 secret = "shared-signing-secret"
 min_score = 20
 max_retries = 3
-[management.webhooks.headers]
+[webhooks.headers]
 X-Team = "security"
 
 # A danger alert to a channel somebody watches: a high bar, deduplicated, throttled:
-[[management.webhooks]]
+[[webhooks]]
 url = "https://hooks.slack.com/services/T000/B000/xxxx"
 format = "slack"
 min_score = 40
@@ -28,6 +29,11 @@ dedupe_window_seconds = 300
 throttle_window_seconds = 3600
 max_per_window = 20
 ```
+
+`[[management.webhooks]]` takes the same keys and is delivered by the management server, which
+means it needs `[management]` enabled — configured without it, nothing delivers them and the
+service says so at startup. Prefer the top-level form: an alert in a chat channel should not
+require exposing a REST API over your captured attacker data.
 
 ## Options
 
@@ -45,6 +51,7 @@ max_per_window = 20
 | `throttle_window_seconds` + `max_per_window` | off | at most N deliveries per window; **both** are required, and setting one is a startup error |
 | `omit_body` | `false` for `hackerpot`, `true` for `slack` and `discord` | strip the attacker-controlled request body |
 | `redact` | `true` | strip credentials from the delivered copy |
+| `mask_ip` | `false` | send the source address as its network (`/24`, `/48`) rather than in full |
 | `anomalies` | `true` | also deliver [traffic anomalies](audit.md) |
 
 And one across every hook:

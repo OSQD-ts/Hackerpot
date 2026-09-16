@@ -14,6 +14,9 @@
  * - **A cooldown per check.** A spike lasting an hour is one event, not sixty.
  */
 
+import { systemClock, type Clock } from "./internal/clock.js";
+import { TtlLru } from "./internal/lru.js";
+
 /** How urgent an anomaly is. */
 export type AnomalySeverity = "info" | "warning" | "critical";
 
@@ -96,6 +99,8 @@ export interface TrafficAuditOptions {
   checks?: readonly AuditCheck[];
   /** Appended to the built-in rate checks. */
   extraChecks?: readonly AuditCheck[];
+  /** Where "now" comes from. Default the system clock. */
+  clock?: Clock;
 }
 
 /** Buckets held in the ring, however the spans work out. Keeps memory flat. */
@@ -240,7 +245,9 @@ export class TrafficAudit {
   private readonly cooldownMs: number;
   private readonly campaignMinIps: number;
   private readonly lastFired = new Map<string, number>();
-  private readonly campaigns = new Map<string, CampaignPath>();
+  /** Probed paths, bounded and expiring: a path nobody has probed for a window plus a baseline is gone. */
+  private readonly campaigns: TtlLru<CampaignPath>;
+  private readonly clock: Clock;
   private timer: ReturnType<typeof setInterval> | undefined;
 
   constructor(options: TrafficAuditOptions = {}) {
@@ -249,6 +256,7 @@ export class TrafficAudit {
     this.minSamples = Math.max(1, options.minSamples ?? 50);
     this.cooldownMs = Math.max(0, options.cooldownMs ?? 900_000);
     this.campaignMinIps = Math.max(0, options.campaignMinIps ?? 10);
+    this.clock = options.clock ?? systemClock;
     this.checks = options.checks ?? [...DEFAULT_AUDIT_CHECKS, ...(options.extraChecks ?? [])];
 
     // Ten buckets to a window, coarsened if that needs more than the ring holds. Both spans
@@ -260,6 +268,7 @@ export class TrafficAudit {
     this.baselineMs = Math.ceil(baselineMs / bucketMs) * bucketMs;
     const count = (this.windowMs + this.baselineMs) / bucketMs + 1;
     this.buckets = Array.from({ length: count }, () => ({ at: -1, requests: 0, flagged: 0, blocks: 0, downgrades: 0, failures: 0 }));
+    this.campaigns = new TtlLru<CampaignPath>(MAX_CAMPAIGN_PATHS, this.windowMs + this.baselineMs, this.clock);
   }
 
   /** Counts one evaluated request. */
@@ -274,7 +283,7 @@ export class TrafficAudit {
   }
 
   /** The window and baseline as they stand. */
-  summary(now = Date.now()): { window: AuditWindow; baseline: AuditWindow } {
+  summary(now = this.clock.now()): { window: AuditWindow; baseline: AuditWindow } {
     // The current bucket is still filling, so the window ends at its far edge.
     const end = (Math.floor(now / this.bucketMs) + 1) * this.bucketMs;
     const windowStart = end - this.windowMs;
@@ -282,7 +291,7 @@ export class TrafficAudit {
   }
 
   /** Runs every check that is out of its cooldown. Safe to call as often as you like. */
-  evaluate(now = Date.now()): TrafficAnomaly[] {
+  evaluate(now = this.clock.now()): TrafficAnomaly[] {
     const { window, baseline } = this.summary(now);
     const anomalies: TrafficAnomaly[] = [];
     const timestamp = new Date(now).toISOString();
@@ -339,17 +348,7 @@ export class TrafficAudit {
    */
   private recordProbe(entry: AuditRecord): void {
     const path = entry.path.length > MAX_PATH_CHARS ? entry.path.slice(0, MAX_PATH_CHARS) : entry.path;
-    let tracked = this.campaigns.get(path);
-    if (tracked === undefined) {
-      if (this.campaigns.size >= MAX_CAMPAIGN_PATHS) {
-        const oldest = this.campaigns.keys().next();
-        if (!oldest.done) this.campaigns.delete(oldest.value);
-      }
-      tracked = { firstSeen: entry.at, lastSeen: entry.at, ips: new Map() };
-    } else {
-      // Re-inserted so iteration order stays least recently probed first.
-      this.campaigns.delete(path);
-    }
+    const tracked = this.campaigns.getOrCreate(path, () => ({ firstSeen: entry.at, lastSeen: entry.at, ips: new Map() }));
     tracked.lastSeen = Math.max(tracked.lastSeen, entry.at);
     if (tracked.ips.has(entry.ip) || tracked.ips.size < MAX_IPS_PER_PATH) tracked.ips.set(entry.ip, entry.at);
     this.campaigns.set(path, tracked);
@@ -359,12 +358,8 @@ export class TrafficAudit {
     if (this.campaignMinIps === 0) return [];
     const windowStart = now - this.windowMs;
     const anomalies: TrafficAnomaly[] = [];
-    for (const [path, tracked] of this.campaigns) {
-      // Forget paths nobody has probed for a whole window plus baseline.
-      if (tracked.lastSeen < windowStart - this.baselineMs) {
-        this.campaigns.delete(path);
-        continue;
-      }
+    // Paths nobody has probed for a window plus a baseline have already expired out of the cache.
+    for (const [path, tracked] of this.campaigns.entriesLive()) {
       // New means first probed inside the window; a path probed all day is background noise.
       if (tracked.firstSeen < windowStart) continue;
       let recent = 0;

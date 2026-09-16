@@ -108,6 +108,51 @@ header = "x-hackerpot-token"
 [policy]
 block_threshold = 40
 tarpit_threshold = 15
+# A rule set to start from: "observe" (record everything, serve plain 404s), "protect-app"
+# (bait and tarpits, never a block on a score alone) or "standalone" (nothing here can reach a
+# real visitor, so the expensive responses are fair game). Left out, the thresholds above are
+# the whole policy.
+# preset = "standalone"
+
+# Rules are consulted in order, before the preset and the thresholds; the first that matches
+# decides. The id and the reason are recorded on every incident the rule decides, so an
+# operator reading it back is told which rule acted and why.
+# [[policy.rules]]
+# id = "admin-bruteforce"
+# detector = ["credential-bruteforce"]
+# path_prefix = ["/admin", "/wp-login.php"]
+# respond_with = "rate-limit"
+# reason = "Password guessing against the admin login: answered like an ordinary rate limit."
+
+# ── Names for sources you already know ───────────────────────────────────────
+# A label is shown wherever the address would be, so a feed reads "Our uptime
+# checker" instead of an address you have to look up. It NEVER exempts anybody:
+# a labelled actor is detected, scored and answered exactly as it would be
+# otherwise. Exemption is [allowlist] and [service_tokens]. Match on any of ip,
+# asn, org, user_agent or hostname; all the keys you give must match. A value in
+# /slashes/ is a regular expression, anything else is a case-insensitive
+# substring. hide_from_feed mutes a constant known source in the dashboard's
+# live pane only — it is still recorded, counted and listed.
+# [[actors]]
+# name = "Our uptime checker"
+# ip = ["198.51.100.10"]
+# user_agent = "UptimeBot"
+# note = "Every 30s against /healthz"
+# hide_from_feed = true
+
+# ── A marker for whoever probes ──────────────────────────────────────────────
+# Middleware mode only. A signed cookie set on the honeypot's own responses to
+# probes — never on a response your application produced — so one client stays
+# correlated across changing addresses even when its fingerprint shifts. It
+# never exempts anybody and is never proof: a cookie can be copied. The secret
+# is required, because a marker anybody can mint invents actors rather than
+# correlating them. Enable [detectors.marker-drift] to act on it.
+# [markers]
+# secret = "a-long-random-secret"
+# name = "__hp"
+# max_age_seconds = 86400
+# secure = true
+# same_site = "Lax"
 
 
 # ── Where hits and per-IP scores are stored ──────────────────────────────────
@@ -1018,6 +1063,11 @@ format = "cef"
 # RFC 3164 facility (0-23) and severity (0-7). 13 is "log audit", 4 is "warning".
 facility = 13
 severity = 4
+# Credentials are stripped from the copy sent to the collector — a SIEM indexes what it
+# receives and keeps it for as long as its retention policy says. mask_ip additionally
+# sends 198.51.100.0/24 instead of the address, for a collector that is somebody else's.
+redact = true
+mask_ip = false
 # Hostname written into the syslog header.
 hostname = "hackerpot"
 # Only forward incidents at or above this cumulative score. 0 = everything.
@@ -1096,6 +1146,11 @@ hide = []
 # again over "<timestamp>.<body>" in X-Hackerpot-Signature-V2 with the Unix time
 # in X-Hackerpot-Timestamp. Verify the V2 header and reject old timestamps, and a
 # captured delivery cannot be replayed.
+#
+# Written here, a webhook is delivered by the management server, so [management]
+# must be enabled. Written as a top-level [[webhooks]] instead, it is delivered by
+# the notification hub whether or not the API is on — an alert in a chat channel
+# should not require exposing a REST service over the captured data. Same keys.
 # [[management.webhooks]]
 # url = "https://hooks.example.com/hackerpot"
 # secret = "shared-signing-secret"
