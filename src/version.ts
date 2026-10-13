@@ -7,4 +7,4 @@
  * the drift shows up as a failing test at release time rather than as a stale
  * `deviceVersion` in whatever SIEM is ingesting the CEF feed.
  */
-export const VERSION = "0.1.2";
+export const VERSION = "0.1.3";
