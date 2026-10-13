@@ -71,8 +71,8 @@ export function ssrfProbeDetector(options: SsrfProbeOptions = {}): Detector {
         const kind = classify(target.value);
         if (!kind) continue;
         const detection: Detection = {
-          detectorId: "ssrf-probe",
-          reason: `SSRF probe — ${kind} in ${target.location}`,
+          detector: "ssrf-probe",
+          summary: `SSRF probe — ${kind} in ${target.location}`,
           score,
           metadata: { location: target.location, sample: target.value.slice(0, 200) },
         };

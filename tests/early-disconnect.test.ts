@@ -1,9 +1,9 @@
 import net from "node:net";
 import { describe, expect, it } from "vitest";
-import { HoneypotServer } from "../src/server.js";
+import { HoneypotServer } from "../src/adapters/server.js";
 import { MemoryStore } from "../src/stores/index.js";
-import { dripFeedAction, largePayloadAction, tarpitAction } from "../src/responses/index.js";
-import type { ResponseAction } from "../src/responses/types.js";
+import { dripFeedAction, largePayloadAction, tarpitAction } from "../src/actions/index.js";
+import type { ResponseAction } from "../src/actions/types.js";
 import type { HitStore } from "../src/types.js";
 
 /** A store with a real round-trip, the way Redis or Elasticsearch behave. */

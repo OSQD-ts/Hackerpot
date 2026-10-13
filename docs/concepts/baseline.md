@@ -1,4 +1,4 @@
-# The site baseline
+# The site profile
 
 What your application already knows, fed back to the honeypot.
 
@@ -46,17 +46,23 @@ means nothing.
 ## Reading it
 
 ```ts
-engine.baseline?.isServed("/pricing");   // true — the app has served it
-engine.baseline?.noveltyOf("/.env");     // "served" | "missed" | "unseen"
-engine.baseline?.walkers("/admin.php");  // distinct addresses probing a path that doesn't exist
-engine.baseline?.snapshot();             // { paths, servedPaths, observations, missShare }
+engine.site?.isServed("/pricing");   // true — the app has served it
+engine.site?.noveltyOf("/.env");     // "served" | "missed" | "unseen"
+engine.site?.walkers("/admin.php");  // distinct addresses probing a path that doesn't exist
+engine.site?.snapshot();             // { paths, servedPaths, observations, missShare }
 ```
 
 `missShare` is your site's own 404 rate, which is the number every "unusual" judgement should
 be measured against rather than guessed at.
 
-Pass `baseline: null` to `HoneypotEngine` to switch it off, or your own `SiteBaseline` to share
-one between engines.
+Pass `site: null` to `HoneypotEngine` to switch it off, or your own `SiteProfile` to share one
+between engines. A custom detector reads it as `ctx.site`.
+
+The class is `SiteProfile`, the option and the property `site`, the names bothandlerjs uses for its
+own profile of a site's traffic. The two are not the same class: this one learns from what the
+application **served**, bothandlerjs's from what clients **asked for**, because a honeypot sees
+the answers and a bot handler sees the questions. Before the names matched they were
+`SiteBaseline`, `baseline` and `ctx.baseline`, and those still work, deprecated, for a release.
 
 ## What reads it
 

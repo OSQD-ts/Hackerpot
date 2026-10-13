@@ -41,12 +41,12 @@ import type {
   LargePayloadOptions,
   RateLimitOptions,
   TarpitOptions,
-} from "../responses/index.js";
-import { PRESET_NAMES } from "../responses/presets.js";
+} from "../actions/index.js";
+import { PRESET_NAMES } from "../policy/presets.js";
 import { DEFAULT_MAX_EVENTS, MAX_IPS_PER_FINGERPRINT } from "../state.js";
-import type { PresetName } from "../responses/presets.js";
+import type { PresetName } from "../policy/presets.js";
 import type { AlertFormat, WebhookConfig } from "../management/index.js";
-import type { SyslogMessageFormat } from "../syslog.js";
+import type { SyslogMessageFormat } from "../notify/syslog.js";
 
 /**
  * The shape of a hackerpot TOML file, after parsing, validation, and defaulting.

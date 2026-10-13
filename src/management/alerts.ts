@@ -79,14 +79,14 @@ function marker(totalScore: number): string {
 
 /** The lines every chat alert carries, before per-platform escaping. */
 function alertLines(incident: Incident, omitBody: boolean): string[] {
-  const detectors = incident.detections.map((d) => d.detectorId).join(", ") || "hit";
+  const detectors = incident.detections.map((d) => d.detector).join(", ") || "hit";
   const lines = [
     `${marker(incident.totalScore)} hackerpot — ${detectors}`,
     `source: ${incident.ip}  ·  score: ${incident.score} (total ${incident.totalScore})`,
     `request: ${incident.method} ${incident.path}`,
     `response: ${incident.respondedWith}  ·  ${incident.timestamp}`,
   ];
-  const reason = incident.detections[0]?.reason;
+  const reason = incident.detections[0]?.summary;
   if (reason) lines.push(`reason: ${reason}`);
   const ua = incident.headers["user-agent"];
   if (ua) lines.push(`agent: ${ua}`);

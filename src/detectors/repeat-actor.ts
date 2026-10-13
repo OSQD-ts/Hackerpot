@@ -65,8 +65,8 @@ export function repeatActorDetector(options: RepeatActorOptions = {}): Detector 
       if (distinct < threshold) return undefined;
 
       const detection: Detection = {
-        detectorId: "repeat-actor",
-        reason: `Actor fingerprint ${ctx.fingerprint} seen attacking from ${distinct} IPs in ${Math.round(windowMs / 60_000)}m (rotation): ${others.slice(0, 5).join(", ")}${others.length > 5 ? ", …" : ""}`,
+        detector: "repeat-actor",
+        summary: `Actor fingerprint ${ctx.fingerprint} seen attacking from ${distinct} IPs in ${Math.round(windowMs / 60_000)}m (rotation): ${others.slice(0, 5).join(", ")}${others.length > 5 ? ", …" : ""}`,
         score,
         // Shared with `marker-drift`, which sees the same rotation through a marker rather
         // than a fingerprint: one act seen twice must be scored once.

@@ -26,6 +26,8 @@ const DETECTORS: ReadonlyArray<[string, DetectorInfo]> = [
   ["payload-injection", { goal: "Tried to exploit the app by smuggling code or traversal sequences: SQL injection, XSS, command or template injection, path traversal, Log4Shell, or XXE.", how: "The path, query, selected headers, and body are URL-decoded and scanned for known exploitation-payload signatures." }],
   ["credential-bruteforce", { goal: "Hammered a login endpoint from one IP: credential stuffing or password spraying to guess an account.", how: "Counts write requests (POST/PUT/PATCH) to auth-like paths from the same IP within a sliding window; fires once they exceed the attempt threshold." }],
   ["path-bruteforce", { goal: "Enumerated the site by walking a wordlist, trying to discover hidden files and endpoints.", how: "Counts the number of distinct paths one IP requests within a window. A real user revisits a small set, a scanner hits many unique ones." }],
+  ["header-integrity", { goal: "Sent a header set no client stack produces: a second Host or Content-Length, which is what request smuggling is built on, or a connection-specific header over HTTP/2 or HTTP/3, which the protocol forbids outright.", how: "The raw header list is read in order, so repeats are visible: a repeated Host or Content-Length is a protocol violation and counts as proof; repeating a header no browser sends twice (User-Agent, Accept, Authorization…) scores lower, because a script appending what its library already set does that too." }],
+  ["target-integrity", { goal: "Spelled the request target to get past a filter rather than to fetch something: a double-encoded percent, an encoded control character, or an encoded traversal such as %2e%2e%2f.", how: "Reads the target as sent, which the engine keeps only when normalising changed it — every other detector sees the normalised path, where the one fact that made it interesting is gone. Encoded traversals and control characters are proof; a plain `..` or an encoded slash, which a broken client also produces, scores low." }],
   ["header-anomaly", { goal: "Sent a request no normal client produces: open-proxy probing, HTTP request smuggling, or a Shellshock exploit.", how: "Inspects the request line and headers for an absolute-form target, conflicting Content-Length and Transfer-Encoding, a `() {` payload, or a missing Host." }],
   ["sensitive-file", { goal: "Hunted for leaked files: backups, database dumps, source copies, editor swap files, or VCS and IDE metadata.", how: "The path is matched against risky file-type patterns (for example `.bak`, `.sql`, `~`, `/.svn/`, `.DS_Store`)." }],
   ["suspicious-method", { goal: "Used an HTTP verb a browser or API client never sends (WebDAV methods, or TRACE/TRACK/DEBUG) to probe server configuration.", how: "Flags any request method outside the normal set (GET, POST, PUT, PATCH, DELETE, HEAD, OPTIONS)." }],
@@ -72,6 +74,16 @@ const RESPONSES: ReadonlyArray<[string, ResponseInfo]> = [
 
 const DETECTOR_INFO: ReadonlyMap<string, DetectorInfo> = new Map(DETECTORS);
 const RESPONSE_INFO: ReadonlyMap<string, ResponseInfo> = new Map(RESPONSES);
+
+/** Every detector this page can explain, in the order they are written above. For the Reference screen. */
+export function detectorList(): ReadonlyArray<[string, DetectorInfo]> {
+  return DETECTORS;
+}
+
+/** Every response action this page can explain. */
+export function responseList(): ReadonlyArray<[string, ResponseInfo]> {
+  return RESPONSES;
+}
 
 export function detectorInfo(id: string): DetectorInfo | undefined {
   return DETECTOR_INFO.get(id);

@@ -1,21 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import {
-  HoneypotEngine,
-  MemoryBlocklist,
-  CompositeBlocklist,
-  IpAllowlist,
-  defaultIpEnricher,
-  fetchIocFeed,
-  applyIocEntries,
-  parseIps,
-  decoyPathDetector,
-} from "../src/index.js";
-import type { Blocklist } from "../src/index.js";
-import type { RequestFacts } from "../src/index.js";
-
-function facts(partial: Partial<RequestFacts> & Pick<RequestFacts, "path">): RequestFacts {
-  return { method: "GET", query: {}, headers: {}, ip: "10.0.0.1", ...partial };
-}
+import { HoneypotEngine, MemoryBlocklist, CompositeBlocklist, IpAllowlist, defaultIpEnricher, fetchIocFeed, applyIocEntries, parseIps, decoyPathDetector, type Blocklist } from "../src/index.js";
+import { facts } from "./helpers.js";
 
 describe("defaultIpEnricher", () => {
   it("classifies special-use ranges and marks public IPs global", () => {
@@ -143,5 +128,89 @@ describe("fetchIocFeed", () => {
     const ips = await fetchIocFeed("https://peer.internal/ioc.txt", { maxBytes: 1024, fetch: doFetch as unknown as typeof fetch });
     // Only the first ~1KB was read, so we get a small fraction, not all 500k.
     expect(ips.length).toBeLessThan(200);
+  });
+});
+
+describe("IOC feed transport rules survive redirects", () => {
+  it("refuses a redirect that downgrades to plaintext", async () => {
+    const fakeFetch = (async (input: string | URL) => {
+      const url = String(input);
+      if (url.startsWith("https://")) {
+        return new Response(null, { status: 302, headers: { location: "http://169.254.169.254/latest/meta-data/" } });
+      }
+      return new Response("203.0.113.1\n", { status: 200 });
+    }) as unknown as typeof fetch;
+
+    await expect(fetchIocFeed("https://peer.example/ioc.txt", { fetch: fakeFetch })).rejects.toThrow(/https required/);
+  });
+
+  it("follows a redirect that stays on https", async () => {
+    const fakeFetch = (async (input: string | URL) => {
+      const url = String(input);
+      if (url === "https://peer.example/ioc.txt") {
+        return new Response(null, { status: 302, headers: { location: "https://peer.example/v2/ioc.txt" } });
+      }
+      return new Response("203.0.113.1\n198.51.100.2\n", { status: 200 });
+    }) as unknown as typeof fetch;
+
+    await expect(fetchIocFeed("https://peer.example/ioc.txt", { fetch: fakeFetch })).resolves.toEqual(["203.0.113.1", "198.51.100.2"]);
+  });
+});
+
+describe("an IOC feed cannot harvest the operator's API key via a redirect", () => {
+  const responses = (...list: Array<{ status: number; location?: string; body?: string }>) => {
+    const seen: Array<{ url: string; auth: string | undefined }> = [];
+    let i = 0;
+    const doFetch = (async (url: string, init: RequestInit) => {
+      const headers = (init.headers ?? {}) as Record<string, string>;
+      seen.push({ url, auth: headers["Authorization"] });
+      const step = list[Math.min(i, list.length - 1)]!;
+      i += 1;
+      return new Response(step.body ?? "", {
+        status: step.status,
+        headers: step.location ? { location: step.location } : {},
+      });
+    }) as unknown as typeof fetch;
+    return { doFetch, seen };
+  };
+
+  it("drops Authorization when a redirect leaves the original origin", async () => {
+    // The management API key is what feeds authenticate with, so leaking it hands over
+    // read access to the operator's captured-incident API — not just a public IOC list.
+    const { doFetch, seen } = responses(
+      { status: 302, location: "https://attacker.example/steal" },
+      { status: 200, body: "203.0.113.7\n" },
+    );
+    const ips = await fetchIocFeed("https://peer.example/ioc.txt", { apiKey: "SUPER-SECRET-KEY", fetch: doFetch });
+
+    expect(ips).toEqual(["203.0.113.7"]);
+    expect(seen[0]!.auth).toBe("Bearer SUPER-SECRET-KEY");
+    expect(seen[1]!.url).toBe("https://attacker.example/steal");
+    expect(seen[1]!.auth).toBeUndefined();
+    expect(JSON.stringify(seen)).not.toContain("SUPER-SECRET-KEY".slice(0, 6) + "-SECRET");
+  });
+
+  it("keeps Authorization on a same-origin redirect", async () => {
+    const { doFetch, seen } = responses(
+      { status: 301, location: "https://peer.example/ioc/v2.txt" },
+      { status: 200, body: "198.51.100.4\n" },
+    );
+    await fetchIocFeed("https://peer.example/ioc.txt", { apiKey: "KEY", fetch: doFetch });
+    expect(seen[1]!.auth).toBe("Bearer KEY");
+  });
+
+  it("never re-attaches the key after a hop has left the origin", async () => {
+    const { doFetch, seen } = responses(
+      { status: 302, location: "https://attacker.example/a" },
+      { status: 302, location: "https://peer.example/back" },
+      { status: 200, body: "" },
+    );
+    await fetchIocFeed("https://peer.example/ioc.txt", { apiKey: "KEY", fetch: doFetch });
+    expect(seen.slice(1).every((s) => s.auth === undefined)).toBe(true);
+  });
+
+  it("still refuses a redirect that drops to plaintext", async () => {
+    const { doFetch } = responses({ status: 302, location: "http://attacker.example/steal" });
+    await expect(fetchIocFeed("https://peer.example/ioc.txt", { apiKey: "KEY", fetch: doFetch })).rejects.toThrow(/https required/);
   });
 });

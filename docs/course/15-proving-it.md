@@ -294,9 +294,9 @@ A clone of the repository has a demo that runs every listener and the dashboard 
 simulator that fires a realistic attack for each detector at it:
 
 ```bash
-npm run demo              # terminal 1: honeypot, dashboard, management API, SSH, SMTP, FTP, Telnet
-npm run simulate          # terminal 2: every scenario
-npm run simulate:list     # what there is
+npm run demo                 # terminal 1: honeypot, dashboard, management API, SSH, SMTP, FTP, Telnet
+npm run simulate             # terminal 2: every scenario
+npm run simulate -- --list   # what there is
 ```
 
 ```

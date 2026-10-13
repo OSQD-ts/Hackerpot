@@ -21,7 +21,7 @@ const incident = (over: Partial<HoneypotHit> = {}): HoneypotHit => ({
   path: "/.env",
   headers: { authorization: "Bearer super-secret" },
   body: "user=ada&password=hunter2",
-  detections: [{ detectorId: "decoy-path", reason: "probe for a bait path", score: 10 }],
+  detections: [{ detector: "decoy-path", summary: "probe for a bait path", score: 10 }],
   score: 10,
   totalScore: 25,
   respondedWith: "decoy-content",
@@ -78,7 +78,7 @@ describe("publishing to a NotifyJS hub", () => {
     const { sent, fetch } = capturing();
     const sink = notifyJsSink({ url: "https://hub.example.com", token: "njs_abc", fetch });
 
-    await sink.notify({ type: "hit", at: AT, incident: incident({ detections: [{ detectorId: "honeytoken", reason: "replayed", score: 15, certain: true }] }) });
+    await sink.notify({ type: "hit", at: AT, incident: incident({ detections: [{ detector: "honeytoken", summary: "replayed", score: 15, certain: true }] }) });
     await sink.notify({ type: "downgrade", at: AT, incident: incident({ downgradedFrom: "block", respondedWith: "tarpit" }) });
 
     expect(bodyOf(sent[0] as Sent)["severity"]).toBe("error");

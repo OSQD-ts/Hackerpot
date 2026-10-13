@@ -69,7 +69,7 @@ describe("a label names, and nothing else", () => {
     const result = await engine.evaluate(probe("203.0.113.40"));
 
     // Detected and scored exactly as an unnamed source would have been…
-    expect(result.detections.map((detection) => detection.detectorId)).toContain("decoy-path");
+    expect(result.detections.map((detection) => detection.detector)).toContain("decoy-path");
     expect(result.score).toBeGreaterThan(0);
     // …and recorded, with the name attached and the mute flag carried alongside it.
     expect(hits[0]?.actor).toMatchObject({ name: "Security vendor", note: "Contracted scanning, weekly", hidden: true, matchedOn: "ip" });

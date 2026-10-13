@@ -47,7 +47,7 @@ describe("engine events", () => {
 
     // The request itself must be unaffected: the detections are still returned.
     const result = await engine.evaluate(probe());
-    expect(result.detections.map((detection) => detection.detectorId)).toContain("decoy-path");
+    expect(result.detections.map((detection) => detection.detector)).toContain("decoy-path");
     // Listeners registered after the broken one still heard it.
     expect(heard).toEqual(["203.0.113.40"]);
     await new Promise((resolve) => setTimeout(resolve, 10));

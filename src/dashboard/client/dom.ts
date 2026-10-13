@@ -1,24 +1,26 @@
+// Kept identical in hackerpot and bothandlerjs. Change both, or neither.
+
 /**
  * The page's only way of putting something into the document, and of finding it again.
  *
- * `textContent`, always. Every string that reaches this file (a path, a User-Agent, a
- * request body, a password somebody tried over SSH) was written by the attacker the page
- * is describing, and one `innerHTML` anywhere turns their request into script running in
- * an operator's browser. `scripts/build-client.mjs` refuses to bundle any of the four ways
- * to do that, and `tests/dashboard-page.test.ts` checks the bundle again.
+ * `textContent`, always. Every string that reaches this file — a path, a User-Agent, a request
+ * body, a password somebody tried, a rule id typed into an editor — was written by somebody
+ * else, and one `innerHTML` anywhere turns a request into script running in an operator's
+ * browser. `scripts/build-client.mjs` refuses to bundle any of the four ways to do that, and a
+ * test checks the built bundle again.
  *
- * Every lookup goes through a root rather than through `document`, so the same client
- * drives both the standalone page (which owns the whole document) and
- * `<hackerpot-dashboard>` (which owns a subtree inside a shadow root in somebody else's).
+ * Every lookup goes through a root rather than through `document`, so the same client drives
+ * both the standalone page (which owns the whole document) and the embeddable element (which
+ * owns a subtree inside a shadow root in somebody else's).
  */
 import { cssEscape } from "./css.js";
 
 let root: Document | ShadowRoot | HTMLElement = typeof document === "undefined" ? (undefined as never) : document;
 
 /**
- * The element the theme tokens and `data-theme` hang off: the document element on the
- * page, the host element when embedded, because custom properties inherit *into* a shadow
- * root from its host and `:root` matches nothing in there.
+ * The element the theme tokens and `data-theme` hang off: the document element on the page, the
+ * host element when embedded, because custom properties inherit *into* a shadow root from its
+ * host and `:root` matches nothing in there.
  */
 let themeHost: HTMLElement = typeof document === "undefined" ? (undefined as never) : document.documentElement;
 
@@ -37,10 +39,10 @@ export function setThemeHost(host: HTMLElement): void {
 }
 
 /**
- * True inside somebody else's page. Three things the standalone page may do and an
- * embedded one may not: write the tab into `location.hash` (the host's URL, and the host's
- * back button), read the hash to decide where to open, and rely on fragment navigation,
- * which does not cross a shadow boundary.
+ * True inside somebody else's page. Three things the standalone page may do and an embedded one
+ * may not: write the tab into `location.hash` (the host's URL, and the host's back button), read
+ * the hash to decide where to open, and rely on fragment navigation, which does not cross a
+ * shadow boundary.
  */
 export function isEmbedded(): boolean {
   return embedded;
@@ -50,17 +52,17 @@ export function rootNode(): Document | ShadowRoot | HTMLElement {
   return root;
 }
 
+/** The element carrying `data-theme` and the custom properties. */
 export function themeElement(): HTMLElement {
   return themeHost;
 }
 
 /**
- * Where pointer and keyboard listeners go: the window when the page is ours, the owned
- * subtree when it is not, so moving the mouse over the host's own page is none of this
- * dashboard's business.
+ * Where pointer and keyboard listeners go: the window when the page is ours, the owned subtree
+ * when it is not, so a key pressed on the host's own page is the host's business.
  */
 export function eventTarget(): EventTarget {
-  return embedded ? root : (globalThis as unknown as EventTarget);
+  return embedded ? (root as unknown as EventTarget) : (globalThis as unknown as EventTarget);
 }
 
 export function maybe<T extends HTMLElement = HTMLElement>(id: string): T | null {
@@ -124,3 +126,58 @@ export function strong(text: string): HTMLElement {
 export function nodes(parts: ReadonlyArray<Node | string>): Node[] {
   return parts.map((part) => (typeof part === "string" ? document.createTextNode(part) : part));
 }
+
+/** A CSS custom property's value, for the charts — which draw in the theme's own colours. */
+export function css(name: string): string {
+  return getComputedStyle(themeHost).getPropertyValue(name).trim();
+}
+
+/**
+ * Whether somebody is typing into something inside `node`.
+ *
+ * Panels are drawn by clearing them and building them again, which is fine for a list of numbers
+ * and destructive for a text box: a panel rebuilt whenever traffic arrives takes any input inside
+ * it — and whatever had been typed — about a second after it was opened.
+ *
+ * Typing, specifically, rather than focus of any kind. Clicking a button in a panel focuses it,
+ * and a panel that froze on any focus would refuse to redraw in response to its own controls.
+ * What must survive a rebuild is text somebody entered and cannot get back.
+ *
+ * `activeElement` is read from the root this client was pointed at, because embedded that is a
+ * shadow root and the document's `activeElement` is the host element rather than anything in it.
+ */
+const TYPED_INTO = new Set(["text", "search", "url", "tel", "email", "password", "number", "datetime-local", "date", "time", "month", "week"]);
+
+export function holdsTextEntry(node: Element): boolean {
+  const active = (root as Document | ShadowRoot).activeElement;
+  if (active === null || active === undefined || !node.contains(active)) return false;
+  if (active.tagName === "TEXTAREA") return true;
+  if ((active as HTMLElement).isContentEditable) return true;
+  return active.tagName === "INPUT" && TYPED_INTO.has(((active as HTMLInputElement).type || "text").toLowerCase());
+}
+
+let sequence = 0;
+
+/**
+ * Ties a `<label>` to the control it names.
+ *
+ * A label sitting next to an input is a label to a reader who can see the layout and nothing at
+ * all to a screen reader: it announces "edit, blank" and moves on. Only for the controls a label
+ * can point at — a group of chips is several buttons, and those carry their own names.
+ */
+export function label(text: string, control: HTMLElement | HTMLElement[]): HTMLLabelElement {
+  const node = el("label", null, text);
+  const single = Array.isArray(control) ? (control.length === 1 ? control[0] : undefined) : control;
+  if (single !== undefined && /^(input|select|textarea)$/i.test(single.tagName)) {
+    if (single.id === "") single.id = `field-${++sequence}`;
+    node.htmlFor = single.id;
+  } else {
+    // Nothing to point at, so the group gets the name instead and the text becomes decoration
+    // rather than a promise the page does not keep.
+    for (const member of Array.isArray(control) ? control : [control]) if (!member.hasAttribute("aria-label")) member.setAttribute("aria-label", text);
+  }
+  return node;
+}
+
+/** Re-exported so the rest of the client reads unchanged; it lives apart for the element's sake. */
+export { cssEscape };

@@ -34,6 +34,22 @@ export interface FeedCountsSnapshot {
   series: ReadonlyArray<{ at: number; total: number }>;
 }
 
+export type FeedOrder = "newest" | "oldest" | "score-high" | "score-low";
+export type FeedGroup = "none" | "ip" | "actor" | "detector" | "outcome" | "path";
+
+export interface FeedArrangement {
+  order: FeedOrder;
+  group: FeedGroup;
+  /** Zero-based page of the filtered rows. */
+  page: number;
+  pageSize: number;
+  /** Group keys rolled up. */
+  collapsed: Set<string>;
+  /** The From/To window, epoch milliseconds. Either end may be open. */
+  from: number | undefined;
+  to: number | undefined;
+}
+
 export interface State {
   /** The analytics corpus: the most recent incidents, oldest first. */
   all: Incident[];
@@ -59,6 +75,8 @@ export interface State {
   iocMin: number;
   tab: TabName;
   filter: IncidentFilter;
+  /** How the Incidents table is arranged and paged, bothandlerjs's feed controls. */
+  feed: FeedArrangement;
   ipSort: { key: IpSortKey; dir: 1 | -1 };
   live: boolean;
   stream: StreamState;
@@ -92,7 +110,8 @@ export const state: State = {
   proto: "",
   iocMin: 0,
   tab: "overview",
-  filter: { limit: 100, detector: "", ip: "", query: "" },
+  filter: { limit: 100, detector: "", ip: "", query: "", outcome: "" },
+  feed: { order: "newest", group: "none", page: 0, pageSize: 50, collapsed: new Set(), from: undefined, to: undefined },
   ipSort: { key: "score", dir: -1 },
   live: true,
   stream: "off",

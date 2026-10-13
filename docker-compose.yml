@@ -2,7 +2,7 @@ services:
   honeypot:
     build: .
     # `build:` and `image:` together mean compose REUSES an existing image with this
-    # tag instead of building — and `npm run docker:build` tags exactly this name. After
+    # tag instead of building — and `docker build -t hackerpot .` tags exactly this name. After
     # changing any source, run `docker compose up -d --build`, or you will silently keep
     # running the old build.
     image: hackerpot

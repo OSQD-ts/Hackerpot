@@ -50,8 +50,8 @@ export function jwtWeaknessDetector(options: JwtWeaknessOptions = {}): Detector 
           const alg = parsed?.alg?.toLowerCase();
           if (alg === "none" || (parsed !== undefined && signature === "")) {
             const detection: Detection = {
-              detectorId: "jwt-weakness",
-              reason: `JWT ${alg === "none" ? 'alg:"none"' : "with an empty signature"} in ${location}`,
+              detector: "jwt-weakness",
+              summary: `JWT ${alg === "none" ? 'alg:"none"' : "with an empty signature"} in ${location}`,
               score,
               metadata: { location, alg: parsed?.alg ?? null },
             };

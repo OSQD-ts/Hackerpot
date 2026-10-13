@@ -1,6 +1,10 @@
+import http from "node:http";
+import net from "node:net";
 import { describe, expect, it } from "vitest";
-import { isSecretHeader, maskIp, redactIncident } from "../src/management/redact.js";
+import { isSecretHeader, maskIp, redactIncident, REDACTED } from "../src/management/redact.js";
 import type { HoneypotHit } from "../src/types.js";
+import { IncidentBroker } from "../src/management/broker.js";
+import { WebhookDispatcher } from "../src/management/webhooks.js";
 
 /**
  * What leaves the process, and what a deployment is allowed to decide about it. The two
@@ -16,12 +20,34 @@ const incident = (over: Partial<HoneypotHit> = {}): HoneypotHit => ({
   path: "/wp-login.php",
   headers: { authorization: "Bearer super-secret-value", "x-acme-automation-token": "another-secret-value", "x-acme-bypass": "third-secret-value", "user-agent": "curl/8.4.0" },
   body: "user=ada&password=hunter2000",
-  detections: [{ detectorId: "credential-bruteforce", reason: "tried Bearer super-secret-value", score: 9 }],
+  detections: [{ detector: "credential-bruteforce", summary: "tried Bearer super-secret-value", score: 9 }],
   score: 9,
   totalScore: 9,
   respondedWith: "rate-limit",
   ...over,
 });
+
+const hit = (overrides: Partial<HoneypotHit> = {}): HoneypotHit => ({
+  id: "hit-1",
+  timestamp: new Date().toISOString(),
+  ip: "203.0.113.20",
+  method: "POST",
+  path: "/login",
+  headers: { "user-agent": "curl/8.4.0" },
+  detections: [{ detector: "decoy-path", summary: "probe", score: 5 }],
+  score: 5,
+  totalScore: 5,
+  respondedWith: "not-found",
+  ...overrides,
+});
+
+async function until(check: () => boolean, ms = 5_000): Promise<void> {
+  const started = Date.now();
+  while (!check()) {
+    if (Date.now() - started > ms) throw new Error("condition not met in time");
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+}
 
 describe("addresses", () => {
   it("coarsens to a network, and says the same thing everywhere", () => {
@@ -39,6 +65,16 @@ describe("addresses", () => {
 });
 
 describe("credentials", () => {
+  it("keeps a JSON body's __proto__ key, which is the payload of a prototype-pollution probe", () => {
+    // Redacted and rebuilt: the secret goes, the attack stays.
+    const withSecret = redactIncident(incident({ body: '{"__proto__":{"isAdmin":true},"password":"hunter2000"}', headers: { "content-type": "application/json" } }));
+    expect(withSecret.body).toContain('"__proto__":{"isAdmin":true}');
+    expect(withSecret.body).not.toContain("hunter2000");
+    // Nothing to redact: the body as sent, byte for byte, spacing included.
+    const raw = '{ "__proto__": { "isAdmin": true } }';
+    expect(redactIncident(incident({ body: raw, headers: { "content-type": "application/json" } })).body).toBe(raw);
+  });
+
   it("hides a header whose name says what it holds, and scrubs the quote of it", () => {
     const out = redactIncident(incident());
     expect(out.headers["authorization"]).toBe("[redacted]");
@@ -49,7 +85,7 @@ describe("credentials", () => {
     expect(out.headers["x-acme-bypass"]).toBe("third-secret-value");
     expect(out.headers["user-agent"]).toBe("curl/8.4.0");
     // Detectors quote what they saw, so the value must not survive a few fields away.
-    expect(out.detections[0]?.reason).not.toContain("super-secret-value");
+    expect(out.detections[0]?.summary).not.toContain("super-secret-value");
     expect(out.body).not.toContain("hunter2000");
     expect(out.body).toContain("password");
   });
@@ -78,5 +114,64 @@ describe("credentials", () => {
     expect(isSecretHeader("x-acme-api-key", new Set(), false)).toBe(false);
     expect(isSecretHeader("x-team", new Set(["x-team"]))).toBe(true);
     expect(isSecretHeader("user-agent")).toBe(false);
+  });
+});
+
+describe("webhook redaction", () => {
+  const secretHit = (): HoneypotHit =>
+    hit({
+      headers: {
+        authorization: "Bearer supersecretvalue123",
+        cookie: "sid=abcdefgh12345",
+        "x-acme-api-key": "key-9999999999",
+        "user-agent": "curl/8.4.0",
+      },
+      body: "user=admin&password=hunter2hunter2",
+      detections: [{ detector: "payload-injection", summary: "sql-injection payload detected in body", score: 10, metadata: { sample: "user=admin&password=hunter2hunter2" } }],
+    });
+
+  it("strips credential headers, secret-named headers and form passwords, including quoted copies", () => {
+    const out = redactIncident(secretHit());
+    expect(out.headers).toMatchObject({ authorization: REDACTED, cookie: REDACTED, "x-acme-api-key": REDACTED, "user-agent": "curl/8.4.0" });
+    expect(out.body).toBe(`user=admin&password=${REDACTED}`);
+    expect(JSON.stringify(out.detections)).not.toContain("hunter2hunter2");
+  });
+
+  it("strips secret-named JSON body fields at any depth", () => {
+    const out = redactIncident(hit({ body: JSON.stringify({ login: { username: "root", password: "toor-toor" }, api_key: "abcd-efgh" }) }));
+    expect(out.body).not.toContain("toor-toor");
+    expect(out.body).not.toContain("abcd-efgh");
+    expect(out.body).toContain("root");
+  });
+
+  it("never modifies the incident it was given", () => {
+    const original = secretHit();
+    redactIncident(original);
+    expect(original.headers["authorization"]).toBe("Bearer supersecretvalue123");
+  });
+
+  it("is applied to delivered webhooks by default, and skipped with redact: false", async () => {
+    const received: Array<{ incident: HoneypotHit }> = [];
+    const receiver = http.createServer((req, res) => {
+      let data = "";
+      req.on("data", (chunk) => (data += chunk));
+      req.on("end", () => {
+        received.push(JSON.parse(data));
+        res.end("ok");
+      });
+    });
+    await new Promise<void>((resolve) => receiver.listen(0, "127.0.0.1", resolve));
+    const { port } = receiver.address() as net.AddressInfo;
+    try {
+      const broker = new IncidentBroker();
+      new WebhookDispatcher({ webhooks: [{ url: `http://127.0.0.1:${port}/redacted` }] }).attach(broker);
+      new WebhookDispatcher({ webhooks: [{ url: `http://127.0.0.1:${port}/verbatim`, redact: false }] }).attach(broker);
+      broker.publish(secretHit());
+      await until(() => received.length === 2);
+      const values = received.map((payload) => payload.incident.headers["authorization"]).sort();
+      expect(values).toEqual(["Bearer supersecretvalue123", REDACTED].sort());
+    } finally {
+      await new Promise<void>((resolve) => receiver.close(() => resolve()));
+    }
   });
 });

@@ -212,7 +212,7 @@ See [configuration](configuration.md#sharing-a-config-with-a-library-deployment)
 
 | Export | |
 | --- | --- |
-| `parseRequestText`, `explainRequest`, `formatExplanation` | `hackerpot explain` |
+| `parseRequest` (formerly `parseRequestText`), `explainRequest`, `formatExplanation` | `hackerpot explain` |
 | `parseLogLine`, `readLogLines`, `replayLog`, `formatReplaySummary` | `hackerpot replay` |
 
 See [the command line](../testing/cli.md) and [replay](../testing/replay.md).

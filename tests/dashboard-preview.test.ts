@@ -16,7 +16,7 @@ const incident = (over: Partial<Incident> = {}): Incident =>
     method: "GET",
     path: "/wp-login.php",
     headers: {},
-    detections: [{ detectorId: "decoy-path", reason: "probe", score: 10 }],
+    detections: [{ detector: "decoy-path", summary: "probe", score: 10 }],
     score: 10,
     totalScore: 10,
     respondedWith: "not-found",
@@ -51,7 +51,7 @@ describe("replaying a candidate policy", () => {
 
   it("shows the block itself when the evidence is proof", () => {
     const rules = parseRules([{ id: "strict", respondWith: "block", match: {} }]);
-    const proven = incident({ detections: [{ detectorId: "honeytoken", reason: "replayed", score: 15, certain: true }] });
+    const proven = incident({ detections: [{ detector: "honeytoken", summary: "replayed", score: 15, certain: true }] });
     expect(previewPolicy([proven], candidatePolicy(rules)).changed[0]).toMatchObject({ now: "block", rule: "strict" });
   });
 

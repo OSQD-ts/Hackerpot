@@ -67,8 +67,8 @@ describe("trying a request", () => {
 
     const response = await post(server, "test", { text: "curl https://shop.example/.env" });
     expect(response.status).toBe(200);
-    const result = (await response.json()) as { request: { ip: string }; detections: Array<{ detectorId: string }>; actionId: string; rule?: string };
-    expect(result.detections.map((detection) => detection.detectorId)).toContain("decoy-path");
+    const result = (await response.json()) as { request: { ip: string }; detections: Array<{ detector: string }>; actionId: string; rule?: string };
+    expect(result.detections.map((detection) => detection.detector)).toContain("decoy-path");
     expect(result.actionId).not.toBe("");
 
     // The whole point of a dry run: reproducing a complaint must not change what is being

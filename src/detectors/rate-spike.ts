@@ -29,8 +29,8 @@ export function rateSpikeDetector(options: RateSpikeOptions = {}): Detector {
       const count = ctx.tracker.countIn(windowMs, ctx.timestamp.getTime());
       if (count < threshold) return undefined;
       const detection: Detection = {
-        detectorId: "rate-spike",
-        reason: `${count} requests in ${Math.round(windowMs / 1000)}s`,
+        detector: "rate-spike",
+        summary: `${count} requests in ${Math.round(windowMs / 1000)}s`,
         score,
         metadata: { requestCount: count, windowMs },
       };

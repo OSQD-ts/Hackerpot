@@ -1,33 +1,48 @@
 import http from "node:http";
+import net from "node:net";
 import { createHmac } from "node:crypto";
 import { once } from "node:events";
 import { afterEach, describe, expect, it } from "vitest";
 import { WebSocket } from "ws";
-import { ManagementServer, MemoryStore } from "../src/index.js";
-import type { HoneypotHit } from "../src/index.js";
-
-function hit(overrides: Partial<HoneypotHit> = {}): HoneypotHit {
-  return {
-    id: overrides.id ?? Math.random().toString(36).slice(2),
-    timestamp: overrides.timestamp ?? new Date().toISOString(),
-    ip: overrides.ip ?? "203.0.113.7",
-    method: "GET",
-    path: overrides.path ?? "/.env",
-    headers: {},
-    ...(overrides.fingerprint ? { fingerprint: overrides.fingerprint } : {}),
-    ...(overrides.body !== undefined ? { body: overrides.body } : {}),
-    detections: overrides.detections ?? [{ detectorId: "decoy-path", reason: "probe", score: 10 }],
-    score: overrides.score ?? 10,
-    totalScore: overrides.totalScore ?? 10,
-    respondedWith: overrides.respondedWith ?? "decoy-content",
-  };
-}
+import { ManagementServer, MemoryStore, type HoneypotHit } from "../src/index.js";
+import { listIncidents } from "../src/management/rest.js";
+import { RedisStore } from "../src/stores/index.js";
+import { hit, portOf } from "./helpers.js";
 
 async function json(port: number, path: string, headers: Record<string, string> = {}): Promise<{ status: number; body: any }> {
   const res = await fetch(`http://127.0.0.1:${port}${path}`, { headers });
   const text = await res.text();
   return { status: res.status, body: text ? JSON.parse(text) : undefined };
 }
+
+/** Speaks raw HTTP so a request line / header the `fetch` client would refuse to send can be tested. */
+function rawRequest(port: number, payload: string, waitMs = 500): Promise<string> {
+  return new Promise((resolve) => {
+    const socket = net.connect(port, "127.0.0.1", () => socket.write(payload));
+    let out = "";
+    socket.on("data", (chunk) => (out += chunk));
+    socket.on("close", () => resolve(out));
+    socket.on("error", () => resolve(out));
+    setTimeout(() => {
+      socket.destroy();
+      resolve(out);
+    }, waitMs);
+  });
+}
+
+const loginHit = (overrides: Partial<HoneypotHit> = {}): HoneypotHit => ({
+  id: "hit-1",
+  timestamp: new Date().toISOString(),
+  ip: "203.0.113.20",
+  method: "POST",
+  path: "/login",
+  headers: { "user-agent": "curl/8.4.0" },
+  detections: [{ detector: "decoy-path", summary: "probe", score: 5 }],
+  score: 5,
+  totalScore: 5,
+  respondedWith: "not-found",
+  ...overrides,
+});
 
 describe("ManagementServer", () => {
   let server: ManagementServer | undefined;
@@ -80,7 +95,7 @@ describe("ManagementServer", () => {
   it("lists, filters, fetches, and summarizes incidents with a valid key", async () => {
     const store = new MemoryStore();
     store.record(hit({ id: "a", ip: "1.1.1.1", path: "/.env" }));
-    store.record(hit({ id: "b", ip: "2.2.2.2", path: "/wp-login.php", detections: [{ detectorId: "credential-bruteforce", reason: "x", score: 9 }] }));
+    store.record(hit({ id: "b", ip: "2.2.2.2", path: "/wp-login.php", detections: [{ detector: "credential-bruteforce", summary: "x", score: 9 }] }));
     const port = await start(store);
     const auth = { Authorization: "Bearer secret-key" };
 
@@ -108,8 +123,8 @@ describe("ManagementServer", () => {
 
   it("serves an IOC feed as JSON and as a plain IP list for firewalls", async () => {
     const store = new MemoryStore();
-    store.record(hit({ ip: "9.9.9.9", score: 10, totalScore: 10, detections: [{ detectorId: "web-shell", reason: "x", score: 10 }] }));
-    store.record(hit({ ip: "9.9.9.9", score: 8, totalScore: 18, detections: [{ detectorId: "sensitive-file", reason: "y", score: 8 }] }));
+    store.record(hit({ ip: "9.9.9.9", score: 10, totalScore: 10, detections: [{ detector: "web-shell", summary: "x", score: 10 }] }));
+    store.record(hit({ ip: "9.9.9.9", score: 8, totalScore: 18, detections: [{ detector: "sensitive-file", summary: "y", score: 8 }] }));
     store.record(hit({ ip: "5.5.5.5", score: 3, totalScore: 3 }));
     const port = await start(store);
     const auth = { Authorization: "Bearer secret-key" };
@@ -154,8 +169,8 @@ describe("ManagementServer", () => {
 
   it("correlates an IP's incidents into an attack session timeline", async () => {
     const store = new MemoryStore();
-    store.record(hit({ ip: "7.7.7.7", path: "/a", timestamp: "2026-08-27T10:00:00.000Z", detections: [{ detectorId: "scanner-signature", reason: "x", score: 2 }] }));
-    store.record(hit({ ip: "7.7.7.7", path: "/.env", timestamp: "2026-08-27T10:00:05.000Z", detections: [{ detectorId: "sensitive-file", reason: "y", score: 8 }] }));
+    store.record(hit({ ip: "7.7.7.7", path: "/a", timestamp: "2026-08-27T10:00:00.000Z", detections: [{ detector: "scanner-signature", summary: "x", score: 2 }] }));
+    store.record(hit({ ip: "7.7.7.7", path: "/.env", timestamp: "2026-08-27T10:00:05.000Z", detections: [{ detector: "sensitive-file", summary: "y", score: 8 }] }));
     store.record(hit({ ip: "8.8.8.8", path: "/", timestamp: "2026-08-27T09:00:00.000Z" }));
     const port = await start(store);
     const auth = { Authorization: "Bearer secret-key" };
@@ -251,4 +266,147 @@ describe("ManagementServer", () => {
 
     await new Promise<void>((r) => receiver.close(() => r()));
   });
+});
+
+describe("management API auth rate limiting covers every authenticated route", () => {
+  it("counts failed WebSocket upgrades against the same budget as REST", async () => {
+    const management = new ManagementServer({ store: new MemoryStore(), host: "127.0.0.1", port: 0, apiKeys: ["real-key"] });
+    await management.listen();
+    const port = portOf(management);
+
+    const attemptUpgrade = (guess: string): Promise<string> =>
+      new Promise((resolve) => {
+        const socket = net.connect(port, "127.0.0.1", () => {
+          socket.write(
+            `GET /stream?api_key=${guess} HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n` +
+              `Sec-WebSocket-Key: ${Buffer.from("0123456789abcdef").toString("base64")}\r\nSec-WebSocket-Version: 13\r\n\r\n`,
+          );
+        });
+        let seen = "";
+        socket.on("data", (chunk) => {
+          seen += chunk.toString();
+          socket.destroy();
+        });
+        socket.on("close", () => resolve(seen));
+        socket.on("error", () => resolve(seen));
+      });
+
+    let sawThrottle = false;
+    for (let i = 0; i < 40; i += 1) {
+      if ((await attemptUpgrade(`guess-${i}`)).includes("429")) {
+        sawThrottle = true;
+        break;
+      }
+    }
+    expect(sawThrottle).toBe(true);
+
+    // The budget is shared, so REST is throttled by those WebSocket failures too.
+    const status = await new Promise<number>((resolve) => {
+      const req = http.request({ host: "127.0.0.1", port, path: "/stats", headers: { "x-api-key": "wrong" } }, (res) => {
+        res.resume();
+        resolve(res.statusCode ?? 0);
+      });
+      req.end();
+    });
+    expect(status).toBe(429);
+    await management.close();
+  }, 20_000);
+});
+
+describe("a malformed Host header cannot take the management server down", () => {
+  let server: ManagementServer | undefined;
+  afterEach(async () => {
+    await server?.close();
+    server = undefined;
+  });
+
+  async function start(): Promise<number> {
+    server = new ManagementServer({ store: new MemoryStore(), host: "127.0.0.1", port: 0, apiKeys: ["secret-key"] });
+    await server.listen();
+    return (server.address() as { port: number }).port;
+  }
+
+  // `handleUpgrade` built its URL base out of the client's `Host` header. `Host: ]` is
+  // not a parseable authority, so `new URL()` threw — inside an `upgrade` event handler
+  // with no `try`, which Node reports as an uncaughtException and the process dies. The
+  // throw happened *before* the API-key check, so one unauthenticated request killed the
+  // management server and, in standalone mode, the honeypot sharing the process.
+  it("answers the WebSocket upgrade path and stays up", async () => {
+    const port = await start();
+    for (const host of ["]", "a]b", "%", "[", "foo:bar:baz"]) {
+      const response = await rawRequest(
+        port,
+        `GET /stream HTTP/1.1\r\nHost: ${host}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n` +
+          `Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n`,
+      );
+      // Unauthenticated, so 401 — the point is that we answered at all.
+      expect(response).toContain("401");
+    }
+    // Still serving after every one of those.
+    const res = await fetch(`http://127.0.0.1:${port}/health`);
+    expect(res.status).toBe(200);
+  });
+
+  it("answers the REST path with a malformed Host rather than a 500", async () => {
+    const port = await start();
+    const response = await rawRequest(port, "GET /health HTTP/1.1\r\nHost: ]\r\n\r\n");
+    expect(response).toContain("200");
+    expect(response).not.toContain("500");
+  });
+});
+
+describe("the /incidents row cap cannot be lifted by a junk limit", () => {
+  // `Number("abc")` is NaN, and NaN survives `Math.min(Math.max(1, n), 1000)` untouched
+  // — every comparison against it is false, so both bounds pass it through. It reached
+  // the stores as `limit: NaN`, where `limit >= 0` is likewise false and the read falls
+  // back to "no limit", so `?limit=abc` returned the entire corpus past the documented
+  // 1000-row ceiling: an authenticated full-log read at whatever size the attacker has
+  // grown it to.
+  it("falls back to the default limit for a non-numeric value", async () => {
+    const store = new MemoryStore({ maxHits: 5000 });
+    for (let i = 0; i < 1500; i += 1) {
+      await store.record(hit({ id: `h${i}`, timestamp: new Date(Date.now() + i).toISOString() }));
+    }
+    for (const value of ["abc", "Infinity", "-Infinity", "NaN", ""]) {
+      const rows = await listIncidents(store, new URLSearchParams(value ? `limit=${value}` : ""));
+      expect(rows).toHaveLength(100);
+    }
+    // A real value is still honored, and still clamped at the ceiling.
+    expect(await listIncidents(store, new URLSearchParams("limit=10"))).toHaveLength(10);
+    expect(await listIncidents(store, new URLSearchParams("limit=100000"))).toHaveLength(1000);
+  });
+});
+
+describe("a damaged Redis entry does not break every management endpoint", () => {
+  it("skips what will not parse and returns the rest", async () => {
+    const entries = ['{"id":"a","ip":"1.1.1.1","score":1}', "{truncated", '{"id":"b","ip":"2.2.2.2","score":2}'];
+    const fake = { lrange: async () => entries } as never;
+    const store = new RedisStore({ client: fake });
+    const hits = await store.list();
+    expect(hits.map((h) => h.id)).toEqual(["a", "b"]);
+  });
+});
+
+describe("live feed backpressure", () => {
+  // A viewer that stops reading used to make every incident queue in this process.
+  it("drops incidents for a viewer that is not reading instead of buffering them all", async () => {
+    const server = new ManagementServer({ store: new MemoryStore(), apiKeys: ["k"], port: 0, host: "127.0.0.1" });
+    await server.listen();
+    const { port } = server.address() as net.AddressInfo;
+    const client = new WebSocket(`ws://127.0.0.1:${port}/stream?api_key=k`);
+    try {
+      await new Promise<void>((resolve, reject) => {
+        client.once("message", () => resolve());
+        client.once("error", reject);
+      });
+      (client as unknown as { _socket: net.Socket })._socket.pause();
+
+      const big = "x".repeat(16 * 1024);
+      for (let i = 0; i < 2_000; i += 1) server.publish(loginHit({ id: `hit-${i}`, body: big }));
+      expect(server.streamDropped).toBeGreaterThan(0);
+    } finally {
+      client.terminate();
+      await server.close();
+    }
+  }, 20_000);
 });

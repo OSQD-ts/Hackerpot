@@ -2,6 +2,10 @@ import { defineConfig } from "vitest/config";
 
 export default defineConfig({
   test: {
+    include: ["tests/**/*.test.ts"],
+    // The browser suite has its own config and its own command; it needs a browser
+    // binary, so it must not fail `npm test` on a checkout that has not installed one.
+    exclude: ["tests/browser/**"],
     coverage: {
       provider: "v8",
       // Source only. Scripts are developer tooling exercised by hand, and the
@@ -22,7 +26,7 @@ export default defineConfig({
         // The browser half needs a document; its pure modules (format, analysis, decode,
         // query, palette, knowledge) are unit-tested and stay counted.
         "src/element/**",
-        "src/dashboard/client/{dom,boot,api,store,app,tooltip,charts,badges,volume,overview,statistics,incidents,detail,lists,stream,css}.ts",
+        "src/dashboard/client/{dom,boot,api,store,app,tooltip,charts,badges,volume,overview,statistics,incidents,detail,lists,stream,css,tester,transfer,pager,saved,toast,tiles,policy,reference}.ts",
       ],
       reporter: ["text-summary", "text", "json-summary"],
       // A point under what the suite measures, so a change that drops coverage fails CI.

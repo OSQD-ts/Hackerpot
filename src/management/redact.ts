@@ -114,7 +114,11 @@ function redactBody(body: string, removed: string[]): string {
   if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
     try {
       const parsed: unknown = JSON.parse(trimmed);
-      return JSON.stringify(redactJson(parsed, removed, 0));
+      const before = removed.length;
+      const redacted = redactJson(parsed, removed, 0);
+      // Nothing secret in it: the body as it arrived, byte for byte, because it is evidence and a
+      // re-serialised copy is not what the attacker sent.
+      return removed.length === before ? body : JSON.stringify(redacted);
     } catch {
       return body;
     }
@@ -135,7 +139,10 @@ function redactBody(body: string, removed: string[]): string {
 function redactJson(node: unknown, removed: string[], depth: number): unknown {
   if (depth > 32 || node === null || typeof node !== "object") return node;
   if (Array.isArray(node)) return node.map((item) => redactJson(item, removed, depth + 1));
-  const out: Record<string, unknown> = {};
+  // Null-prototype, so a `__proto__` key is copied as a key. On a plain object the assignment
+  // sets the prototype instead and the key vanishes — which erased the payload of every
+  // prototype-pollution probe from the copy an operator reads.
+  const out: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
   for (const [key, value] of Object.entries(node)) {
     if (typeof value === "string" && value !== "" && SECRET_FIELD_SHAPE.test(key)) {
       removed.push(value);
@@ -156,7 +163,7 @@ function decodeFormPart(part: string): string {
 }
 
 function scrubDetection(detection: Detection, removed: readonly string[]): Detection {
-  const scrubbed: Detection = { ...detection, reason: scrubText(detection.reason, removed) };
+  const scrubbed: Detection = { ...detection, summary: scrubText(detection.summary, removed) };
   if (detection.metadata !== undefined) {
     const metadata: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(detection.metadata)) metadata[key] = typeof value === "string" ? scrubText(value, removed) : value;

@@ -52,8 +52,8 @@ export function scannerSignatureDetector(options: ScannerSignatureOptions = {}):
         // A partial header set (a log line) may simply not have recorded one.
         if (!flagMissing || ctx.partialHeaders) return undefined;
         const detection: Detection = {
-          detectorId: "scanner-signature",
-          reason: "Request sent no User-Agent header",
+          detector: "scanner-signature",
+          summary: "Request sent no User-Agent header",
           score: Math.max(1, Math.round(score / 2)),
           metadata: { userAgent: null },
         };
@@ -65,8 +65,8 @@ export function scannerSignatureDetector(options: ScannerSignatureOptions = {}):
       if (!matched) return undefined;
 
       const detection: Detection = {
-        detectorId: "scanner-signature",
-        reason: `User-Agent matches known tooling signature: ${userAgent.slice(0, 80)}`,
+        detector: "scanner-signature",
+        summary: `User-Agent matches known tooling signature: ${userAgent.slice(0, 80)}`,
         score,
         metadata: { userAgent, pattern: matched.source },
       };

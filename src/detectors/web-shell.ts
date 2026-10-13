@@ -37,8 +37,8 @@ export function webShellDetector(options: WebShellOptions = {}): Detector {
       const matched = patterns.find((pattern) => pattern.test(target));
       if (!matched) return undefined;
       const detection: Detection = {
-        detectorId: "web-shell",
-        reason: `Web-shell probe: ${ctx.path}`,
+        detector: "web-shell",
+        summary: `Web-shell probe: ${ctx.path}`,
         score,
         metadata: { path: ctx.path, pattern: matched.source },
       };

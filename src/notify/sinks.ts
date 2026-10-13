@@ -1,4 +1,4 @@
-import type { SyslogSink } from "../syslog.js";
+import type { SyslogSink } from "./syslog.js";
 import type { WebhookDispatcher } from "../management/webhooks.js";
 import type { NotifyEvent, NotifySink } from "./types.js";
 
@@ -87,10 +87,10 @@ export function consoleNotifier(options: ConsoleNotifierOptions = {}): NotifySin
       }
       const incident = event.incident;
       const proven = incident.detections.some((detection) => detection.certain === true) ? " (proof)" : "";
-      const detectors = incident.detections.map((detection) => detection.detectorId).join(", ") || "nothing";
+      const detectors = incident.detections.map((detection) => detection.detector).join(", ") || "nothing";
       const head = `[hackerpot] ${event.type} ${incident.ip} ${incident.method} ${incident.path} score=${incident.score}/${incident.totalScore}${proven} -> ${incident.respondedWith}`;
       const downgraded = incident.downgradedFrom === undefined ? "" : ` (downgraded from ${incident.downgradedFrom})`;
-      const why = incident.reason ?? incident.detections[0]?.reason ?? detectors;
+      const why = incident.reason ?? incident.detections[0]?.summary ?? detectors;
       const write = event.type === "downgrade" ? target.warn : target.log;
       write.call(target, `${head}${downgraded}\n           ${why}`);
     },
@@ -209,7 +209,7 @@ function bodyFor(event: NotifyEvent, channel: string): Record<string, unknown> {
   if (incident === undefined) return { ...base, title: `hackerpot: ${event.type}`, severity: "info" };
 
   const proven = incident.detections.some((detection) => detection.certain === true);
-  const detectors = incident.detections.map((detection) => detection.detectorId);
+  const detectors = incident.detections.map((detection) => detection.detector);
   return {
     ...base,
     tags: [...base.tags, ...detectors].slice(0, 20),

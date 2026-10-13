@@ -1,4 +1,5 @@
 import http from "node:http";
+import net from "node:net";
 import { createHmac } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -7,7 +8,36 @@ import { afterAll, describe, expect, it } from "vitest";
 import { EnforcingBlocklist, MemoryBlocklist, commandEnforcer, webhookEnforcer } from "../src/index.js";
 
 const dir = mkdtempSync(join(tmpdir(), "hackerpot-fw-"));
+
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
+
+/**
+ * A TCP listener that accepts connections and does whatever `onSocket` says, plus a
+ * `close()` that actually resolves.
+ *
+ * `server.close()` alone waits for every live connection to end, and these tests
+ * deliberately leave sockets paused with unread data queued behind them — exactly the
+ * state in which the peer's close is not observed promptly. Holding the accepted sockets
+ * and destroying them first is what makes teardown deterministic instead of a hang.
+ */
+function stalledServer(onSocket: (socket: net.Socket) => void): Promise<{ port: number; close: () => Promise<void> }> {
+  const sockets: net.Socket[] = [];
+  const server = net.createServer((socket) => {
+    sockets.push(socket);
+    onSocket(socket);
+  });
+  return new Promise((resolve) => {
+    server.listen(0, "127.0.0.1", () => {
+      resolve({
+        port: (server.address() as net.AddressInfo).port,
+        close: async () => {
+          for (const socket of sockets) socket.destroy();
+          await new Promise<void>((done) => server.close(() => done()));
+        },
+      });
+    });
+  });
+}
 
 describe("EnforcingBlocklist", () => {
   it("fires the enforcer on every block and still delegates isBlocked", async () => {
@@ -106,5 +136,34 @@ describe("webhookEnforcer", () => {
     expect(received[0]!.sig).toBe(expected);
 
     await new Promise<void>((r) => server.close(() => r()));
+  });
+});
+
+describe("the firewall webhook enforcer bounds each request", () => {
+  // `WebhookDispatcher` already carried a per-attempt deadline, with a comment on why
+  // `fetch` has no usable timeout of its own. This enforcer did not, so a WAF endpoint
+  // that accepted the connection and went quiet held the request open indefinitely —
+  // and `maxPerWindow` caps requests *started*, not requests in flight, so each window
+  // simply added more hung fetches.
+  it("aborts a request that never answers", async () => {
+    // Accept, read, and never reply. The classic silently-stalled endpoint.
+    const server = await stalledServer((socket) => socket.resume());
+    const port = server.port;
+
+    const errors: Error[] = [];
+    const enforce = webhookEnforcer({
+      url: `http://127.0.0.1:${port}/block`,
+      timeoutMs: 300,
+      onError: (err) => errors.push(err),
+    });
+
+    const started = Date.now();
+    await enforce("203.0.113.9", Date.now() + 60_000);
+    const elapsed = Date.now() - started;
+
+    expect(errors).toHaveLength(1);
+    // Bounded by the deadline, not by whatever undici would eventually decide.
+    expect(elapsed).toBeLessThan(5_000);
+    await server.close();
   });
 });

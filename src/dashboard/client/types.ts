@@ -14,9 +14,11 @@
  */
 
 export interface Detection {
-  detectorId: string;
-  reason: string;
+  detector: string;
+  summary: string;
   score: number;
+  /** Proof rather than suspicion: no legitimate client produces it. */
+  certain?: boolean | undefined;
   metadata?: { readonly [key: string]: unknown } | undefined;
 }
 
@@ -126,7 +128,12 @@ export type SectionName = keyof Sections;
  * `statistics` is the mismatch that made `hide: { stats: true }` do nothing at all in the
  * sibling project's element; here the name you hide is the name you list.
  */
-export type TabName = SectionName;
+/**
+ * The screens. All but one are named after the section that decides whether they exist; `policy`
+ * is there when the deployment granted a policy control, which is a question about what a viewer
+ * may *do* rather than what they may see.
+ */
+export type TabName = SectionName | "policy" | "reference";
 
 /** Where the page opens when embedded, since an element has no URL of its own to read. */
 export interface BootView {
@@ -145,5 +152,7 @@ export interface Boot {
   links: ReadonlyArray<{ label: string; href: string }>;
   source: string;
   redaction: { credentials: boolean; maskIp: boolean };
+  /** What this viewer may do. Absent from a server older than the controls, which means none. */
+  controls?: { testRequest: boolean; previewPolicy: boolean; editPolicy: boolean } | undefined;
   view?: BootView | undefined;
 }

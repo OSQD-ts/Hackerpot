@@ -14,7 +14,7 @@ import type { HitQuery, HoneypotHit } from "../types.js";
 export function matchesQuery(hit: HoneypotHit, query: HitQuery): boolean {
   if (query.ip !== undefined && hit.ip !== query.ip) return false;
   if (query.fingerprint !== undefined && hit.fingerprint !== query.fingerprint) return false;
-  if (query.detector !== undefined && !hit.detections.some((d) => d.detectorId === query.detector)) return false;
+  if (query.detector !== undefined && !hit.detections.some((d) => d.detector === query.detector)) return false;
   if (query.sinceMs !== undefined) {
     const at = Date.parse(hit.timestamp);
     // An unparseable timestamp cannot be shown to satisfy "at or after T", and a

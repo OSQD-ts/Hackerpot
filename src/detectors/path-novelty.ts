@@ -53,7 +53,9 @@ export function pathNoveltyDetector(options: PathNoveltyOptions = {}): Detector 
     id: "path-novelty",
     description: "Requests for paths this site has never served, measured against its own traffic",
     inspect(ctx: DetectionContext): Detection | undefined {
-      const baseline = ctx.baseline;
+      // `baseline` is the field's old name, still set by the engine and read here for a context
+      // somebody builds by hand.
+      const baseline = ctx.site ?? ctx.baseline;
       // No baseline (standalone mode, or disabled), or one that has not seen enough of this
       // site's traffic to have an opinion. "I have never seen this path" is true of every
       // page on the site until it is warm.
@@ -81,8 +83,8 @@ export function pathNoveltyDetector(options: PathNoveltyOptions = {}): Detector 
       if (distributed) reasons.push(`${walkers} distinct addresses probing ${ctx.path}, which this site has never served`);
 
       const detection: Detection = {
-        detectorId: "path-novelty",
-        reason: `Probing against the site's own baseline: ${reasons.join("; ")}`,
+        detector: "path-novelty",
+        summary: `Probing against the site's own baseline: ${reasons.join("; ")}`,
         // Both shapes at once is one address walking a space that others are walking too —
         // a coordinated scan rather than a curious client.
         score: walking && distributed ? Math.round(score * 1.5) : score,

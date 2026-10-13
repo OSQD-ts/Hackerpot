@@ -1,7 +1,9 @@
+// Kept identical in hackerpot and bothandlerjs. Change both, or neither.
+
 import { systemClock, type Clock } from "../internal/clock.js";
 
 /**
- * How many incidents happened in a stretch of time, kept apart from the incidents themselves.
+ * How many entries happened in a stretch of time, kept apart from the entries themselves.
  *
  * The page's count was the length of the list it was holding. That list is bounded — by the
  * store's retention, by the `limit` the page asked for, by the rows the live feed drops as
@@ -15,7 +17,6 @@ import { systemClock, type Clock } from "../internal/clock.js";
  * speak for a window far longer than the entries do, at a cost that does not depend on traffic.
  * A day of history is 1,440 numbers.
  *
- * Adapted from bothandlerjs.
  */
 
 const MINUTE = 60_000;
@@ -65,9 +66,19 @@ export class FeedCounts {
     this.retainMs = Math.max(0, Math.floor(options.retainMs ?? 24 * 60 * MINUTE));
   }
 
-  /** How long counts are kept. */
+  /**
+   * How long counts are kept.
+   *
+   * Follows the entries' own retention, so "we keep nothing older than an hour" stays one promise
+   * rather than becoming two with different answers.
+   */
   get retention(): number {
     return this.retainMs;
+  }
+
+  setRetention(ms: number, now: number = this.clock.now()): void {
+    this.retainMs = Math.max(0, Math.floor(ms));
+    this.prune(now);
   }
 
   /** Counts one incident, at the time it happened. */
@@ -149,6 +160,11 @@ export class FeedCounts {
       oldest: this.oldest,
       series: this.buckets.filter((bucket) => from === undefined || bucket.at + MINUTE > from).map((bucket) => ({ at: bucket.at, total: bucket.total })),
     };
+  }
+
+  /** For a chart, and anything else that wants the shape rather than the sum. */
+  series(): ReadonlyArray<{ at: number; total: number }> {
+    return this.buckets.map((bucket) => ({ at: bucket.at, total: bucket.total }));
   }
 
   clear(): void {

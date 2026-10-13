@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { chaosAction } from "../src/responses/chaos.js";
+import { chaosAction } from "../src/actions/chaos.js";
 import { parseConfig } from "../src/config/schema.js";
-import type { ResponseContext } from "../src/responses/types.js";
+import type { ResponseContext } from "../src/actions/types.js";
 
 /** A response double that records what the action wrote. */
 function fakeContext(): ResponseContext & { body: unknown } {

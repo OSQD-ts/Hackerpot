@@ -1,7 +1,7 @@
 import { apiUrl, readError } from "./api.js";
 import { app } from "./app.js";
 import { SECTIONS } from "./boot.js";
-import { explainFailure, isIncident, reconnectDelay } from "./query.js";
+import { explainFailure, isIncident, reconnectDelay, upgradeIncident } from "./query.js";
 import { state, type StreamState } from "./store.js";
 
 /**
@@ -72,7 +72,8 @@ function open(): void {
 
   stream.addEventListener("incident", (event) => {
     const incident = parse(event);
-    if (isIncident(incident)) app.ingest(incident);
+    const upgraded = upgradeIncident(incident);
+    if (isIncident(upgraded)) app.ingest(upgraded);
   });
 
   // This browser fell behind and the server dropped frames rather than queue them.

@@ -5,14 +5,18 @@ import type { Socket } from "node:net";
 import { IpAllowlist } from "../allowlist.js";
 import { systemClock, type Clock } from "../internal/clock.js";
 import { TtlLru } from "../internal/lru.js";
-import { hardenHttpServer } from "../http-hardening.js";
+import { hardenHttpServer } from "../internal/http-hardening.js";
 import { maskIp, redactIncident } from "../management/redact.js";
 import type { DashboardControls } from "./types.js";
 import type { RequestFacts } from "../detectors/types.js";
-import { readBody } from "../http-request.js";
-import { parseRequestText } from "../explain.js";
+import { readBody } from "../internal/http.js";
+import { parseRequest } from "../explain.js";
 import { candidatePolicy, parseRules, previewPolicy } from "./preview.js";
 import { FeedCounts } from "./counts.js";
+import { cleanSavedFilter, SavedFilterStore } from "./saved-filters.js";
+
+/** The chips this dashboard draws, and so the ones a filter may be saved with: the response classes. */
+const FILTER_CHIPS: ReadonlySet<string> = new Set(["all", "decoy", "time cost", "block", "protocol capture", "silent 404"]);
 
 // Re-exported where it has always lived, so callers and tests keep their import.
 export { maskIp };
@@ -125,6 +129,7 @@ function buildDashboard(sourceLike: DashboardSourceLike, options: DashboardOptio
   const maxEventsPerSecond = Math.max(0, options.maxEventsPerSecond ?? DEFAULT_EVENTS_PER_SECOND);
   const showHiddenActors = options.showHiddenActors === true;
   const onError = options.onError ?? (() => undefined);
+  const saved = new SavedFilterStore(options.savedFilters?.file, (message) => onError(new Error(message)), FILTER_CHIPS);
 
   const bootstrap: DashboardBootstrap = {
     base: basePath === "/" ? "" : basePath,
@@ -304,6 +309,30 @@ function buildDashboard(sourceLike: DashboardSourceLike, options: DashboardOptio
     // The controls: each a POST, each refused unless the deployment granted it. Every unsafe
     // method already required a same-origin request above, so a page on another origin cannot
     // reach these even while carrying a viewer's credentials.
+    // Saved filters: part of the Incidents screen, so they go with it. Not behind a control: a
+    // saved filter changes what one screen shows and nothing about what happens to any request,
+    // and the unsafe-method check above already keeps other pages out.
+    if (path === "/api/filters") {
+      if (!sections.incidents) return sectionOff(response, "incidents");
+      if (request.method === "GET" || request.method === "HEAD") return sendJson(response, 200, { filters: saved.list() });
+      if (request.method !== "POST") return sendJson(response, 405, { error: "use GET or POST" });
+      let payload: { action?: unknown; name?: unknown } | null;
+      try {
+        payload = JSON.parse((await readBody(request)) ?? "") as typeof payload;
+      } catch {
+        return sendJson(response, 400, { error: "this endpoint takes a JSON object" });
+      }
+      if (payload?.action === "delete") {
+        if (typeof payload.name !== "string") return sendJson(response, 400, { error: "expected a name naming the filter to delete" });
+        saved.delete(payload.name);
+      } else {
+        const entry = cleanSavedFilter(payload, FILTER_CHIPS);
+        if (entry === undefined) return sendJson(response, 400, { error: "expected { name, query, filter }" });
+        saved.save(entry);
+      }
+      return sendJson(response, 200, { filters: saved.list() });
+    }
+
     if (request.method === "POST" && CONTROL_PATHS.has(path)) {
       const raw = await readBody(request);
       let payload: Record<string, unknown>;
@@ -324,7 +353,7 @@ function buildDashboard(sourceLike: DashboardSourceLike, options: DashboardOptio
         }
         let facts: RequestFacts;
         try {
-          facts = parseRequestText(typeof payload["text"] === "string" ? payload["text"] : "");
+          facts = parseRequest(typeof payload["text"] === "string" ? payload["text"] : "");
         } catch (error) {
           sendJson(response, 400, { error: (error as Error).message });
           return;

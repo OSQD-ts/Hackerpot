@@ -1,18 +1,18 @@
+// Kept identical in hackerpot and bothandlerjs. Change both, or neither.
+
 /**
  * A small typed event emitter, isolated on purpose.
  *
  * Not `node:events`. Listeners here run on the request path — a dashboard subscribing to
- * hits, a syslog sink, an operator's own logging — and `EventEmitter` calls them
+ * results, a notification sink, an operator's own logging — and `EventEmitter` calls them
  * synchronously in registration order, so one that throws aborts the loop: every listener
  * registered after it never hears the event, and the throw surfaces inside whatever was
- * emitting. That is the same failure the detector pipeline and the incident broker already
- * guard against, and for the same reason: a subscriber is somebody else's code.
+ * emitting. That is the same failure the detector pipeline already guards against, and for
+ * the same reason: a subscriber is somebody else's code.
  *
  * So each listener is wrapped. It can only break itself, the failure is reported on the
  * owner's error channel, and the remaining listeners still hear the event. A listener that
  * hands back a rejected promise is caught too, which a `try` around a call is not.
- *
- * Adapted from bothandlerjs.
  */
 export type Listener<T> = (payload: T) => void;
 
@@ -54,7 +54,7 @@ export class Emitter<Events extends Record<string, unknown>> {
         const result = (listener as Listener<Events[K]>)(payload) as unknown;
         // A listener declared `async` returns a promise; an unhandled rejection from it
         // would terminate the process by default, which is not something a subscriber
-        // should be able to do to a honeypot.
+        // should be able to do to the process it runs in.
         if (typeof (result as { then?: unknown } | undefined)?.then === "function") {
           void (result as Promise<unknown>).catch((error: unknown) => this.onError(error, event));
         }

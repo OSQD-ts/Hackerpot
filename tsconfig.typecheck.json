@@ -6,5 +6,8 @@
     "rootDir": "."
   },
   "include": ["src/**/*", "tests/**/*", "examples/**/*", "scripts/**/*", "demo/**/*"],
-  "exclude": ["dist", "node_modules", "src/dashboard/client", "src/element"]
+  // `tests/browser` drives a real page through Playwright: its `page.evaluate` bodies run in the
+  // browser and speak DOM, which this project deliberately does not have. Checked by
+  // tsconfig.browser.json instead, with the rest of the browser code.
+  "exclude": ["dist", "node_modules", "tests/browser", "src/dashboard/client", "src/element"]
 }

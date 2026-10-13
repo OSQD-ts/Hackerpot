@@ -153,7 +153,7 @@ import { HoneypotEngine, defaultResponsePolicy, type ResponsePolicy } from "@osq
 const ladder = defaultResponsePolicy(40, 15);
 
 const policy: ResponsePolicy = (ctx) => {
-  const ids = new Set(ctx.detections.map((d) => d.detectorId));
+  const ids = new Set(ctx.detections.map((d) => d.detector));
 
   if (ids.has("honeytoken") || ids.has("trap")) return "block";          // proof: stop serving at once
   const chosen = ladder(ctx);

@@ -5,7 +5,7 @@
  *   npm run demo                         # terminal 1
  *   npm run simulate                     # terminal 2: every scenario
  *   npm run simulate -- web-shell        # one scenario
- *   npm run simulate:list                # what there is
+ *   npm run simulate -- --list           # what there is
  *   npm run simulate:corpus              # the traffic corpus, over real sockets
  *
  * Points a range of attacks at the demo — decoy probes, injection payloads, forged
@@ -508,7 +508,7 @@ const scenarios: Record<string, Scenario> = {
 // ---------------------------------------------------------------------------
 
 interface IncidentSummary {
-  detections: Array<{ detectorId: string }>;
+  detections: Array<{ detector: string }>;
   respondedWith: string;
 }
 
@@ -530,7 +530,7 @@ async function firedFrom(ips: Iterable<string>): Promise<{ detectors: Set<string
     if (incidents === undefined) return undefined;
     for (const incident of incidents) {
       responses.add(incident.respondedWith);
-      for (const detection of incident.detections) detectors.add(detection.detectorId);
+      for (const detection of incident.detections) detectors.add(detection.detector);
     }
   }
   return { detectors, responses };
@@ -646,7 +646,7 @@ async function main(): Promise<void> {
   const names = args.filter((arg) => !arg.startsWith("-"));
   const unknown = names.filter((name) => !(name in scenarios));
   if (unknown.length > 0) {
-    console.error(`Unknown scenario: ${unknown.join(", ")}\nRun npm run simulate:list to see them.`);
+    console.error(`Unknown scenario: ${unknown.join(", ")}\nRun npm run simulate -- --list to see them.`);
     process.exitCode = 1;
     return;
   }

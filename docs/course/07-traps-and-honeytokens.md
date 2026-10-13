@@ -45,8 +45,8 @@ for (const [label, extra] of Object.entries(tries)) {
     headers: { host: "pantry.example", "user-agent": "python-requests/2.32.3", ...extra },
     ip: "203.0.113.80",
   });
-  const token = r.detections.find((d) => d.detectorId === "honeytoken");
-  console.log(`${label.padEnd(7)} certain=${token.certain} +${token.score} ${token.reason}`);
+  const token = r.detections.find((d) => d.detector === "honeytoken");
+  console.log(`${label.padEnd(7)} certain=${token.certain} +${token.score} ${token.summary}`);
 }
 ```
 
@@ -93,8 +93,8 @@ const requests = [
 ];
 for (const [label, request] of requests) {
   const r = await engine.evaluate({ ...request, headers: CHROME, ip: "198.51.100.90" }, { blockRequiresProof: true });
-  const trap = r.detections.find((d) => d.detectorId === "trap");
-  console.log(`${label.padEnd(13)} ${trap ? `certain=${trap.certain} +${trap.score} ${trap.reason}` : "nothing fired"}`);
+  const trap = r.detections.find((d) => d.detector === "trap");
+  console.log(`${label.padEnd(13)} ${trap ? `certain=${trap.certain} +${trap.score} ${trap.summary}` : "nothing fired"}`);
 }
 ```
 
@@ -175,7 +175,7 @@ const used = await engine.evaluate(
   { method: "GET", path: "/api/recipes", query: {}, headers: { ...ua, "x-api-key": TOKEN }, ip: "203.0.113.81" },
   { blockRequiresProof: true },
 );
-console.log("2.", `total ${used.totalScore}`, used.actionId, used.detections.map((d) => `${d.detectorId}${d.certain ? " [proof]" : ""}`).join(", "));
+console.log("2.", `total ${used.totalScore}`, used.actionId, used.detections.map((d) => `${d.detector}${d.certain ? " [proof]" : ""}`).join(", "));
 ```
 
 ```

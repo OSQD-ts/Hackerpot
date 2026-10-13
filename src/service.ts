@@ -1,4 +1,4 @@
-import { HoneypotServer } from "./server.js";
+import { HoneypotServer } from "./adapters/server.js";
 import { NotificationHub, syslogNotifySink, webhookNotifySink } from "./notify/index.js";
 import { WebhookDispatcher } from "./management/index.js";
 import {
@@ -20,16 +20,16 @@ import {
 } from "./config/index.js";
 import type { HackerpotConfig } from "./config/index.js";
 import type { ManagementServer } from "./management/index.js";
-import type { SyslogSink } from "./syslog.js";
-import { formatTextLine } from "./logfmt.js";
+import type { SyslogSink } from "./notify/syslog.js";
+import { formatTextLine } from "./internal/logfmt.js";
 import type { IpAllowlist } from "./allowlist.js";
 import type { Blocklist } from "./blocklist.js";
 import { applyIocEntries, fetchIocFeed } from "./intel/index.js";
-import { checkResponseActions } from "./responses/index.js";
+import { checkResponseActions } from "./actions/index.js";
 import { HoneypotEngine } from "./core.js";
 import { MemoryStore } from "./stores/index.js";
 import { formatReplaySummary, readLogLines, replayLog } from "./replay.js";
-import { formatExplanation, parseRequestText } from "./explain.js";
+import { formatExplanation, parseRequest } from "./explain.js";
 import { CrawlerRanges, startCrawlerRangeRefresh } from "./crawler-ranges.js";
 import { ServiceTokens } from "./service-tokens.js";
 import { buildDashboardOptions } from "./config/build.js";
@@ -163,8 +163,8 @@ function hitEvent(config: HackerpotConfig, hit: HoneypotHit): Record<string, unk
     score: hit.score,
     totalScore: hit.totalScore,
     respondedWith: hit.respondedWith,
-    detectors: hit.detections.map((d) => d.detectorId),
-    reasons: hit.detections.map((d) => d.reason),
+    detectors: hit.detections.map((d) => d.detector),
+    reasons: hit.detections.map((d) => d.summary),
   };
   if (config.logging.includeHeaders) event["headers"] = hit.headers;
   if (config.logging.includeBody && hit.body !== undefined) event["body"] = hit.body;
@@ -288,9 +288,9 @@ export async function runService(argv: string[]): Promise<void> {
   // resolver that answers nothing, so a claim reads as unverifiable rather than refuted.
   if (args.explain !== undefined) {
     const text = args.explain !== "" ? args.explain : await readStdin();
-    let facts: ReturnType<typeof parseRequestText>;
+    let facts: ReturnType<typeof parseRequest>;
     try {
-      facts = parseRequestText(text, { url: args.url, method: args.method, ip: args.ip });
+      facts = parseRequest(text, { url: args.url, method: args.method, ip: args.ip });
     } catch (err) {
       throw new ConfigError((err as Error).message);
     }
@@ -389,7 +389,7 @@ export async function runService(argv: string[]): Promise<void> {
   // What a shadowed detector would have done, reported on its own kind so it is easy to
   // compare against the live hits before promoting the detector.
   built.config.onShadow = (event) =>
-    log({ kind: "shadow", ip: event.ip, method: event.method, path: event.path, detectors: event.detections.map((d) => d.detectorId), alsoHit: event.alsoHit });
+    log({ kind: "shadow", ip: event.ip, method: event.method, path: event.path, detectors: event.detections.map((d) => d.detector), alsoHit: event.alsoHit });
   const server = new HoneypotServer(built.config);
 
   // Anything the engine announces about itself: a risky setting, an allowlist entry that
@@ -406,7 +406,7 @@ export async function runService(argv: string[]): Promise<void> {
   management = createManagementServer(config, built.store, (error) => log({ kind: "management-error", error: error.message }), async () => ({
     active_blocks: (await server.engine.blocklist.size?.()) ?? 0,
     tracked_ips: server.engine.registry.size,
-  }), () => server.engine.detectorFailures, notify.broker);
+  }), () => server.engine.detectorFailures, notify.broker, () => server.engine.counters());
 
   // Anomalies go to the log and to every webhook that accepts them.
   server.engine.audit?.start(config.audit.intervalSeconds * 1000, (anomaly) => {

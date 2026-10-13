@@ -80,11 +80,11 @@ describe("marker drift", () => {
     await engine.evaluate(probe("203.0.113.2", cookie));
     const third = await engine.evaluate(probe("203.0.113.3", cookie));
 
-    const drift = third.detections.find((detection) => detection.detectorId === "marker-drift");
+    const drift = third.detections.find((detection) => detection.detector === "marker-drift");
     expect(drift).toBeDefined();
-    expect(drift?.reason).toContain("3 addresses");
+    expect(drift?.summary).toContain("3 addresses");
     expect(drift?.certain).toBeUndefined();
-    expect(third.detections.some((detection) => detection.detectorId === "decoy-path")).toBe(true);
+    expect(third.detections.some((detection) => detection.detector === "decoy-path")).toBe(true);
   });
 
   it("says nothing about a client that carries no marker, or one nobody issued", async () => {
@@ -92,10 +92,10 @@ describe("marker drift", () => {
     const engine = new HoneypotEngine({ enricher: null, markers, extraDetectors: [markerDriftDetector({ distinctIpThreshold: 1 })] });
 
     const bare = await engine.evaluate(probe("203.0.113.10"));
-    expect(bare.detections.some((detection) => detection.detectorId === "marker-drift")).toBe(false);
+    expect(bare.detections.some((detection) => detection.detector === "marker-drift")).toBe(false);
 
     const forged = await engine.evaluate(probe("203.0.113.11", "__hp=deadbeefdeadbeefdeadbeef.0123456789abcdef0123456789abcdef"));
-    expect(forged.detections.some((detection) => detection.detectorId === "marker-drift")).toBe(false);
+    expect(forged.detections.some((detection) => detection.detector === "marker-drift")).toBe(false);
   });
 
   it("records the marker on the incident", async () => {
@@ -113,6 +113,6 @@ describe("marker drift", () => {
   it("does nothing at all when markers are not configured", async () => {
     const engine = new HoneypotEngine({ enricher: null, extraDetectors: [markerDriftDetector({ distinctIpThreshold: 1 })] });
     const result = await engine.evaluate(probe("203.0.113.30", "__hp=anything"));
-    expect(result.detections.some((detection) => detection.detectorId === "marker-drift")).toBe(false);
+    expect(result.detections.some((detection) => detection.detector === "marker-drift")).toBe(false);
   });
 });

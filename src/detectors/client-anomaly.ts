@@ -46,8 +46,8 @@ export function clientAnomalyDetector(options: ClientAnomalyOptions = {}): Detec
       if (missing.length < required.length) return undefined;
 
       const detection: Detection = {
-        detectorId: "client-anomaly",
-        reason: `User-Agent claims a browser but sent none of: ${required.join(", ")}`,
+        detector: "client-anomaly",
+        summary: `User-Agent claims a browser but sent none of: ${required.join(", ")}`,
         score,
         metadata: { userAgent: ua.slice(0, 120), missing },
       };

@@ -34,8 +34,8 @@ practice.
 
 ## What it shows
 
-Six screens, in a tab strip. A section switched off on the server ([`sections`](#sections-withheld-on-the-server))
-has no tab at all.
+Eight screens, in a tab strip. A section switched off on the server ([`sections`](#sections-withheld-on-the-server))
+has no tab at all, and [Policy](#policy) appears only where a policy control was granted.
 
 ### Overview
 
@@ -49,20 +49,82 @@ Every chart has a **table view** beside it, so the numbers are readable without 
 
 ### Incidents
 
-The incident table: time, source address, method, path, detectors, score and response. Filter by
-detector or source address, and choose how many rows to show (50 to 1000). New incidents enter at the
-top as they happen when they match the filter.
+The incident feed, laid out like bothandlerjs's live feed. Each row reads as a request — method and
+path, then the source address (and actor name, when a label matched) with its User-Agent — beside
+its detectors, score and response. The row's left edge is coloured by what the honeypot did about
+it, in the same classes and colours as the Overview's response bar: a decoy, a time cost (tarpit,
+drip-feed, bomb), a block, or a protocol capture; a plain not-found has no edge. New incidents enter
+at the top as they happen when they match the filter.
 
-The **search box** takes an expression: fielded terms (`ip:198.51.100`, `detector:decoy-path`,
-`path:/wp-`, `action:tarpit`, `rule:admin-bruteforce`, `score:>20`, `ua:curl`, `actor:uptime`),
-quoted phrases, parentheses, and `$and` / `$or` / `$not`, with adjacent terms meaning `$and`. A
-bare word searches the path, address, detectors, response, User-Agent and actor name.
+Above it, a strip of counters — incidents recorded, proven, blocked, time cost, decoyed, silent 404,
+sources and actors — the strip bothandlerjs keeps above its views. It sits over Incidents, Sessions,
+Actors and Threat intel; the Overview and Statistics open with counters of their own.
 
-Two things to know about it. The operators carry a `$` because a bare "or" is a word that appears
+The toolbar is bothandlerjs's feed toolbar, control for control:
+
+- **Outcome chips** — All, Decoy, Time cost, Block, Protocol capture, Silent 404 — narrow the table
+  to one response class in a click.
+- **Search** takes the expression described below, and completes it as you type: field names, then
+  the values where the set is known (detectors, actions, methods, outcomes). <kbd>↓</kbd> and
+  <kbd>Enter</kbd> pick a completion.
+- **Saved filters** keep the search and the chip under a name. Save asks for the name in place;
+  pick one from the list to load it, and Delete removes it. The dashboard keeps them, for anybody
+  who opens it — see [`savedFilters`](#options) — and this browser keeps a copy it hands back to a
+  dashboard that restarted without a file.
+- **From** and **To** bound the time window. Leave either empty for an open end.
+- **Load** is how many of the most recent incidents to fetch, 50 to 1000. Everything else on the
+  toolbar works on what is loaded.
+- **Order** — newest, oldest, highest or lowest score — and **Group** — by address, actor,
+  detector, outcome or path. A group's heading rolls it up and down, and *Only this* narrows the
+  search to it; *Roll up all* folds every group at once.
+- **Export**, and a **pager** with a page size, above the table and again below it.
+
+Beside the table, **Detectors firing** and **Busiest sources** count the rows the filter is
+showing, so narrowing the table narrows them with it. On a narrow screen they move below the table,
+and the detectors column is left to each row's detail.
+
+With the [`testRequest` control](#what-a-viewer-may-do) granted, a **Test a request** panel sits
+under them: paste a User-Agent, a curl command or a request with its headers, and it shows which
+detectors fire, the score, and the response the policy would choose — without recording anything.
+
+The **search box** takes an expression in the text syntax of
+[`@osqd/jql`](https://github.com/OSQD-ts/JQL), the query language bothandlerjs's feed takes too:
+
+| You type | Means |
+| --- | --- |
+| `curl` or `"GET /api"` | the text appears in the path, address, detectors, response, User-Agent or actor name |
+| `path:/wp-` | the field contains it, ignoring case |
+| `ip:203.0.113.4` | that address and not `203.0.113.45`: an address matches as a whole. `ip:203.0.113` is the network |
+| `method:post`, `outcome:"time cost"` | the field is exactly that, ignoring case |
+| `score:>20`, `total:10..40`, `score:15` | a comparison, a range (both ends included), or an exact number |
+| `-path:/health` or `!path:/health` | not |
+| `detector:$in(sql-injection, web-shell)` | any of these; `$notin(…)` for none of them |
+| `has:rule`, `-has:actor` | the field is set, or is not |
+| `a b`, `a $and b`, `a $or b`, `$not a`, `( … )` | both, either, not, grouping; `$and` binds tighter than `$or` |
+
+The fields are `ip`, `path`, `method`, `detector`, `summary` (also `reason`), `action`, `outcome`,
+`rule`, `score`, `total`, `ua` and `actor`. A name before a colon that is not one of them is
+searched for as text, so a URL or an IPv6 address can be typed as it is. A value that cannot be
+read as its field's kind — `score:high`, a `$in(` left empty — matches nothing rather than
+everything. Completion offers the field names, the detectors, actions and methods on screen, and
+the outcome classes.
+
+Three things to know about it. The operators carry a `$` because a bare "or" is a word that appears
 in User-Agents and paths, and a language where an ordinary search word silently becomes an
-operator is one that lies about what it matched. And the detector and address boxes narrow what is
-**fetched** from the API, while the expression narrows what is **shown** — so it can only search
-what the server already sent. Widen `Show` to search further back.
+operator is one that lies about what it matched. The page reads the first 512 characters of an
+expression; past that the box holds a paste rather than a query. And the expression narrows what
+is **shown**, not what is fetched — so it can only search what the server already sent. Raise
+`Load` to search further back. `outcome:block` says what the chips say, so a saved query can carry
+it too; a saved filter is kept as the text that was typed.
+
+**Export** downloads the incidents the filter is showing, oldest first, as JSON Lines. Each line is
+an incident as the page received it — already redacted by the server — and carries the fields
+[`hackerpot replay`](../testing/replay.md) reads, so an export replays through a configuration
+without converting it.
+
+Keys, the same as bothandlerjs's dashboard: <kbd>/</kbd> searches the incidents, <kbd>1</kbd>–<kbd>6</kbd>
+switch screens, and <kbd>Esc</kbd> clears the search or dismisses the stream notice. Embedded, the
+dashboard answers them only while focus is inside it.
 
 The count beside the Incidents tab is how many incidents were **recorded**, not how many rows the
 table is holding; hover it to see both.
@@ -111,6 +173,42 @@ The [indicator list](management-api.md#rest): every source address with its cumu
 incident count and detectors, filtered by a minimum score, with **Copy IP list** and **Copy JSON**.
 Under it, the Prometheus exposition the source serves, verbatim, which is the same text a scrape of
 [`/metrics`](metrics.md) returns.
+
+### Policy
+
+The policy as data: a list of rules, in the order they are read, where the first whose match fits
+decides and anything unmatched falls through to the shipped ladder. Present when the deployment
+granted [`previewPolicy` or `editPolicy`](#what-a-viewer-may-do).
+
+**Preview** replays the rules against the incidents this dashboard holds and reports what would
+change: each incident's address and path, what it was answered with, what these rules would serve
+instead, and which rule decided. It reads — no score moves, nothing is recorded, and the running
+policy is untouched. Where the proof guard would refuse a block the evidence does not support, the
+row says so, because that is what the engine would do.
+
+**Apply** replaces the running policy, and appears only with `editPolicy`, which requires
+authentication. The change is recorded on the Overview's Notices panel with who made it, and on
+this screen's own **Changes** panel — what was replaced in this process at runtime, and by whom
+where the dashboard's authentication could say. **Export** downloads the rules being edited.
+
+An opened incident has a **Draft a rule** button: it writes a rule matching that incident's
+detector and path, answering exactly as it was answered — a rule that changes nothing, as a
+starting point that is true rather than an empty box.
+
+What a preview cannot tell you is in [Previewing a policy](#what-a-viewer-may-do): a recorded
+incident does not carry the activity window its scores came from, so a rule reading live state
+sees an empty one, and nothing here replays what an action would have *done*.
+
+### Reference
+
+What each detector is looking for and how it recognises it, and what each response action serves
+and why a policy would choose it — the same text an opened incident shows for the detections on
+it, for the ones a rule, a metric or an alert names instead. An index of every name on the left,
+one entry open on the right, filterable by name or by wording; the ones this deployment is
+actually running are marked. Every detector and response named in an opened incident is a link
+here, because the card there says what it saw on *that* request and the question after it is
+usually what it looks at in general. It is static: no request, no engine, so it answers on a
+dashboard reading another process as well.
 
 ### The live feed
 
@@ -407,7 +505,7 @@ automatically somebody who may change what the honeypot does to the next request
 
 | Control | Default | What it grants |
 | --- | --- | --- |
-| `testRequest` | off | run a pasted request through the detectors as a dry run — nothing recorded, no score moved, no response served |
+| `testRequest` | off | run a pasted request through the detectors as a dry run — nothing recorded, no score moved, no response served. The page shows it as **Test a request** beside the Incidents table |
 | `previewPolicy` | off | replay the incidents already on screen against a candidate rule set |
 | `editPolicy` | off | replace the running policy from the page |
 
@@ -554,6 +652,7 @@ the `[dashboard]` key that sets the same thing.
 | `instance` | the hostname | `instance` | Which deployment this is, in the header. |
 | `links` | `[]` | none | `{ label, href }` links in the header: your runbook, your SIEM. |
 | `sections` | all on | `hide` | Sections withheld on the server. See [above](#sections-withheld-on-the-server). |
+| `savedFilters.file` | in memory | none | Where the Incidents screen's saved filters are kept. Unset, they survive a reload and a change of browser but not a restart; set, they are written there, whole and atomically. |
 | `redact.credentials` | `true` | `redact_credentials` | Credentials stripped before an incident is sent. |
 | `redact.maskIp` | `false` | `mask_ip` | Addresses shown as `/24` or `/48`. |
 | `allowedHosts` | loopback names, on loopback | `allowed_hosts` | Extra `Host` names answered. On a public bind or mounted, enforced when given; `"*"` disables. |
@@ -569,17 +668,19 @@ Every option except `port` and `host` applies to `createDashboardHandler`, where
 
 ## API routes
 
-All relative to `basePath`, all behind the same checks and authentication as the page, all `GET`.
+All relative to `basePath`, all behind the same checks and authentication as the page, and `GET`
+unless the table says otherwise.
 
 | Route | Returns |
 | --- | --- |
 | `/` | the page |
 | `/api/bootstrap` | `{ base, title, instance, version, sections, links, source, redaction }`; what the page and the element start from |
 | `/api/events` | the live feed: `text/event-stream` with `hello`, `incident`, `lagged` and `skipped` events |
+| `/api/filters` | `{ filters }`, the saved filters, newest first. `POST { name, query, filter }` saves one, replacing any with that name; `POST { action: "delete", name }` removes one; both answer the new list. Goes with the Incidents section |
 | `/api/incidents` | `{ incidents }`, redacted. The management API's filters: `ip`, `detector`, `since`, `limit` (default 100; at most 5000 here, and a remote management API caps at 1000) |
 | `/api/incidents/:id` | `{ incident }`, or `404` |
 | `/api/notices` | `{ notices }` — what the honeypot has said about itself: startup warnings, settings that would quietly do nothing, and every runtime change with the part it replaced and who made it. Engine-backed only; a dashboard reading another process's management API answers `404`, because "no notices" and "no engine to ask" are different facts. Follows the `overview` section |
-| `/api/counts` | `{ total, oldest, series }` — how many incidents happened, in minute buckets. Counted apart from the incidents themselves, so a window longer than what the store retained can still be counted, and a muted actor is still tallied. No addresses, no headers: a bucket is an integer and a timestamp |
+| `/api/counts` | `{ total, oldest, series }` — how many incidents happened, in minute buckets. Counted apart from the incidents themselves, so a window longer than what the store retained can still be counted, and a muted actor is still tallied. Counting starts when the first viewer opens the page, so the page takes the larger of this and the store's own total No addresses, no headers: a bucket is an integer and a timestamp |
 | `POST /api/test` | `{ text }` — a curl command, a request line with headers, a header block or a User-Agent — run through the detectors. Answers the detections, score, confidence and decision. A **dry run**: nothing recorded, no score moved, no response served. Needs the `testRequest` control and an engine in this process |
 | `POST /api/policy/preview` | `{ rules }` — replays the last 1000 incidents against a candidate rule set and answers `{ total, changed, unchanged, skipped }`. Reads only. Needs `previewPolicy` |
 | `POST /api/policy/apply` | `{ rules }` — replaces the running policy, attributed to the viewer. Needs `editPolicy`, which needs authentication |

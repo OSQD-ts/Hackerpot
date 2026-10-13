@@ -1,5 +1,5 @@
 import type { TrafficAudit } from "./audit.js";
-import type { SiteBaseline } from "./baseline.js";
+import type { SiteProfile } from "./site/index.js";
 import type { Clock } from "./internal/clock.js";
 import type { Blocklist } from "./blocklist.js";
 import type { ServiceTokenOptions, ServiceTokens } from "./service-tokens.js";
@@ -7,7 +7,8 @@ import type { Detection, Detector } from "./detectors/types.js";
 import type { IpEnricher, IpEnrichment } from "./enrichment.js";
 import type { ActorLabels, LabelledActor } from "./labels.js";
 import type { MarkerCookie } from "./marker.js";
-import type { ResponseAction, ResponsePolicy } from "./responses/types.js";
+import type { ResponseAction } from "./actions/types.js";
+import type { ResponsePolicy } from "./policy/types.js";
 
 export interface HoneypotHit {
   id: string;
@@ -173,11 +174,13 @@ export interface HoneypotConfig {
   /** Counts every evaluated request so it can watch for anomalies. See `TrafficAudit`. */
   audit?: TrafficAudit;
   /**
-   * What this site serves, learned from `reportOutcome()` — see `SiteBaseline`. One is
+   * What this site serves, learned from `reportOutcome()` — see `SiteProfile`. One is
    * created by default and stays empty (so nothing reads it) until outcomes are reported.
    * Pass your own to share it, or `null` to disable it entirely.
    */
-  baseline?: SiteBaseline | null;
+  site?: SiteProfile | null;
+  /** @deprecated Renamed `site`, bothandlerjs's option name. Read when `site` is not given. */
+  baseline?: SiteProfile | null;
   /**
    * Names for sources you already know — your uptime checker, a partner's integration, a
    * vendor's scanner. A label is shown wherever the address would be and may mute the actor

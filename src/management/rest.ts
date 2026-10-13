@@ -78,7 +78,7 @@ export async function computeStats(store: HitStore): Promise<StatsSummary> {
   for (const hit of all) {
     byResponse[hit.respondedWith] = (byResponse[hit.respondedWith] ?? 0) + 1;
     for (const detection of hit.detections) {
-      byDetector[detection.detectorId] = (byDetector[detection.detectorId] ?? 0) + 1;
+      byDetector[detection.detector] = (byDetector[detection.detector] ?? 0) + 1;
     }
     const entry = perIp.get(hit.ip) ?? { score: 0, incidents: 0 };
     entry.score += hit.score;
@@ -136,7 +136,7 @@ export async function computeIoc(store: HitStore, minScore = 0): Promise<IocEntr
     const e = perIp.get(hit.ip) ?? { score: 0, incidents: 0, detectors: new Set<string>(), first: hit.timestamp, last: hit.timestamp };
     e.score += hit.score;
     e.incidents += 1;
-    for (const d of hit.detections) e.detectors.add(d.detectorId);
+    for (const d of hit.detections) e.detectors.add(d.detector);
     if (hit.timestamp < e.first) e.first = hit.timestamp;
     if (hit.timestamp > e.last) e.last = hit.timestamp;
     perIp.set(hit.ip, e);
@@ -184,7 +184,7 @@ export async function computeSessions(store: HitStore, ip?: string): Promise<Att
     for (const h of hits) {
       score += h.score;
       responses.add(h.respondedWith);
-      for (const d of h.detections) detectors.add(d.detectorId);
+      for (const d of h.detections) detectors.add(d.detector);
     }
     sessions.push({
       ip: sessionIp,
@@ -194,7 +194,7 @@ export async function computeSessions(store: HitStore, ip?: string): Promise<Att
       responses: [...responses].sort(),
       firstSeen: hits[0]!.timestamp,
       lastSeen: hits[hits.length - 1]!.timestamp,
-      timeline: hits.map((h) => ({ timestamp: h.timestamp, method: h.method, path: h.path, detectors: h.detections.map((d) => d.detectorId), score: h.score, totalScore: h.totalScore, respondedWith: h.respondedWith })),
+      timeline: hits.map((h) => ({ timestamp: h.timestamp, method: h.method, path: h.path, detectors: h.detections.map((d) => d.detector), score: h.score, totalScore: h.totalScore, respondedWith: h.respondedWith })),
     });
   }
   return sessions.sort((a, b) => Date.parse(b.lastSeen) - Date.parse(a.lastSeen));
@@ -227,7 +227,7 @@ export async function computeActors(store: HitStore, fingerprint?: string): Prom
     e.ips.add(hit.ip);
     e.score += hit.score;
     e.incidents += 1;
-    for (const d of hit.detections) e.detectors.add(d.detectorId);
+    for (const d of hit.detections) e.detectors.add(d.detector);
     if (hit.timestamp < e.first) e.first = hit.timestamp;
     if (hit.timestamp > e.last) e.last = hit.timestamp;
     byFp.set(fp, e);

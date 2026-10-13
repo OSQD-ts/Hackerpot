@@ -156,6 +156,11 @@ export interface DashboardOptions {
   sections?: DashboardSections;
   /** What a viewer may *do*: probe the engine, or change it. Every control is off by default. */
   controls?: DashboardControls;
+  /**
+   * Where filters saved on the Incidents screen are kept. In memory by default, so they survive a
+   * reload and a change of browser; set `file` to keep them across restarts as well.
+   */
+  savedFilters?: { file?: string };
   redact?: DashboardRedaction;
   /**
    * `Host` header values to answer, compared without the port. On a loopback bind the

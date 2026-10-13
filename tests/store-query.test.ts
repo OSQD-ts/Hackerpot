@@ -22,7 +22,7 @@ function corpus(): HoneypotHit[] {
       path: `/probe/${i}`,
       headers: {},
       fingerprint: i % 2 === 0 ? "fp-even" : "fp-odd",
-      detections: [{ detectorId: detector, reason: "r", score: 5 }],
+      detections: [{ detector: detector, summary: "r", score: 5 }],
       score: 5,
       totalScore: 5 * (i + 1),
       respondedWith: "not-found",
@@ -187,7 +187,7 @@ describe("the filters actually reach the backend", () => {
     const got = await store.query({ detector: "decoy-path", limit: 2 });
     expect(cluster.searches.at(-1)!["size"]).toBe(1000);
     expect(got).toHaveLength(2);
-    expect(got.every((h) => h.detections.some((d) => d.detectorId === "decoy-path"))).toBe(true);
+    expect(got.every((h) => h.detections.some((d) => d.detector === "decoy-path"))).toBe(true);
   });
 
   it("Redis slices server-side for a plain limit, and only then", async () => {

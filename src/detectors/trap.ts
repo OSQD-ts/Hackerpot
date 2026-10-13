@@ -77,8 +77,8 @@ export function trapDetector(options: TrapOptions = {}): Detector {
   const score = options.score ?? 15;
 
   const detection = (reason: string, metadata: Record<string, unknown>): Detection => ({
-    detectorId: "trap",
-    reason,
+    detector: "trap",
+    summary: reason,
     score,
     // Nothing a person does reaches a trap. See the module comment for what that rests on.
     certain: true,

@@ -12,7 +12,7 @@ function hit(partial: Partial<HoneypotHit> = {}): HoneypotHit {
     method: "GET",
     path: "/.env",
     headers: { "user-agent": "sqlmap/1.7" },
-    detections: [{ detectorId: "sensitive-file", reason: "requested /.env", score: 10 }],
+    detections: [{ detector: "sensitive-file", summary: "requested /.env", score: 10 }],
     score: 10,
     totalScore: 25,
     respondedWith: "tarpit",

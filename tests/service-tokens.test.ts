@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { parseConfigText, buildHoneypotConfig, planReload } from "../src/config/index.js";
 import { HoneypotEngine } from "../src/core.js";
 import type { RequestFacts } from "../src/detectors/types.js";
-import { HoneypotServer } from "../src/server.js";
+import { HoneypotServer } from "../src/adapters/server.js";
 import { ServiceTokens } from "../src/service-tokens.js";
 
 const SECRET = "monitor-secret-0123456789abcdef";

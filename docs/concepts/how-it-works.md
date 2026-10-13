@@ -10,7 +10,7 @@ Two pluggable layers, mirrored by two source directories:
 
 ```
 src/detectors/   how attacks are recognised     (the "honeypots")
-src/responses/   what to do about them           (the retaliation actions)
+src/actions/   what to do about them           (the retaliation actions)
 ```
 
 A **detector** says *"this is a `.env` probe, score 10."* It does not decide what happens

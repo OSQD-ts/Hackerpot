@@ -1,6 +1,6 @@
 import type { Incident } from "../management/types.js";
-import { ladderPolicy, rulePolicy } from "../responses/index.js";
-import type { MatchSpec, PolicyContext, ResponseDecision, ResponsePolicy, Rule } from "../responses/index.js";
+import { ladderPolicy, rulePolicy } from "../policy/index.js";
+import type { MatchSpec, PolicyContext, ResponseDecision, ResponsePolicy, Rule } from "../policy/index.js";
 import { IpTracker } from "../state.js";
 
 /**

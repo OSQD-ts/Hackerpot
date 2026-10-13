@@ -2,8 +2,8 @@ import { describe, expect, it } from "vitest";
 import { HoneypotEngine } from "../src/core.js";
 import type { Detection } from "../src/detectors/types.js";
 import type { RequestFacts } from "../src/detectors/types.js";
-import { PRESETS, compileMatch, ladderPolicy, observe, protectApp, rulePolicy, standalone } from "../src/responses/index.js";
-import type { PolicyContext } from "../src/responses/index.js";
+import { PRESETS, compileMatch, ladderPolicy, observe, protectApp, rulePolicy, standalone } from "../src/policy/index.js";
+import type { PolicyContext } from "../src/policy/index.js";
 import { buildPolicy } from "../src/config/build.js";
 import { parseConfig } from "../src/config/schema.js";
 
@@ -12,7 +12,7 @@ import { parseConfig } from "../src/config/schema.js";
  * operator would read back off the incident.
  */
 
-const detection = (detectorId: string, over: Partial<Detection> = {}): Detection => ({ detectorId, reason: `${detectorId} fired`, score: 10, ...over });
+const detection = (detector: string, over: Partial<Detection> = {}): Detection => ({ detector, summary: `${detector} fired`, score: 10, ...over });
 
 const context = (over: Partial<PolicyContext> = {}): PolicyContext => ({
   detection: detection("decoy-path"),

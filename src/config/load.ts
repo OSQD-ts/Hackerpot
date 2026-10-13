@@ -99,7 +99,7 @@ function redactUrlCredentials(value: string): string {
  * JSON view of a resolved config, with RegExp values rendered as the `/…/flags`
  * literals the file accepts, and **every credential redacted**. Backs `--print-config`.
  *
- * The redaction is the point. This is `npm run config:check` — a validation command
+ * The redaction is the point. This is `npm run hackerpot config` — a validation command
  * people run casually, in CI, and over screen shares — and it printed the management
  * API keys, the webhook HMAC secrets, the Redis URL password, the Elasticsearch
  * password and the peer-feed API key verbatim to stdout, which in a container is

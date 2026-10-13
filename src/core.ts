@@ -5,15 +5,21 @@ import { IpAllowlist } from "./allowlist.js";
 import { MemoryBlocklist, type Blocklist } from "./blocklist.js";
 import { defaultDetectors } from "./detectors/index.js";
 import type { Detection, DetectionContext, Detector, RequestFacts } from "./detectors/types.js";
-import { SiteBaseline } from "./baseline.js";
+import { upgradeDetection } from "./detectors/legacy.js";
+import type { LegacyDetection } from "./detectors/legacy.js";
+import { SiteProfile } from "./site/index.js";
 import type { ActorLabels } from "./labels.js";
 import type { MarkerCookie } from "./marker.js";
-import type { RequestOutcome } from "./baseline.js";
-import { defaultResponseActions, ladderPolicy } from "./responses/index.js";
-import type { PolicyContext, ResponseAction, ResponseDecision, ResponsePolicy } from "./responses/types.js";
+import type { RequestOutcome } from "./site/index.js";
+import { defaultResponseActions } from "./actions/index.js";
+import { ladderPolicy } from "./policy/index.js";
+import type { ResponseAction } from "./actions/types.js";
+import type { PolicyContext, ResponseDecision, ResponsePolicy } from "./policy/types.js";
 import { computeFingerprint } from "./fingerprint.js";
 import { confidenceOf } from "./evidence.js";
-import { MAX_RAW_PATH_CHARS, boundedQuery, normalizePath } from "./http-request.js";
+import { DURATION_BUCKETS_MS, Histogram } from "./internal/histogram.js";
+import type { HistogramSnapshot } from "./internal/histogram.js";
+import { MAX_RAW_PATH_CHARS, boundedQuery, normalizePath } from "./internal/http.js";
 import { withDeadline } from "./internal/async.js";
 import { systemClock, type Clock } from "./internal/clock.js";
 import { Emitter } from "./internal/emitter.js";
@@ -131,6 +137,9 @@ function combinedScore(detections: Detection[]): number {
   return total;
 }
 
+/** Why a request was exempted from detection. */
+export type BypassReason = "allowlist" | "service-token";
+
 /** Who made a runtime change, carried into the event and the notice it raises. */
 export interface ChangeContext {
   /** A person or a process: an operator's name, "SIGHUP", "dashboard". */
@@ -206,10 +215,15 @@ export class HoneypotEngine {
   readonly audit: TrafficAudit | undefined;
   /**
    * What this site actually serves, learned from `reportOutcome()`. Always present unless
-   * disabled with `baseline: null`, and empty — so every consumer stands down — until
+   * disabled with `site: null`, and empty — so every consumer stands down — until
    * outcomes are reported, which happens in middleware mode.
    */
-  readonly baseline: SiteBaseline | undefined;
+  readonly site: SiteProfile | undefined;
+
+  /** @deprecated Renamed `site`. */
+  get baseline(): SiteProfile | undefined {
+    return this.site;
+  }
   /**
    * Names for sources you already know. Labels never exempt anybody — a labelled actor is
    * detected, scored and answered exactly as it would be otherwise. See `ActorLabels`.
@@ -225,6 +239,17 @@ export class HoneypotEngine {
    * by the number of detectors, since only detector ids are counted.
    */
   readonly detectorFailures = new Map<string, number>();
+  /**
+   * Requests exempted from detection, by reason. Both reasons start at zero, so a scrape has a
+   * series for each from the first request rather than only after the first exemption.
+   */
+  readonly bypassed = new Map<string, number>([["allowlist", 0], ["service-token", 0]]);
+  /**
+   * Time spent evaluating a request. Measured with a monotonic high-resolution timer rather than
+   * `clock`: that clock models wall time for the activity windows at millisecond resolution,
+   * and detection is usually well under a millisecond, so it would put every sample at zero.
+   */
+  private readonly evaluationDuration = new Histogram(DURATION_BUCKETS_MS);
   /**
    * Where every window in this engine reads "now": the activity window, the fingerprint
    * registry, the default blocklist's expiry, and the timestamp on a recorded hit. Injecting
@@ -260,7 +285,8 @@ export class HoneypotEngine {
     this.onShadow = config.onShadow;
     this.serviceTokens = toServiceTokens(config.serviceTokens);
     this.audit = config.audit;
-    this.baseline = config.baseline === null ? undefined : (config.baseline ?? new SiteBaseline({ clock: this.clock }));
+    const site = config.site !== undefined ? config.site : config.baseline;
+    this.site = site === null ? undefined : (site ?? new SiteProfile({ clock: this.clock }));
     this.labels = config.labels;
     this.markers = config.markers;
   }
@@ -275,7 +301,7 @@ export class HoneypotEngine {
    */
   reportOutcome(outcome: RequestOutcome): void {
     try {
-      this.baseline?.record(outcome);
+      this.site?.record(outcome);
     } catch (err) {
       // The baseline is bookkeeping. A failure here must never reach the request that was
       // merely reporting its own status.
@@ -343,6 +369,29 @@ export class HoneypotEngine {
       if (weak.length > 0) this.warn(`service tokens short enough to guess: ${weak.join(", ")}`);
     }
     return changes;
+  }
+
+  /**
+   * Whether this request is exempt from detection, and why — counted.
+   *
+   * For the front end that decides it: the middleware and the standalone server call this once
+   * per request, before evaluating anything. `isAllowlisted` and `serviceTokenFor` stay pure,
+   * because they are also asked on a second pass over the same request (`trapFormGuard`) and
+   * repeatedly within one protocol session, where counting would report one exemption many times.
+   */
+  exempt(ip: string, headers: Readonly<Record<string, string | string[] | undefined>>): BypassReason | undefined {
+    const reason: BypassReason | undefined = this.allowlist.allows(ip) ? "allowlist" : this.serviceTokens?.identify(headers) !== undefined ? "service-token" : undefined;
+    if (reason !== undefined) this.countBypass(reason);
+    return reason;
+  }
+
+  /** What the engine counts that no incident carries, for `/metrics`. */
+  counters(): { detectorFailures: Map<string, number>; bypassed: Map<string, number>; evaluationDuration: HistogramSnapshot } {
+    return { detectorFailures: this.detectorFailures, bypassed: this.bypassed, evaluationDuration: this.evaluationDuration.snapshot() };
+  }
+
+  private countBypass(reason: BypassReason): void {
+    this.bypassed.set(reason, (this.bypassed.get(reason) ?? 0) + 1);
   }
 
   /** The name of the valid service token these headers present, or undefined. */
@@ -435,25 +484,36 @@ export class HoneypotEngine {
 
     // Allowlisted sources are fully exempt: no detection, no scoring, no footprint.
     if (this.allowlist.allows(facts.ip)) {
+      // Counted on a real pass only: a caller evaluating directly reaches this branch, while the
+      // middleware and the standalone server have already counted it through `exempt()`.
+      if (options.audit !== false) this.countBypass("allowlist");
       return { detections: [], score: 0, totalScore: 0, tracker, actionId: "", action: undefined, fingerprint, path, shadowDetections: [], confidence: 0 };
     }
     // So is a request presenting one of your service tokens, whatever its address.
     const serviceToken = this.serviceTokens?.identify(facts.headers);
     if (serviceToken !== undefined) {
+      if (options.audit !== false) this.countBypass("service-token");
       return { detections: [], score: 0, totalScore: 0, tracker, actionId: "", action: undefined, fingerprint, path, shadowDetections: [], confidence: 0, serviceToken };
     }
 
+    // Timed from here: an exempt request ran no detection, so it has no detection time to report.
+    // `audit: false` marks an evaluation that is not traffic — the dashboard's dry run, or a second
+    // pass over a request already counted — and those are not timed either.
+    const started = performance.now();
+    const measured = options.audit !== false;
     const now = options.now ?? new Date(this.clock.now());
     if (trackActivity) tracker.record({ method: facts.method, path: facts.path, status: options.activityStatus ?? "seen" }, now.getTime());
 
-    const ctx: DetectionContext = { ...facts, tracker, timestamp: now, fingerprint, fingerprintRegistry: this.fingerprints, ...(this.baseline !== undefined ? { baseline: this.baseline } : {}), ...(marker !== undefined ? { marker } : {}) };
+    const ctx: DetectionContext = { ...facts, tracker, timestamp: now, fingerprint, fingerprintRegistry: this.fingerprints, ...(this.site !== undefined ? { site: this.site, baseline: this.site } : {}), ...(marker !== undefined ? { marker } : {}) };
     const detections: Detection[] = [];
     const shadowDetections: Detection[] = [];
     const failed: string[] = [];
     for (const detector of this.detectors) {
-      let detection: Detection | undefined;
+      let detection: Detection | LegacyDetection | undefined;
       try {
-        const pending = detector.inspect(ctx);
+        // Typed as the current shape; a detector written against the old names returns the old
+        // one at run time, which `upgradeDetection` below turns into this.
+        const pending = detector.inspect(ctx) as Detection | LegacyDetection | undefined | Promise<Detection | LegacyDetection | undefined>;
         // Only an asynchronous result gets a deadline; synchronous detectors pay nothing.
         detection =
           isThenable(pending) && this.detectorTimeoutMs > 0
@@ -467,7 +527,7 @@ export class HoneypotEngine {
         failed.push(detector.id);
         continue;
       }
-      if (detection) (this.shadowed.has(detector.id) ? shadowDetections : detections).push(detection);
+      if (detection) (this.shadowed.has(detector.id) ? shadowDetections : detections).push(upgradeDetection(detection));
     }
 
     // Reported once per request, by the pass that commits (a deferred pass writes nothing).
@@ -484,6 +544,7 @@ export class HoneypotEngine {
 
     if (detections.length === 0) {
       settle("", false);
+      if (measured) this.evaluationDuration.observe(performance.now() - started);
       return { detections, score: 0, totalScore: await this.safeScore(facts.ip), tracker, actionId: "", action: undefined, fingerprint, path, shadowDetections, confidence: 0 };
     }
 
@@ -539,6 +600,7 @@ export class HoneypotEngine {
     // A deferred pass reports what it found but writes nothing: the caller is going to
     // evaluate this same request again, and that pass is the one that commits.
     if (!recordHit) {
+      if (measured) this.evaluationDuration.observe(performance.now() - started);
       return { detections, score, totalScore, tracker, actionId, action: this.actions.get(actionId), fingerprint, path, shadowDetections, confidence, ...outcome, ...(marker !== undefined ? { marker } : {}), ...(downgradedFrom !== undefined ? { downgradedFrom } : {}) };
     }
 
@@ -597,6 +659,7 @@ export class HoneypotEngine {
     }
     this.publish(hit);
 
+    if (measured) this.evaluationDuration.observe(performance.now() - started);
     return { detections, score, totalScore, tracker, actionId, action: this.actions.get(actionId), fingerprint, path, shadowDetections, confidence, ...outcome, ...(marker !== undefined ? { marker } : {}), ...(downgradedFrom !== undefined ? { downgradedFrom } : {}) };
   }
 

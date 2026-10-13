@@ -92,8 +92,8 @@ export function openRedirectDetector(options: OpenRedirectOptions = {}): Detecto
         const kind = classify(value, isSameSite);
         if (!kind) continue;
         const detection: Detection = {
-          detectorId: "open-redirect",
-          reason: `Open-redirect probe — ${kind} in query.${key}`,
+          detector: "open-redirect",
+          summary: `Open-redirect probe — ${kind} in query.${key}`,
           score,
           metadata: { param: key, target: value.slice(0, 200) },
         };

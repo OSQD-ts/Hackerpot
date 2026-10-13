@@ -29,7 +29,7 @@ export function refererTrapDetector(options: RefererTrapOptions): Detector {
       if (!referer) return undefined;
       const host = hosts.find((candidate) => referer.includes(candidate));
       if (!host) return undefined;
-      const detection: Detection = { detectorId: "referer-trap", reason: `Referer from ${host}`, score, metadata: { host } };
+      const detection: Detection = { detector: "referer-trap", summary: `Referer from ${host}`, score, metadata: { host } };
       if (options.respondWith) detection.respondWith = options.respondWith;
       return detection;
     },
@@ -50,8 +50,8 @@ interface Detector {
 }
 
 interface Detection {
-  detectorId: string;
-  reason: string;                   // human-readable; quoted in logs, alerts and the dashboard
+  detector: string;                 // your detector's id; bothandlerjs names this field the same
+  summary: string;                  // human-readable; quoted in logs, alerts and the dashboard
   score: number;
   respondWith?: string;             // a response action id; honoured only for the top detection
   certain?: boolean;                // proof: see below

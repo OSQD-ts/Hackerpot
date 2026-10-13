@@ -47,7 +47,7 @@ export function headerIntegrityDetector(options: HeaderIntegrityOptions = {}): D
     description: "Header set violates HTTP framing rules no client stack breaks",
     inspect(ctx: DetectionContext): Detection | undefined {
       const build = (reason: string, points: number, certain: boolean, metadata: Record<string, unknown>): Detection => {
-        const detection: Detection = { detectorId: "header-integrity", reason, score: points, metadata };
+        const detection: Detection = { detector: "header-integrity", summary: reason, score: points, metadata };
         if (certain) detection.certain = true;
         if (options.respondWith) detection.respondWith = options.respondWith;
         return detection;

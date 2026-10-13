@@ -3,8 +3,8 @@ import type { Redis } from "ioredis";
 import { usableScore } from "../src/stores/scores.js";
 import { RedisStore } from "../src/stores/redis.js";
 import { ElasticStore } from "../src/stores/elastic.js";
-import { defaultResponsePolicy } from "../src/responses/index.js";
-import type { PolicyContext } from "../src/responses/types.js";
+import { defaultResponsePolicy } from "../src/policy/index.js";
+import type { PolicyContext } from "../src/policy/types.js";
 
 /** A Redis double whose score key holds `value` — standing in for a foreign writer. */
 function redisReturning(value: unknown): RedisStore {
@@ -57,7 +57,7 @@ describe("an unusable stored score cannot switch blocking off", () => {
   it("the policy still escalates once the score is usable", () => {
     const policy = defaultResponsePolicy(40, 15);
     const ctx = (totalScore: number): PolicyContext =>
-      ({ detection: { detectorId: "d", reason: "r", score: 25 }, detections: [], ip: "203.0.113.9", path: "/", totalScore, tracker: {} }) as unknown as PolicyContext;
+      ({ detection: { detector: "d", summary: "r", score: 25 }, detections: [], ip: "203.0.113.9", path: "/", totalScore, tracker: {} }) as unknown as PolicyContext;
 
     // The value a corrupted read used to produce — every threshold comparison false.
     expect(policy(ctx(Number.NaN))).toBe("not-found");

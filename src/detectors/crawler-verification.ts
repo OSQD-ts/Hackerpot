@@ -130,8 +130,8 @@ export function crawlerVerificationDetector(options: CrawlerVerificationOptions 
         }
         if (answers.length > 0 && claim.domains.length === 0) {
           const detection: Detection = {
-            detectorId: "crawler-verification",
-            reason: `Claims to be ${claim.name}, but the address is outside every range its operator publishes`,
+            detector: "crawler-verification",
+            summary: `Claims to be ${claim.name}, but the address is outside every range its operator publishes`,
             score,
             certain: true,
             metadata: { crawler: claim.id, cause: "outside-published-ranges" },
@@ -153,8 +153,8 @@ export function crawlerVerificationDetector(options: CrawlerVerificationOptions 
       if (outcome.cause === "no-ptr" && !missingPtrIsForgery) return undefined;
 
       const detection: Detection = {
-        detectorId: "crawler-verification",
-        reason: `Claims to be ${claim.name}, but DNS refutes it: ${outcome.reason}`,
+        detector: "crawler-verification",
+        summary: `Claims to be ${claim.name}, but DNS refutes it: ${outcome.reason}`,
         score,
         certain: true,
         metadata: { crawler: claim.id, cause: outcome.cause, ...(outcome.hostname !== undefined ? { hostname: outcome.hostname } : {}) },

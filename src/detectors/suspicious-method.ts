@@ -26,8 +26,8 @@ export function suspiciousMethodDetector(options: SuspiciousMethodOptions = {}):
       const method = ctx.method.toUpperCase();
       if (!methods.has(method)) return undefined;
       const detection: Detection = {
-        detectorId: "suspicious-method",
-        reason: `Request used the ${method} method`,
+        detector: "suspicious-method",
+        summary: `Request used the ${method} method`,
         score,
         metadata: { method },
       };

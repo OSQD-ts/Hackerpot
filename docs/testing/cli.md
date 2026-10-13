@@ -82,7 +82,7 @@ The compose file's `dashboard` profile runs exactly this. See [Docker](../integr
 
 ```bash
 hackerpot check --config ./hackerpot.toml
-npm run config:verify -- --config ./hackerpot.toml
+npm run hackerpot -- check --config ./hackerpot.toml
 ```
 
 Validates the config, then serves every enabled response action once over a loopback socket, with a
@@ -116,7 +116,7 @@ callers: `checkResponseActions(actions)`.
 
 ```bash
 hackerpot config --config ./hackerpot.toml
-npm run config:check -- --config ./hackerpot.toml
+npm run hackerpot -- config --config ./hackerpot.toml
 ```
 
 Resolves the file (with environment overrides applied), validates it without binding a port, and prints
@@ -198,7 +198,7 @@ look like as a first request*, which is what a ticket is usually asking. The vol
 never fire here. It **binds nothing and looks nothing up**: `crawler-verification` gets a resolver that
 answers nothing, so a claim reads as unverifiable rather than refuted.
 
-Library callers: `parseRequestText(text, { url, method, ip })`, `explainRequest(engine, facts)` and
+Library callers: `parseRequest(text, { url, method, ip })`, `explainRequest(engine, facts)` and
 `formatExplanation(facts, result)`.
 
 ## `detectors`

@@ -5,7 +5,7 @@ import { MemoryBlocklist } from "../src/blocklist.js";
 import { HoneypotEngine } from "../src/core.js";
 import { scannerSignatureDetector } from "../src/detectors/index.js";
 import type { DetectionContext } from "../src/detectors/types.js";
-import { createMiddleware, type MiddlewareOptions } from "../src/middleware.js";
+import { createMiddleware, type MiddlewareOptions } from "../src/adapters/node.js";
 import type { HoneypotHit } from "../src/types.js";
 
 const CHROME = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";

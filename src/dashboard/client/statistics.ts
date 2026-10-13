@@ -131,13 +131,13 @@ export function renderStats(a: Analysis): void {
   renderHeat(a);
 
   const detectors = ranked(a.byDetector, 14);
-  rankedBars($("st-det"), detectors, { total: a.n, wide: true });
+  rankedBars($("st-det"), detectors, { total: a.n });
   dataTable(maybe("st-det-table"), ["Detector", "Incidents", "Share", "Points"], detectors.map(([k, v]) => [k, fmtInt(v), fmtPct(v, a.n), fmtInt(a.detectorScore.get(k) ?? 0)]));
   const totalPoints = [...a.detectorScore.values()].reduce((x, y) => x + y, 0);
   rankedBars(
     $("st-detscore"),
     ranked(a.detectorScore, 14).map(([k, v]) => [k, v, `${fmtInt(a.byDetector.get(k) ?? 0)} incidents · ${fmtNum(v / Math.max(1, a.byDetector.get(k) ?? 1), 1)} pts each`] as const),
-    { total: totalPoints, unit: "points", wide: true },
+    { total: totalPoints, unit: "points" },
   );
   renderCooccurrence(a);
 
@@ -154,13 +154,13 @@ export function renderStats(a: Analysis): void {
   const protocols = [...a.byProto.entries()].sort((x, y) => y[1] - x[1]);
   stackBar($("st-protos"), protocols, { slotFor: (name) => (PROTOCOLS as readonly string[]).indexOf(name) });
 
-  rankedBars($("st-uas"), ranked(a.byUa, 10).map(([k, v]) => [truncate(k, 46), v, k] as const), { total: a.n, wide: true });
+  rankedBars($("st-uas"), ranked(a.byUa, 10).map(([k, v]) => [truncate(k, 46), v, k] as const), { total: a.n });
   dataTable(maybe("st-ua-table"), ["User-Agent", "Incidents", "Share"], ranked(a.byUa, 20).map(([k, v]) => [k, fmtInt(v), fmtPct(v, a.n)]));
   renderShape(a);
 
   rankedBars($("st-cats"), ranked(a.byCategory, 8), { total: a.n, emptyText: "no enrichment on these incidents" });
   rankedBars($("st-countries"), ranked(a.byCountry, 10), { total: a.n, emptyText: "no country data: configure a geo enricher" });
-  rankedBars($("st-asns"), ranked(a.byAsn, 8), { total: a.n, wide: true, emptyText: "no ASN data: configure a geo/ASN enricher" });
+  rankedBars($("st-asns"), ranked(a.byAsn, 8), { total: a.n, emptyText: "no ASN data: configure a geo/ASN enricher" });
   renderIpTable(a);
 
   rankedBars($("st-enc"), ranked(a.byEncoding, 10), { unit: "values", share: false, emptyText: "nothing was encoded" });

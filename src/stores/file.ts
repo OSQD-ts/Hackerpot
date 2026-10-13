@@ -5,6 +5,7 @@ import { RotatingJsonlWriter } from "./archive.js";
 import { matchesQuery } from "./query.js";
 import { ScoreLedger } from "./scores.js";
 import type { HitQuery, HitStore, HoneypotHit } from "../types.js";
+import { upgradeHit } from "../detectors/legacy.js";
 
 /** Read granularity for the streaming readers. */
 const CHUNK_BYTES = 1024 * 1024;
@@ -260,7 +261,7 @@ export class FileStore implements HitStore {
       }
       if (!line.trim()) return;
       try {
-        hits.push(JSON.parse(line) as HoneypotHit);
+        hits.push(upgradeHit(JSON.parse(line) as HoneypotHit));
       } catch {
         // Skip a corrupt/partial line rather than failing every read.
       }
@@ -313,7 +314,7 @@ export class FileStore implements HitStore {
       if (!line.trim()) return;
       let hit: HoneypotHit;
       try {
-        hit = JSON.parse(line) as HoneypotHit;
+        hit = upgradeHit(JSON.parse(line) as HoneypotHit);
       } catch {
         return; // a damaged record is not a reason to stop serving the intact ones
       }

@@ -44,8 +44,8 @@ export function sensitiveFileDetector(options: SensitiveFileOptions = {}): Detec
       const matched = patterns.find((pattern) => pattern.test(ctx.path));
       if (!matched) return undefined;
       const detection: Detection = {
-        detectorId: "sensitive-file",
-        reason: `Request for a risky file type: ${ctx.path}`,
+        detector: "sensitive-file",
+        summary: `Request for a risky file type: ${ctx.path}`,
         score,
         metadata: { path: ctx.path, pattern: matched.source },
       };

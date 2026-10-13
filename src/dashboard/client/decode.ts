@@ -150,7 +150,7 @@ export function decodeCandidates(incident: Incident): DecodedValue[] {
     for (const field of METADATA_FIELDS) {
       if (!Object.hasOwn(metadata, field)) continue;
       const value = metadata[field];
-      for (const one of Array.isArray(value) ? value : [value]) consider(`${detection.detectorId} ${field}`, one);
+      for (const one of Array.isArray(value) ? value : [value]) consider(`${detection.detector} ${field}`, one);
     }
   }
   return out;

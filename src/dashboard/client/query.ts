@@ -1,3 +1,6 @@
+import { compile, defineVocabulary, type UntypedQuery } from "@osqd/jql";
+import { parseText, type Suggestions, suggest } from "@osqd/jql/text";
+import { classOf, RESPONSE_CLASSES } from "./analysis.js";
 import type { Incident, Sections, TabName } from "./types.js";
 
 /**
@@ -9,7 +12,7 @@ import type { Incident, Sections, TabName } from "./types.js";
  */
 
 /** The screens in tab-strip order. */
-export const TAB_ORDER: readonly TabName[] = ["overview", "incidents", "statistics", "sessions", "actors", "intel"];
+export const TAB_ORDER: readonly TabName[] = ["overview", "incidents", "statistics", "sessions", "actors", "intel", "policy", "reference"];
 
 export const TAB_LABELS: Readonly<Record<TabName, string>> = {
   overview: "Overview",
@@ -18,10 +21,17 @@ export const TAB_LABELS: Readonly<Record<TabName, string>> = {
   sessions: "Sessions",
   actors: "Actors",
   intel: "Threat intel",
+  policy: "Policy",
+  reference: "Reference",
 };
 
-export function availableTabs(sections: Sections): TabName[] {
-  return TAB_ORDER.filter((tab) => sections[tab] === true);
+/**
+ * The screens this dashboard has. Most exist because their section is on; `policy` because a
+ * control was granted; `reference` always, because it explains the library rather than this
+ * deployment and needs nothing from the server.
+ */
+export function availableTabs(sections: Sections, policy = false): TabName[] {
+  return TAB_ORDER.filter((tab) => (tab === "policy" ? policy : tab === "reference" ? true : sections[tab] === true));
 }
 
 export function isTabName(value: unknown): value is TabName {
@@ -45,8 +55,10 @@ export interface IncidentFilter {
   limit: number;
   detector: string;
   ip: string;
-  /** The search box: a filter expression. Applied here, never sent to the API. See `parseFilter`. */
+  /** The search box: a filter expression. Applied here, never sent to the API. See `parseQuery`. */
   query: string;
+  /** One response class (`decoy`, `time cost`, `block`, …), or empty for all. Applied here, like `query`. */
+  outcome?: string;
 }
 
 export const LIMITS = [50, 100, 250, 500, 1000] as const;
@@ -73,207 +85,91 @@ export function incidentQuery(filter: IncidentFilter): string {
 export function matchesFilter(incident: Incident, filter: IncidentFilter): boolean {
   const detector = filter.detector.trim();
   const ip = filter.ip.trim();
-  if (detector !== "" && !incident.detections.some((d) => d.detectorId === detector)) return false;
+  if (detector !== "" && !incident.detections.some((d) => d.detector === detector)) return false;
   if (ip !== "" && incident.ip !== ip) return false;
-  if (filter.query.trim() !== "" && !matchesQuery(incident, parseFilter(filter.query, INCIDENT_VOCABULARY), INCIDENT_VOCABULARY)) return false;
+  if (filter.outcome !== undefined && filter.outcome !== "" && classOf(incident.respondedWith) !== filter.outcome) return false;
+  if (filter.query.trim() !== "" && !queryMatcher(filter.query)(incident)) return false;
   return true;
 }
 
 /**
- * A small filter language, shared by every screen that searches.
+ * The search box's language, shared by every screen that searches.
  *
- * Fielded terms (`ip:198.51.100`, `detector:decoy-path`, `score:>20`), quoted phrases,
- * parentheses, and `$and` / `$or` / `$not`. Adjacent terms are an implicit `$and`.
+ * It is `@osqd/jql`'s text syntax, the same one bothandlerjs's feed takes: fielded terms
+ * (`ip:198.51.100`, `detector:decoy-path`, `score:>20`), quoted phrases, `-term` for not,
+ * `field:$in(a, b)` for a set, `has:rule`, parentheses, and `$and` / `$or` / `$not`, with
+ * adjacent terms an implicit `$and`. The text is parsed into a JQL query and the engine runs
+ * that, so there is no matcher here to drift from the one the other projects use.
  *
- * Two decisions worth stating. The operators carry a `$` because a bare "or" is a word that
- * appears in User-Agents and paths, and a language where an ordinary search word silently
- * becomes an operator is one that lies about what it matched. And **nothing here throws**:
- * this backs a box somebody types into, so half-written input parses to the best available
- * reading rather than blanking the screen between keystrokes.
- *
- * The vocabulary is a parameter so a second screen can reuse the grammar over a different
- * shape. Two parsers would be two dialects within a week. Adapted from bothandlerjs.
+ * Two decisions worth stating, both JQL's now. The operators carry a `$` because a bare "or"
+ * is a word that appears in User-Agents and paths, and a language where an ordinary search
+ * word silently becomes an operator is one that lies about what it matched. And **nothing
+ * here throws**: this backs a box somebody types into, so half-written input parses to the
+ * best available reading rather than blanking the screen between keystrokes.
  */
-export type FilterNode =
-  | { kind: "all" }
-  | { kind: "term"; field: string | undefined; op: "has" | "gt" | "gte" | "lt" | "lte"; value: string; number: number | undefined }
-  | { kind: "and"; nodes: FilterNode[] }
-  | { kind: "or"; nodes: FilterNode[] }
-  | { kind: "not"; node: FilterNode };
 
-/** How a record answers a field, and which fields a bare word searches. */
-export interface Vocabulary<T> {
-  fields: Record<string, (record: T) => string | number | readonly string[] | undefined>;
-  free: readonly string[];
-}
-
-/** Longest expression parsed. Beyond this the box holds a paste, not a query. */
+/** Longest expression parsed. Beyond this the box holds a paste, not a query. JQL reads to 8 KB; this page stops sooner. */
 export const MAX_QUERY_CHARS = 512;
 
-const OPERATORS = new Set(["$and", "$or", "$not"]);
-
-/** Splits an expression into words, quoted phrases and parentheses. Rejects nothing. */
-function tokenize(text: string): string[] {
-  const tokens: string[] = [];
-  let index = 0;
-  while (index < text.length) {
-    const char = text[index] as string;
-    if (/\s/.test(char)) {
-      index += 1;
-      continue;
-    }
-    if (char === "(" || char === ")") {
-      tokens.push(char);
-      index += 1;
-      continue;
-    }
-    if (char === '"') {
-      const end = text.indexOf('"', index + 1);
-      // An unclosed quote takes the rest of the line: somebody is still typing it.
-      tokens.push(end === -1 ? text.slice(index + 1) : text.slice(index + 1, end));
-      index = end === -1 ? text.length : end + 1;
-      continue;
-    }
-    let end = index;
-    while (end < text.length && !/[\s()]/.test(text[end] as string)) end += 1;
-    tokens.push(text.slice(index, end));
-    index = end;
-  }
-  return tokens;
-}
-
-/** One word, read as a field term when its prefix names a field the vocabulary knows. */
-function termOf(token: string, vocabulary: Vocabulary<unknown>): FilterNode {
-  const colon = token.indexOf(":");
-  let field: string | undefined;
-  let rest = token;
-  if (colon > 0) {
-    const name = token.slice(0, colon).toLowerCase();
-    // Only a name the vocabulary knows is a field. Anything else is a word that happens to
-    // contain a colon — a URL, a timestamp, an IPv6 address.
-    if (Object.hasOwn(vocabulary.fields, name)) {
-      field = name;
-      rest = token.slice(colon + 1);
-    }
-  }
-  const comparison = /^(>=|<=|>|<)(.*)$/.exec(rest);
-  const symbol = comparison?.[1];
-  const op = symbol === undefined ? "has" : symbol === ">" ? "gt" : symbol === ">=" ? "gte" : symbol === "<" ? "lt" : "lte";
-  const value = comparison === null ? rest : (comparison[2] as string);
-  const numeric = Number(value);
-  return { kind: "term", field, op, value: value.toLowerCase(), number: value.trim() !== "" && Number.isFinite(numeric) ? numeric : undefined };
-}
-
-/** Parses an expression. Anything unreadable is skipped rather than refused. */
-export function parseFilter<T>(text: string, vocabulary: Vocabulary<T>): FilterNode {
-  const tokens = tokenize(text.slice(0, MAX_QUERY_CHARS));
-  let at = 0;
-
-  const parsePrimary = (): FilterNode => {
-    const token = tokens[at];
-    if (token === undefined) return { kind: "all" };
-    at += 1;
-    if (token === "(") {
-      const inner = parseOr();
-      // A missing closing parenthesis is somebody mid-expression, not an error.
-      if (at < tokens.length && tokens[at] === ")") at += 1;
-      return inner;
-    }
-    if (token === ")") return { kind: "all" };
-    if (OPERATORS.has(token.toLowerCase())) return { kind: "all" };
-    return termOf(token, vocabulary as Vocabulary<unknown>);
-  };
-
-  const parseNot = (): FilterNode => {
-    if (at < tokens.length && (tokens[at] as string).toLowerCase() === "$not") {
-      at += 1;
-      return { kind: "not", node: parseNot() };
-    }
-    return parsePrimary();
-  };
-
-  const parseAnd = (): FilterNode => {
-    const nodes: FilterNode[] = [];
-    while (at < tokens.length) {
-      const token = tokens[at] as string;
-      if (token === ")" || token.toLowerCase() === "$or") break;
-      if (token.toLowerCase() === "$and") {
-        at += 1;
-        continue;
-      }
-      nodes.push(parseNot());
-    }
-    if (nodes.length === 0) return { kind: "all" };
-    return nodes.length === 1 ? (nodes[0] as FilterNode) : { kind: "and", nodes };
-  };
-
-  function parseOr(): FilterNode {
-    const nodes = [parseAnd()];
-    while (at < tokens.length && (tokens[at] as string).toLowerCase() === "$or") {
-      at += 1;
-      nodes.push(parseAnd());
-    }
-    return nodes.length === 1 ? (nodes[0] as FilterNode) : { kind: "or", nodes };
-  }
-
-  return parseOr();
-}
-
-function textOf(value: string | number | readonly string[] | undefined): string[] {
-  if (value === undefined) return [];
-  if (Array.isArray(value)) return value.map((entry) => String(entry).toLowerCase());
-  return [String(value as string | number).toLowerCase()];
-}
-
-/** Whether one record satisfies a parsed expression. */
-export function matchesQuery<T>(record: T, node: FilterNode, vocabulary: Vocabulary<T>): boolean {
-  switch (node.kind) {
-    case "all":
-      return true;
-    case "and":
-      return node.nodes.every((child) => matchesQuery(record, child, vocabulary));
-    case "or":
-      return node.nodes.some((child) => matchesQuery(record, child, vocabulary));
-    case "not":
-      return !matchesQuery(record, node.node, vocabulary);
-    case "term": {
-      if (node.value === "" && node.op === "has") return true;
-      const names = node.field === undefined ? vocabulary.free : [node.field];
-      return names.some((name) => {
-        const read = vocabulary.fields[name];
-        if (read === undefined) return false;
-        const raw = read(record);
-        if (node.op === "has") return textOf(raw).some((value) => value.includes(node.value));
-        // A comparison only means something against a number, and only against one value.
-        const value = Array.isArray(raw) ? Number.NaN : Number(raw);
-        if (!Number.isFinite(value) || node.number === undefined) return false;
-        return node.op === "gt" ? value > node.number : node.op === "gte" ? value >= node.number : node.op === "lt" ? value < node.number : value <= node.number;
-      });
-    }
-  }
-}
-
-/** The fields an incident answers to, and what a bare word searches. */
-export const INCIDENT_VOCABULARY: Vocabulary<Incident> = {
+/** The fields an incident answers to, how `field:value` reads each value, and what a bare word searches. */
+export const INCIDENT_VOCABULARY = defineVocabulary<Incident>()({
   fields: {
-    ip: (incident) => incident.ip,
-    path: (incident) => incident.path,
-    method: (incident) => incident.method,
-    detector: (incident) => incident.detections.map((detection) => detection.detectorId),
-    reason: (incident) => incident.detections.map((detection) => detection.reason),
-    action: (incident) => incident.respondedWith,
-    rule: (incident) => incident.rule,
-    score: (incident) => incident.score,
-    total: (incident) => incident.totalScore,
-    ua: (incident) => {
-      const value = incident.headers["user-agent"];
-      return Array.isArray(value) ? value.join(" ") : value;
+    // A whole component, so `ip:203.0.113.4` does not also find `203.0.113.45`; `ip:203.0.113` still finds the network.
+    ip: { kind: "word" },
+    path: {},
+    method: { kind: "exact" },
+    detector: { get: (incident) => incident.detections.map((detection) => detection.detector) },
+    // `reason` is the name the summary had before it matched bothandlerjs's; a saved filter may still use it.
+    summary: { aliases: ["reason"], get: (incident) => incident.detections.map((detection) => detection.summary) },
+    action: { path: "respondedWith" },
+    // What the chips above the search choose, so a query can say it too and a saved filter keeps it.
+    outcome: { kind: "exact", get: (incident) => classOf(incident.respondedWith), values: RESPONSE_CLASSES.map((c) => c.name) },
+    rule: {},
+    score: { kind: "number" },
+    total: { path: "totalScore", kind: "number" },
+    ua: {
+      get: (incident) => {
+        const value = incident.headers["user-agent"];
+        return Array.isArray(value) ? value.join(" ") : value;
+      },
     },
-    actor: (incident) => incident.actor?.name,
+    actor: { get: (incident) => incident.actor?.name },
   },
-  // A bare word searches what somebody scanning the table is already looking at.
-  free: ["path", "ip", "detector", "action", "ua", "actor"],
-};
+  // A bare word searches what somebody scanning the table is already looking at. Not the
+  // summary: it quotes attacker text, and a free word matching it would make half the table
+  // match half the time.
+  text: ["path", "ip", "detector", "action", "ua", "actor"],
+});
+
+/**
+ * A search-box expression as the JQL query it means. An empty box is `{}`, which lets
+ * everything through.
+ *
+ * Cut to `MAX_QUERY_CHARS` before it is read, so a term past the cap is dropped rather than
+ * half-read.
+ */
+export function parseQuery(text: string): UntypedQuery {
+  return parseText(text.slice(0, MAX_QUERY_CHARS), { vocabulary: INCIDENT_VOCABULARY });
+}
+
+/** A compiled test for the search box's expression. */
+export function queryMatcher(text: string): (incident: Incident) => boolean {
+  return compile<Incident>(parseQuery(text), { vocabulary: INCIDENT_VOCABULARY });
+}
+
+/**
+ * Completion for the search box, the way bothandlerjs's feed completes its own.
+ *
+ * Field names come from the vocabulary itself, so a field added to the language is offered the day
+ * it exists. Values are offered only where the set is closed — the detectors and actions seen, the
+ * outcome classes — because guessing values for a path or an address is inventing options rather
+ * than completing them. The values seen change as incidents arrive, so they are passed in on each
+ * call, after the ones the vocabulary declares. JQL quotes a value with a space in it, and keeps
+ * completing inside a quote somebody has opened.
+ */
+export function suggestFor(input: string, caret: number, values: Readonly<Record<string, readonly string[]>>): Suggestions {
+  return suggest(input, caret, INCIDENT_VOCABULARY, { values });
+}
 
 /**
  * Whether a value off the event stream is an incident at all.
@@ -282,6 +178,27 @@ export const INCIDENT_VOCABULARY: Vocabulary<Incident> = {
  * malformed frame from a proxy or a future version and stop drawing for good. A frame
  * that fails this is dropped rather than half-rendered.
  */
+/**
+ * An incident with its detections in the current shape. A server older than the rename writes
+ * `detectorId` and `reason`; an embedded element can be newer than the server it reads, so the
+ * page upgrades what it receives rather than rejecting it.
+ */
+export function upgradeIncident(value: unknown): unknown {
+  if (typeof value !== "object" || value === null) return value;
+  const v = value as Record<string, unknown>;
+  const upgrade = (list: unknown): unknown =>
+    Array.isArray(list)
+      ? list.map((d) => {
+          if (typeof d !== "object" || d === null) return d;
+          const r = d as Record<string, unknown>;
+          if (typeof r["detector"] === "string" || typeof r["detectorId"] !== "string") return d;
+          const { detectorId, reason, ...rest } = r;
+          return { ...rest, detector: detectorId, summary: reason };
+        })
+      : list;
+  return { ...v, detections: upgrade(v["detections"]), ...(v["shadowDetections"] !== undefined ? { shadowDetections: upgrade(v["shadowDetections"]) } : {}) };
+}
+
 export function isIncident(value: unknown): value is Incident {
   if (typeof value !== "object" || value === null) return false;
   const v = value as Record<string, unknown>;
@@ -295,7 +212,7 @@ export function isIncident(value: unknown): value is Incident {
     typeof v["score"] === "number" &&
     typeof v["totalScore"] === "number" &&
     Array.isArray(v["detections"]) &&
-    (v["detections"] as unknown[]).every((d) => typeof d === "object" && d !== null && typeof (d as Record<string, unknown>)["detectorId"] === "string") &&
+    (v["detections"] as unknown[]).every((d) => typeof d === "object" && d !== null && typeof (d as Record<string, unknown>)["detector"] === "string") &&
     typeof v["headers"] === "object" &&
     v["headers"] !== null
   );

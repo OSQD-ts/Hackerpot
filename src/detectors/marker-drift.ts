@@ -56,8 +56,8 @@ export function markerDriftDetector(options: MarkerDriftOptions = {}): Detector 
 
       const others = seen.filter((ip) => ip !== ctx.ip);
       const detection: Detection = {
-        detectorId: "marker-drift",
-        reason: `One marked client seen from ${seen.length} addresses in ${Math.round(windowMs / 60_000)}m (rotation): ${others.slice(0, 5).join(", ")}${others.length > 5 ? ", …" : ""}`,
+        detector: "marker-drift",
+        summary: `One marked client seen from ${seen.length} addresses in ${Math.round(windowMs / 60_000)}m (rotation): ${others.slice(0, 5).join(", ")}${others.length > 5 ? ", …" : ""}`,
         score,
         // The same act `repeat-actor` may also see: one actor, several addresses. Counted once.
         family: "actor-rotation",

@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
-import * as R from "../src/responses/index.js";
+import * as R from "../src/actions/index.js";
 import { MemoryBlocklist } from "../src/blocklist.js";
 import { parseConfig } from "../src/config/schema.js";
-import type { ResponseContext } from "../src/responses/types.js";
+import type { ResponseContext } from "../src/actions/types.js";
 
 /** A response that reports the client gone as soon as anything listens, so the holding
  *  actions take their abandon path. We are testing termination, not duration. */
@@ -28,8 +28,8 @@ function stubContext(path = "/"): ResponseContext {
     ip: "203.0.113.1",
     path,
     totalScore: 50,
-    detection: { detectorId: "d", reason: "r", score: 5 },
-    detections: [{ detectorId: "d", reason: "r", score: 5 }],
+    detection: { detector: "d", summary: "r", score: 5 },
+    detections: [{ detector: "d", summary: "r", score: 5 }],
     tracker: { recent: () => [], countIn: () => 0 },
     blocklist: new MemoryBlocklist(),
     onError: () => {},

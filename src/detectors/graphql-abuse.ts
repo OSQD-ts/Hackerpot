@@ -53,7 +53,7 @@ export function graphqlAbuseDetector(options: GraphqlAbuseOptions = {}): Detecto
       const isGraphql = /graphql/i.test(ctx.path) || /"query"\s*:|"mutation"\s*:|\b(query|mutation)\s*[({]/.test(blob);
 
       const fire = (kind: string): Detection => {
-        const detection: Detection = { detectorId: "graphql-abuse", reason: `GraphQL abuse — ${kind}`, score, metadata: { kind } };
+        const detection: Detection = { detector: "graphql-abuse", summary: `GraphQL abuse — ${kind}`, score, metadata: { kind } };
         if (options.respondWith) detection.respondWith = options.respondWith;
         return detection;
       };

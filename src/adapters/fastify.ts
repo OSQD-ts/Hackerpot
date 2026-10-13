@@ -1,6 +1,6 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { HoneypotEngine } from "../core.js";
-import { createMiddleware, type MiddlewareOptions } from "../middleware.js";
+import { createMiddleware, type MiddlewareOptions } from "./node.js";
 
 /** The parts of a Fastify request this hook touches, described structurally so there is no dependency on Fastify. */
 export interface FastifyLikeRequest {

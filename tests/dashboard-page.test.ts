@@ -57,9 +57,59 @@ describe("dashboard page", () => {
     expect(renderDashboardPage(bootstrap)("other")).not.toContain(NONCE);
   });
 
+  it("ships its stylesheet whole", () => {
+    // The CSS is a template literal, so a stray backtick in a comment ends it early and the
+    // page renders unstyled while every other test passes. Balanced braces and the last rules
+    // of the file being present catch that.
+    const opens = (DASHBOARD_CSS.match(/\{/g) ?? []).length;
+    const closes = (DASHBOARD_CSS.match(/\}/g) ?? []).length;
+    expect(opens).toBe(closes);
+    expect(DASHBOARD_CSS).toContain(".search kbd");
+    expect(DASHBOARD_CSS).toContain(".tile.proven .v");
+    expect(DASHBOARD_CSS).toContain(".panel:has(> h3:first-child)");
+  });
+
   it("has no inline style attributes anywhere", () => {
     expect(markupOnly(render())).not.toMatch(/\sstyle\s*=/i);
     expect(DASHBOARD_MARKUP).not.toMatch(/\sstyle\s*=/i);
+  });
+
+  it("ships the request tester hidden, for the client to show only when the control is granted", () => {
+    // Hidden in the markup rather than revealed by default: a deployment that never granted
+    // `testRequest` must not show a box whose every submission the server refuses.
+    expect(DASHBOARD_MARKUP).toMatch(/<section class="panel" id="tester"[^>]*\shidden>/);
+    expect(CLIENT_SCRIPT).toContain("/api/test");
+    expect(CLIENT_SCRIPT).toContain("testRequest");
+  });
+
+  it("ships the Policy screen, which the client shows only when a policy control is granted", async () => {
+    expect(DASHBOARD_MARKUP).toContain('id="pane-policy"');
+    expect(DASHBOARD_MARKUP).toContain('id="policy-rules"');
+    // Apply is hidden in the markup: editPolicy is the control that reveals it, and it needs auth.
+    expect(DASHBOARD_MARKUP).toMatch(/<button id="policy-apply"[^>]*\shidden>/);
+    expect(CLIENT_SCRIPT).toContain("/api/policy/preview");
+    expect(CLIENT_SCRIPT).toContain("/api/policy/apply");
+  });
+
+  it("ships the Reference screen, which needs nothing from the server", async () => {
+    expect(DASHBOARD_MARKUP).toContain('id="pane-reference"');
+    const { detectorList, responseList } = await import("../src/dashboard/client/knowledge.js");
+    // Every detector the library ships is explained, so a rule or an alert naming one has a page
+    // to send somebody to.
+    const { defaultDetectors } = await import("../src/index.js");
+    const explained = new Set(detectorList().map(([id]) => id));
+    const missing = defaultDetectors().map((detector) => detector.id).filter((id) => !explained.has(id));
+    expect(missing, "detectors with no entry on the Reference screen").toEqual([]);
+    expect(responseList().length).toBeGreaterThan(0);
+  });
+
+  it("exports the shown incidents in a format hackerpot replay reads", async () => {
+    // The export is a JSON line per incident; replay's JSON reader takes ip, method, path,
+    // timestamp and headers from exactly that shape, so the round trip needs no converter.
+    expect(DASHBOARD_MARKUP).toContain('id="f-export"');
+    const { parseLogLine } = await import("../src/replay.js");
+    const line = JSON.stringify({ id: "x", timestamp: "2026-09-16T10:00:00.000Z", ip: "203.0.113.9", method: "GET", path: "/.env", headers: { "user-agent": "curl/8.4.0" }, detections: [], score: 0, totalScore: 0, respondedWith: "not-found" });
+    expect(parseLogLine(line)).toMatchObject({ ip: "203.0.113.9", method: "GET", target: "/.env", headers: { "user-agent": "curl/8.4.0" } });
   });
 
   it("ships no HTML sink in the client bundle", () => {
@@ -104,12 +154,14 @@ describe("dashboard page", () => {
 
   it("makes every tab a keyboard-reachable tab bound to its panel", () => {
     const tabs = DASHBOARD_MARKUP.match(/<button[^>]*role="tab"[^>]*>/g) ?? [];
-    expect(tabs).toHaveLength(6);
+    // One per screen: the six sections, plus Policy and Reference, which the client removes when
+    // no policy control was granted and never, respectively.
+    expect(tabs).toHaveLength(8);
     for (const tab of tabs) {
       expect(tab).toMatch(/aria-controls="pane-[a-z]+"/);
       expect(tab).toMatch(/type="button"/);
     }
     expect(DASHBOARD_MARKUP).toContain('role="tablist"');
-    expect(DASHBOARD_MARKUP.match(/role="tabpanel"/g)).toHaveLength(6);
+    expect(DASHBOARD_MARKUP.match(/role="tabpanel"/g)).toHaveLength(8);
   });
 });

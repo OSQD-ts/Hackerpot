@@ -6,8 +6,8 @@
  * that needs only the Fetch adapter should be able to say so. Everything here is also
  * exported from the package root, so nothing that already imports from there changes.
  */
-export { createMiddleware, dispatch, trapFormGuard } from "../middleware.js";
-export type { HoneypotMiddleware, MiddlewareOptions, NextFn } from "../middleware.js";
+export { createMiddleware, dispatch, trapFormGuard } from "./node.js";
+export type { HoneypotMiddleware, MiddlewareOptions, NextFn } from "./node.js";
 export { koaHoneypot } from "./koa.js";
 export type { KoaHoneypotMiddleware, KoaLikeContext } from "./koa.js";
 export { fastifyHoneypot } from "./fastify.js";

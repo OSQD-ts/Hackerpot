@@ -20,7 +20,7 @@ const incident = (over: Partial<HoneypotHit> = {}): HoneypotHit => ({
   method: "GET",
   path: "/.env",
   headers: {},
-  detections: [{ detectorId: "decoy-path", reason: "probe", score: 10 }],
+  detections: [{ detector: "decoy-path", summary: "probe", score: 10 }],
   score: 10,
   totalScore: 10,
   respondedWith: "decoy-content",
@@ -146,7 +146,7 @@ describe("what reaches a sink", () => {
     const proven: NotifyEvent[] = [];
     const proofHub = hubWith([collecting("alerts", proven)], { filter: { certainOnly: true } });
     proofHub.publish(incident({ totalScore: 900 }));
-    proofHub.publish(incident({ id: "b", ip: "203.0.113.9", detections: [{ detectorId: "honeytoken", reason: "replayed", score: 15, certain: true }] }));
+    proofHub.publish(incident({ id: "b", ip: "203.0.113.9", detections: [{ detector: "honeytoken", summary: "replayed", score: 15, certain: true }] }));
     expect(proven.map((event) => event.incident?.id)).toEqual(["b"]);
   });
 
@@ -155,7 +155,7 @@ describe("what reaches a sink", () => {
     const hub = hubWith([collecting("alerts", seen)], { filter: { minScore: 100 } });
     // A replayed honeytoken scores little and settles the question; a threshold meant for
     // accumulated suspicion should not be what hides it.
-    hub.publish(incident({ totalScore: 15, detections: [{ detectorId: "honeytoken", reason: "replayed", score: 15, certain: true }] }));
+    hub.publish(incident({ totalScore: 15, detections: [{ detector: "honeytoken", summary: "replayed", score: 15, certain: true }] }));
     expect(seen).toHaveLength(1);
   });
 });

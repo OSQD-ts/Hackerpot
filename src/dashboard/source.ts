@@ -9,7 +9,8 @@ import type { Incident } from "../management/types.js";
 import type { HitStore } from "../types.js";
 import type { EvaluationResult, Notice } from "../core.js";
 import type { RequestFacts } from "../detectors/types.js";
-import type { ResponsePolicy } from "../responses/index.js";
+import type { ResponsePolicy } from "../policy/index.js";
+import { upgradeHit } from "../detectors/legacy.js";
 
 /**
  * Where a dashboard reads from.
@@ -102,7 +103,7 @@ export function engineSource(engine: HoneypotEngine): DashboardSource {
     store: engine.store,
     subscribe: (listener) => engine.subscribe(listener),
     // The live gauges only the engine knows, beside the store's counts.
-    metrics: async () => renderMetrics(engine.store, { active_blocks: (await engine.blocklist.size?.()) ?? 0, tracked_ips: engine.registry.size }),
+    metrics: async () => renderMetrics(engine.store, { active_blocks: (await engine.blocklist.size?.()) ?? 0, tracked_ips: engine.registry.size }, engine.counters()),
   });
   return {
     ...source,
@@ -196,9 +197,10 @@ export function managementApiSource(options: ManagementApiSourceOptions): Dashbo
         return;
       }
       if (message.type !== "incident" || message.incident === undefined) return;
+      const incident = upgradeHit(message.incident);
       for (const listener of listeners) {
         try {
-          listener(message.incident);
+          listener(incident);
         } catch (err) {
           options.onError?.(err);
         }
@@ -227,8 +229,13 @@ export function managementApiSource(options: ManagementApiSourceOptions): Dashbo
 
   return {
     description: `management API at ${base.host}`,
-    listIncidents: async (query) => (await json<{ incidents: Incident[] }>(`/incidents?${query.toString()}`)).incidents,
-    getIncident: async (id) => (await json<{ incident?: Incident }>(`/incidents/${encodeURIComponent(id)}`, {})).incident,
+    // Upgraded on the way in: the management API may be an older honeypot's, still writing
+    // detections as `detectorId` and `reason`.
+    listIncidents: async (query) => (await json<{ incidents: Incident[] }>(`/incidents?${query.toString()}`)).incidents.map(upgradeHit),
+    getIncident: async (id) => {
+      const incident = (await json<{ incident?: Incident }>(`/incidents/${encodeURIComponent(id)}`, {})).incident;
+      return incident === undefined ? undefined : upgradeHit(incident);
+    },
     stats: () => json<StatsSummary>("/stats"),
     sessions: async (ip) =>
       ip === undefined ? (await json<{ sessions: AttackSession[] }>("/sessions")).sessions : [(await json<{ session?: AttackSession }>(`/sessions/${encodeURIComponent(ip)}`, {})).session].filter((s): s is AttackSession => s !== undefined),

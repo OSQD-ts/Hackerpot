@@ -63,13 +63,13 @@ describe("crawler-verification", () => {
     expect(resolver.calls).toBe(0);
     // A real claim beside a comparison is still a claim.
     const both = await engine.evaluate(facts("198.51.100.61", "FeedFetcher-Google; like FeedFetcher-Google"));
-    expect(both.detections[0]?.detectorId).toBe("crawler-verification");
+    expect(both.detections[0]?.detector).toBe("crawler-verification");
   });
 
   it("marks a forged Googlebot as proof", async () => {
     const detector = crawlerVerificationDetector({ resolver: fakeResolver({ "198.51.100.7": ["vps-7.example.net"] }) });
     const result = await new HoneypotEngine({ enricher: null, detectors: [detector] }).evaluate(facts("198.51.100.7", GOOGLEBOT_UA));
-    expect(result.detections[0]).toMatchObject({ detectorId: "crawler-verification", score: 10, certain: true, metadata: { crawler: "googlebot", cause: "wrong-domain" } });
+    expect(result.detections[0]).toMatchObject({ detector: "crawler-verification", score: 10, certain: true, metadata: { crawler: "googlebot", cause: "wrong-domain" } });
   });
 
   it("flags nothing when DNS gives no answer, or when a missing PTR is not treated as forgery", async () => {
@@ -97,7 +97,7 @@ describe("crawler-verification", () => {
       });
       const fired = new Set<string>();
       for (let i = 0; i < 80; i++) {
-        for (const detection of (await engine.evaluate(facts(source, userAgent, `/products/${i}`))).detections) fired.add(detection.detectorId);
+        for (const detection of (await engine.evaluate(facts(source, userAgent, `/products/${i}`))).detections) fired.add(detection.detector);
       }
       return [...fired].sort();
     };

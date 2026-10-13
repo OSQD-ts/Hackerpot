@@ -6,6 +6,7 @@ import { $, all, el, maybe } from "./dom.js";
 import { fmtCompact, fmtDateTime, fmtDur, fmtInt, fmtNum, fmtTime, plural, sevClass } from "./format.js";
 import type { DashboardNotice } from "./store.js";
 import { state } from "./store.js";
+import { copyText } from "./transfer.js";
 import type { AttackSession } from "./types.js";
 
 /**
@@ -18,11 +19,18 @@ function setPill(id: string, n: number): void {
   if (pill !== null) pill.textContent = fmtCompact(n);
 }
 
+/** The count at the far end of a list panel's heading. */
+function setCount(id: string, n: number, noun: string): void {
+  const node = maybe(id);
+  if (node !== null) node.textContent = plural(n, noun);
+}
+
 // ---- sessions -------------------------------------------------------------------
 
 export function renderSessions(): void {
   const host = $("sessions-list");
   setPill("tc-sessions", state.sessions.length);
+  setCount("sessions-count", state.sessions.length, "session");
   if (state.sessions.length === 0) {
     replace(host, el("div", "empty", "No sessions yet."));
     return;
@@ -101,6 +109,7 @@ function fillSession(body: HTMLElement, session: AttackSession): void {
 export function renderActors(): void {
   const host = $("actors-list");
   setPill("tc-actors", state.actors.length);
+  setCount("actors-count", state.actors.length, "actor");
   if (state.actors.length === 0) {
     replace(host, el("div", "empty", "No fingerprinted actors yet. Fingerprints come from HTTP header order and User-Agent family, so protocol-only (SSH, SMTP) traffic does not appear here."));
     return;
@@ -158,6 +167,7 @@ export function renderIoc(): void {
   const host = $("ioc-list");
   const list = state.ioc.filter((entry) => entry.score >= state.iocMin);
   setPill("tc-ioc", state.ioc.length);
+  setCount("ioc-count", state.ioc.length, "indicator");
   if (list.length === 0) {
     replace(host, el("div", "empty", `No indicators at or above ${state.iocMin} points.`));
     return;
@@ -202,20 +212,6 @@ export function renderIoc(): void {
 export function renderMetrics(): void {
   const pre = maybe("metrics-raw");
   if (pre !== null) pre.textContent = state.metricsRaw === "" ? "—" : state.metricsRaw;
-}
-
-async function copyText(text: string, button: HTMLButtonElement): Promise<void> {
-  const label = button.textContent ?? "";
-  try {
-    // Absent outside a secure context (plain http to anything but localhost).
-    await navigator.clipboard.writeText(text);
-    button.textContent = "copied";
-  } catch {
-    button.textContent = "copy failed";
-  }
-  setTimeout(() => {
-    button.textContent = label;
-  }, 1400);
 }
 
 /**

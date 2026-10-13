@@ -37,8 +37,8 @@ export function credentialBruteforceDetector(options: CredentialBruteforceOption
       if (attempts < threshold) return undefined;
 
       const detection: Detection = {
-        detectorId: "credential-bruteforce",
-        reason: `${attempts} auth attempts against ${ctx.path} in ${Math.round(windowMs / 1000)}s`,
+        detector: "credential-bruteforce",
+        summary: `${attempts} auth attempts against ${ctx.path} in ${Math.round(windowMs / 1000)}s`,
         score,
         metadata: { attempts, path: ctx.path, windowMs },
       };

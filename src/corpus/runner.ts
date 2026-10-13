@@ -1,7 +1,7 @@
 import type { HoneypotEngine } from "../core.js";
 import type { DnsResolver } from "../internal/dns.js";
 import type { Detection, RequestFacts } from "../detectors/types.js";
-import { mayHaveBody, parseQuery, pathOf } from "../http-request.js";
+import { mayHaveBody, parseQuery, pathOf } from "../internal/http.js";
 import type { Audience, CaseDns, CaseRequest, TrafficCase } from "./schema.js";
 
 /**
@@ -42,7 +42,7 @@ export interface RunnerOptions {
    * On: two-pass body handling, `blockRequiresProof` so an unproven block becomes a
    * tarpit and nothing is blocklisted, activity marked `passed`, and a path confirmed
    * toward `path-bruteforce` only when the app answered `404` or the honeypot answered it
-   * — exactly `src/middleware.ts`. Off: standalone evaluation, every path counted and a
+   * — exactly `src/adapters/node.ts`. Off: standalone evaluation, every path counted and a
    * block allowed on score alone. The two must catch the same attacks; the difference is
    * only in what an unproven guess is allowed to do.
    */
@@ -184,7 +184,7 @@ export function factsFor(testCase: TrafficCase, request: CaseRequest, caseIndex:
 /**
  * Evaluates one request the way the chosen front end would.
  *
- * In middleware mode this reproduces `src/middleware.ts`: a first, body-free pass that
+ * In middleware mode this reproduces `src/adapters/node.ts`: a first, body-free pass that
  * defers recording when a body phase is possible, a committing second pass with the body
  * only if the first fired, `blockRequiresProof`, and the confirm-path bookkeeping that
  * makes `path-bruteforce` count only paths the app missed. In standalone mode it is a
@@ -228,7 +228,7 @@ async function runCase(engine: HoneypotEngine, item: TrafficCase, caseIndex: num
     const result = await evaluateRequest(engine, facts, request, now, middleware);
     requests.push(result);
     for (const detection of result.detections) {
-      firedSet.add(detection.detectorId);
+      firedSet.add(detection.detector);
       if (detection.certain === true) anyCertain = true;
     }
     if (result.actionId === "block" || result.downgradedFrom === "block") anyBlock = true;

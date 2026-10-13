@@ -1,3 +1,5 @@
+// Kept identical in hackerpot and bothandlerjs. Change both, or neither.
+
 import { systemClock, type Clock } from "./clock.js";
 
 interface Entry<V> {
@@ -11,12 +13,9 @@ interface Entry<V> {
  * The ceiling is a security property rather than a nicety. Everything this library
  * remembers is keyed by something the client chooses — an address, a fingerprint, a path,
  * a header value — so a map without a bound is a remote out-of-memory waiting to be found.
- * Every such structure here was written separately before this existed, each with its own
- * slightly different eviction loop, which is four chances to get the same thing wrong.
  *
  * Capacity is enforced on every insert. Expiry is checked when an entry is read, plus a
- * bounded sweep on insert, so a process that goes quiet keeps no timer alive. Adapted from
- * bothandlerjs.
+ * bounded sweep on insert, so a process that goes quiet keeps no timer alive.
  */
 export class TtlLru<V> {
   private readonly entries = new Map<string, Entry<V>>();
@@ -27,7 +26,8 @@ export class TtlLru<V> {
     private readonly clock: Clock = systemClock,
   ) {
     if (capacity < 1) throw new RangeError("a TtlLru needs a capacity of at least 1");
-    if (ttlMs <= 0) throw new RangeError("a TtlLru needs a positive time to live");
+    // Zero is allowed and means remember nothing: a window a caller configured to 0.
+    if (!(ttlMs >= 0)) throw new RangeError("a TtlLru needs a time to live of zero or more");
   }
 
   get size(): number {

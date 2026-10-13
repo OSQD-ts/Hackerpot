@@ -2,6 +2,7 @@ import { Redis, type RedisOptions } from "ioredis";
 import { applyQuery } from "./query.js";
 import { usableScore } from "./scores.js";
 import type { HitQuery, HitStore, HoneypotHit } from "../types.js";
+import { upgradeHit } from "../detectors/legacy.js";
 
 export interface RedisStoreOptions {
   /** An existing ioredis client to reuse. If omitted, one is created from `redisOptions`. */
@@ -99,7 +100,7 @@ export class RedisStore implements HitStore {
     const hits: HoneypotHit[] = [];
     for (const line of raw) {
       try {
-        hits.push(JSON.parse(line) as HoneypotHit);
+        hits.push(upgradeHit(JSON.parse(line) as HoneypotHit));
       } catch {
         // A damaged record is not a reason to stop serving the intact ones.
       }

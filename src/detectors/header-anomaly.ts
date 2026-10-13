@@ -1,4 +1,4 @@
-import { MAX_QUERY_PARAMS } from "../http-request.js";
+import { MAX_QUERY_PARAMS } from "../internal/http.js";
 import type { Detection, DetectionContext, Detector } from "./types.js";
 
 export interface HeaderAnomalyOptions {
@@ -33,8 +33,8 @@ export function headerAnomalyDetector(options: HeaderAnomalyOptions = {}): Detec
     inspect(ctx: DetectionContext): Detection | undefined {
       const build = (reason: string, kind: string, hiScore?: number): Detection => {
         const detection: Detection = {
-          detectorId: "header-anomaly",
-          reason,
+          detector: "header-anomaly",
+          summary: reason,
           score: hiScore ?? score,
           metadata: { kind },
         };

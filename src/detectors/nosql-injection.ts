@@ -40,8 +40,8 @@ export function nosqlInjectionDetector(options: NosqlInjectionOptions = {}): Det
     inspect(ctx: DetectionContext): Detection | undefined {
       const fire = (kind: string, location: string, sample: string): Detection => {
         const detection: Detection = {
-          detectorId: "nosql-injection",
-          reason: `NoSQL operator injection — ${kind} in ${location}`,
+          detector: "nosql-injection",
+          summary: `NoSQL operator injection — ${kind} in ${location}`,
           score,
           metadata: { location, sample: sample.slice(0, 200) },
         };

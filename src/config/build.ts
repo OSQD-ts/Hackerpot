@@ -39,9 +39,6 @@ import {
   blockAction,
   chaosAction,
   decoyContentAction,
-  PRESETS,
-  ladderPolicy,
-  rulePolicy,
   dripFeedAction,
   fakeDataAction,
   fakeSuccessAction,
@@ -51,24 +48,26 @@ import {
   rateLimitAction,
   redirectAction,
   tarpitAction,
-} from "../responses/index.js";
-import type { ResponseAction, ResponsePolicy, Rule } from "../responses/index.js";
+} from "../actions/index.js";
+import { PRESETS, ladderPolicy, rulePolicy } from "../policy/index.js";
+import type { ResponseAction } from "../actions/index.js";
+import type { ResponsePolicy, Rule } from "../policy/index.js";
 import { ManagementServer } from "../management/index.js";
 import type { IncidentBroker } from "../management/broker.js";
-import type { ManagementServerOptions } from "../management/index.js";
+import type { EngineCounters, ManagementServerOptions } from "../management/index.js";
 import { readFileSync } from "node:fs";
 import { CompositeBlocklist, MemoryBlocklist, RedisBlocklist, type Blocklist } from "../blocklist.js";
 import { EnforcingBlocklist, commandEnforcer, webhookEnforcer, type BlockEnforcer } from "../firewall.js";
-import { SmtpHoneypot } from "../smtp/index.js";
-import type { SmtpHoneypotOptions } from "../smtp/index.js";
-import { SshHoneypot } from "../ssh/index.js";
-import type { SshHoneypotOptions } from "../ssh/index.js";
-import { FtpHoneypot } from "../ftp/index.js";
-import type { FtpHoneypotOptions } from "../ftp/index.js";
-import { TelnetHoneypot } from "../telnet/index.js";
-import type { TelnetHoneypotOptions } from "../telnet/index.js";
-import { SyslogSink } from "../syslog.js";
-import type { SyslogSinkOptions } from "../syslog.js";
+import { SmtpHoneypot } from "../protocols/smtp/index.js";
+import type { SmtpHoneypotOptions } from "../protocols/smtp/index.js";
+import { SshHoneypot } from "../protocols/ssh/index.js";
+import type { SshHoneypotOptions } from "../protocols/ssh/index.js";
+import { FtpHoneypot } from "../protocols/ftp/index.js";
+import type { FtpHoneypotOptions } from "../protocols/ftp/index.js";
+import { TelnetHoneypot } from "../protocols/telnet/index.js";
+import type { TelnetHoneypotOptions } from "../protocols/telnet/index.js";
+import { SyslogSink } from "../notify/syslog.js";
+import type { SyslogSinkOptions } from "../notify/syslog.js";
 import { ConfigError, toRegExp } from "./reader.js";
 import { ActorLabels } from "../labels.js";
 import { MarkerCookie } from "../marker.js";
@@ -614,6 +613,8 @@ export function createManagementServer(
   detectorFailures?: () => Map<string, number> | Record<string, number>,
   /** Fan-out to share, so one publish feeds the live feed, the counters and every other sink. */
   broker?: IncidentBroker,
+  /** What the engine counts that no incident carries: exemptions and evaluation time. */
+  engineCounters?: () => EngineCounters,
 ): ManagementServer | undefined {
   const settings = config.management;
   if (!settings.enabled) return undefined;
@@ -630,6 +631,7 @@ export function createManagementServer(
   if (metrics) options.metrics = metrics;
   if (detectorFailures) options.detectorFailures = detectorFailures;
   if (broker) options.broker = broker;
+  if (engineCounters) options.engineCounters = engineCounters;
   return new ManagementServer(options);
 }
 

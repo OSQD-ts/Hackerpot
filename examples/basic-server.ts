@@ -28,7 +28,7 @@ const engine = new HoneypotEngine({
   allowlist: ["127.0.0.1", "::1"],
   extraDetectors: [honeytokenDetector({ tokens: [{ value: SEEDED_TOKEN, label: "example-seed" }] })],
   onHit: (hit) => {
-    console.warn(`[honeypot] ${hit.ip} ${hit.method} ${hit.path} -> ${hit.respondedWith} (${hit.detections.map((d) => d.detectorId).join(", ")})`);
+    console.warn(`[honeypot] ${hit.ip} ${hit.method} ${hit.path} -> ${hit.respondedWith} (${hit.detections.map((d) => d.detector).join(", ")})`);
   },
 });
 

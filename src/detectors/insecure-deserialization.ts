@@ -76,8 +76,8 @@ export function insecureDeserializationDetector(options: InsecureDeserialization
         const sig = scan(target.value);
         if (!sig) continue;
         const detection: Detection = {
-          detectorId: "insecure-deserialization",
-          reason: `Insecure deserialization — ${sig.kind} payload in ${target.location}`,
+          detector: "insecure-deserialization",
+          summary: `Insecure deserialization — ${sig.kind} payload in ${target.location}`,
           score,
           metadata: { kind: sig.kind, location: target.location, sample: target.value.slice(0, 200) },
         };

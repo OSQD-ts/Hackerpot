@@ -25,7 +25,7 @@ describe("honeytokens replayed inside HTTP Basic credentials", () => {
   // ever appears base64-encoded. A raw `includes()` over the header could not see it.
   it("fires when the token is the Basic password", async () => {
     const hit = await detector.inspect(ctx({ authorization: basic(`admin:${TOKEN}`) }));
-    expect(hit?.detectorId).toBe("honeytoken");
+    expect(hit?.detector).toBe("honeytoken");
     expect(hit?.metadata?.["location"]).toBe("header.authorization (basic, decoded)");
   });
 

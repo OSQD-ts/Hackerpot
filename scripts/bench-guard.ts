@@ -16,7 +16,7 @@
  * fail the build and tight enough to catch a real regression.
  */
 import { HoneypotEngine } from "../src/core.js";
-import { normalizePath } from "../src/http-request.js";
+import { normalizePath } from "../src/internal/http.js";
 import type { HitStore } from "../src/types.js";
 import type { RequestFacts } from "../src/detectors/types.js";
 

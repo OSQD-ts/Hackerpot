@@ -47,7 +47,7 @@ export function hostHeaderInjectionDetector(options: HostHeaderInjectionOptions 
       const xfHost = values(ctx, "x-forwarded-host");
 
       const fire = (reason: string, kind: string): Detection => {
-        const detection: Detection = { detectorId: "host-header-injection", reason, score, metadata: { kind } };
+        const detection: Detection = { detector: "host-header-injection", summary: reason, score, metadata: { kind } };
         if (options.respondWith) detection.respondWith = options.respondWith;
         return detection;
       };

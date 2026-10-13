@@ -122,7 +122,7 @@ describe("fuzzing — detectors never throw or hang on hostile input", () => {
     for (let i = 0; i < 2000; i++) {
       // Must not reject regardless of input (isolation + best-effort recording).
       const r = await engine.evaluate(fuzzFacts(rand));
-      for (const d of r.detections) hitDetectors.add(d.detectorId);
+      for (const d of r.detections) hitDetectors.add(d.detector);
     }
     const elapsed = Date.now() - start;
 

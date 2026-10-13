@@ -141,7 +141,7 @@ describe("no false positives on legitimate traffic", () => {
     for (const req of CORPUS) {
       const result = await engine.evaluate(legit(req));
       if (result.detections.length > 0) {
-        failures.push(`"${req.label}" (${req.method ?? "GET"} ${req.path}) → ${result.detections.map((d) => `${d.detectorId}: ${d.reason}`).join("; ")}`);
+        failures.push(`"${req.label}" (${req.method ?? "GET"} ${req.path}) → ${result.detections.map((d) => `${d.detector}: ${d.summary}`).join("; ")}`);
       }
     }
     expect(failures, `\n${failures.join("\n")}\n`).toHaveLength(0);
@@ -213,6 +213,6 @@ describe("no false positives over real HTTP connections", () => {
     }
 
     await server.close();
-    expect(hits.map((h) => `${h.method} ${h.path} → ${h.detections.map((d) => d.detectorId).join(",")}`)).toEqual([]);
+    expect(hits.map((h) => `${h.method} ${h.path} → ${h.detections.map((d) => d.detector).join(",")}`)).toEqual([]);
   });
 });

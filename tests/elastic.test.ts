@@ -1,21 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { ElasticStore } from "../src/index.js";
 import type { HoneypotHit } from "../src/index.js";
-
-function hit(overrides: Partial<HoneypotHit> = {}): HoneypotHit {
-  return {
-    id: overrides.id ?? Math.random().toString(36).slice(2),
-    timestamp: overrides.timestamp ?? new Date().toISOString(),
-    ip: overrides.ip ?? "203.0.113.7",
-    method: "GET",
-    path: overrides.path ?? "/.env",
-    headers: {},
-    detections: overrides.detections ?? [{ detectorId: "decoy-path", reason: "probe", score: 10 }],
-    score: overrides.score ?? 10,
-    totalScore: overrides.totalScore ?? 10,
-    respondedWith: overrides.respondedWith ?? "decoy-content",
-  };
-}
+import { hit } from "./helpers.js";
 
 /** A tiny in-memory fake of the ES REST endpoints ElasticStore uses. */
 function fakeCluster() {
