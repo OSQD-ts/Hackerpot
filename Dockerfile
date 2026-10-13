@@ -13,6 +13,7 @@ RUN npm ci
 # declarations (tsconfig.element.json), so both have to be in the builder stage.
 COPY tsconfig.json tsconfig.element.json tsup.config.ts ./
 COPY scripts/build-client.mjs ./scripts/build-client.mjs
+COPY scripts/strip-sources-content.mjs ./scripts/strip-sources-content.mjs
 COPY src ./src
 RUN npm run build
 
