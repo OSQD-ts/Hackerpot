@@ -126,6 +126,10 @@ describe("the dashboard in a browser", () => {
     await page.close();
   });
 
+  // Engines serialise the same computed style differently: WebKit drops the quotes around a font
+  // name and prints 21.699999px for 21.7px. Those are the same value, so compare them as one.
+  const normalised = (value: string) => value.replace(/"/g, "").replace(/(\d+\.\d+)px/g, (_, n: string) => `${Number(Number(n).toFixed(2))}px`);
+
   it("keeps the shared visual contract", async () => {
     const page = await open();
     await page.getByRole("tab", { name: /^Incidents/ }).click();
@@ -133,7 +137,7 @@ describe("the dashboard in a browser", () => {
     const wrong: string[] = [];
     for (const [label, selector, property, expected] of CONTRACT) {
       const actual = await computed(page, selector, property);
-      if (actual !== expected) wrong.push(`${label} (${selector} ${property}): ${actual ?? "no such element"} — expected ${expected}`);
+      if (actual === null || normalised(actual) !== normalised(expected)) wrong.push(`${label} (${selector} ${property}): ${actual ?? "no such element"} — expected ${expected}`);
     }
     expect(wrong).toEqual([]);
     await page.close();

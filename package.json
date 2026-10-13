@@ -74,7 +74,7 @@
     "LICENSE"
   ],
   "scripts": {
-    "build": "tsup && tsc --emitDeclarationOnly && tsc -p tsconfig.element.json",
+    "build": "tsup && node scripts/strip-sources-content.mjs && tsc --emitDeclarationOnly && tsc -p tsconfig.element.json",
     "build:watch": "tsup --watch",
     "client:build": "node scripts/build-client.mjs",
     "client:check": "node scripts/build-client.mjs --check",
