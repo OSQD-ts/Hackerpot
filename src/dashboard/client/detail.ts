@@ -3,10 +3,13 @@ import { app } from "./app.js";
 import { detectorBadge, detectorBadges, plainBadge, responseBadge } from "./badges.js";
 import { BOOT, SECTIONS } from "./boot.js";
 import { decodeCandidates } from "./decode.js";
-import { el } from "./dom.js";
+import { el, maybe } from "./dom.js";
 import { DASH, fmtClock, fmtDur, fmtInt, truncate } from "./format.js";
 import { detectorInfo, responseInfo } from "./knowledge.js";
+import { referenceLink } from "./reference.js";
 import { state } from "./store.js";
+import { canPreviewPolicy, draftRuleFor } from "./policy.js";
+import { copyText, download } from "./transfer.js";
 import type { Detection, Incident } from "./types.js";
 
 /**
@@ -28,10 +31,12 @@ function line(key: string, value: ReadonlyArray<Node | string>): HTMLElement {
 }
 
 function detectionCard(detection: Detection, shadow: boolean): HTMLElement {
-  const info = detectorInfo(detection.detectorId);
+  const info = detectorInfo(detection.detector);
   const card = el("div", shadow ? "ex-card shadow" : "ex-card");
   const head = el("div", "ex-head");
-  head.append(detectorBadge(detection.detectorId), el("span", "ex-reason", detection.reason), el("span", "ex-score", shadow ? "shadow, +0" : `+${fmtInt(detection.score)}`));
+  // The name opens its Reference entry: this card says what this detector saw here, and the
+  // reader's next question is usually what it looks at in general.
+  head.append(referenceLink("detector", detection.detector, detectorBadge(detection.detector)), el("span", "ex-reason", detection.summary), el("span", "ex-score", shadow ? "shadow, +0" : `+${fmtInt(detection.score)}`));
   card.append(head, line("Goal", [info?.goal ?? DASH]), line("Detection", [info?.how ?? DASH]));
   return card;
 }
@@ -72,7 +77,7 @@ export function buildDetail(incident: Incident): HTMLElement {
   const response = responseInfo(incident.respondedWith);
   const responseCard = el("div", "ex-card");
   const responseHead = el("div", "ex-head");
-  responseHead.append(responseBadge(incident.respondedWith), el("span", "ex-score", `IP total ${fmtInt(incident.totalScore)}`));
+  responseHead.append(referenceLink("action", incident.respondedWith, responseBadge(incident.respondedWith)), el("span", "ex-score", `IP total ${fmtInt(incident.totalScore)}`));
   responseCard.append(responseHead, line("Action", [response?.does ?? DASH]), line("Why", [response?.why ?? DASH]));
   if (incident.downgradedFrom !== undefined) {
     responseCard.append(line("Downgraded", [`from ${incident.downgradedFrom}: the policy chose it, and a proof requirement refused it.`]));
@@ -91,7 +96,7 @@ export function buildDetail(incident: Incident): HTMLElement {
     card.append(
       head,
       line("Active", [el("b", null, fmtDur(last - first)), ` · ${fmtClock(first)} → ${fmtClock(last)}`]),
-      line("Tripped", [detectorBadges(kin.flatMap((h) => h.detections.map((d) => d.detectorId)))]),
+      line("Tripped", [detectorBadges(kin.flatMap((h) => h.detections.map((d) => d.detector)))]),
       line("Reached", [el("b", null, fmtInt(new Set(kin.map((h) => h.path.split("?")[0])).size)), " distinct paths"]),
     );
     if (SECTIONS.incidents && state.filter.ip !== incident.ip) {
@@ -153,6 +158,55 @@ export function buildDetail(incident: Incident): HTMLElement {
     const pre = raw.querySelector("pre");
     if (raw.open && pre !== null && pre.textContent === "") pre.textContent = JSON.stringify(incident, null, 2);
   });
-  root.append(raw);
+  root.append(raw, actionRow(incident), footer(incident));
   return root;
+}
+
+/**
+ * What can be done with this incident from here, in the row of buttons bothandlerjs ends an opened
+ * request with. The replay line is the same JSON line the Incidents export writes, so one
+ * incident can go to `hackerpot replay` without exporting a screenful.
+ */
+function actionRow(incident: Incident): HTMLElement {
+  const row = el("div", "ex-actions");
+  const button = (label: string, act: (self: HTMLButtonElement) => void): HTMLButtonElement => {
+    const b = el("button", "sm", label);
+    b.type = "button";
+    b.addEventListener("click", (event) => {
+      event.stopPropagation();
+      act(b);
+    });
+    return b;
+  };
+  const replayLine = (): string => JSON.stringify(incident);
+  row.append(
+    button("Copy replay line", (self) => void copyText(replayLine(), self)),
+    button("Download replay line", () => download(`${replayLine()}\n`, `hackerpot-incident-${incident.id}.jsonl`, "application/x-ndjson")),
+  );
+  // Offered only where the policy screen is: the control has to be granted for it to exist.
+  if (canPreviewPolicy()) row.append(button("Draft a rule", () => draftRuleFor(incident)));
+  // Offered only where the tester is: the control has to be granted for it to exist.
+  const tester = maybe<HTMLTextAreaElement>("test-input");
+  if (tester !== null && tester.closest("[hidden]") === null) {
+    row.append(
+      button("Test this request", () => {
+        const headers = Object.entries(incident.headers)
+          .filter(([, value]) => value !== undefined)
+          .map(([name, value]) => `${name}: ${Array.isArray(value) ? value.join(", ") : String(value)}`);
+        // A blank line, then the body, the way the tester reads a raw request: detections that
+        // came from the body are only reproducible with it.
+        const body = typeof incident.body === "string" && incident.body !== "" ? ["", incident.body] : [];
+        tester.value = [`${incident.method} ${incident.rawPath ?? incident.path}`, ...headers, ...body].join("\n");
+        tester.scrollIntoView({ block: "center" });
+        tester.focus();
+      }),
+    );
+  }
+  return row;
+}
+
+/** When, which rule, and which record — quiet, at the bottom, for somebody who needs to cite it. */
+function footer(incident: Incident): HTMLElement {
+  const parts = [new Date(incident.timestamp).toLocaleString(), incident.rule === undefined ? undefined : `rule "${incident.rule}"`, `incident ${incident.id}`];
+  return el("div", "ex-foot", parts.filter((part) => part !== undefined).join("  ·  "));
 }

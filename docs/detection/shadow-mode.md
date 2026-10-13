@@ -22,7 +22,7 @@ shadow_detectors = ["target-integrity", "client-anomaly"]
 ```ts
 const engine = new HoneypotEngine({
   shadowDetectors: ["target-integrity"],
-  onShadow: (event) => console.info("[shadow]", event.ip, event.path, event.detections.map((d) => d.detectorId)),
+  onShadow: (event) => console.info("[shadow]", event.ip, event.path, event.detections.map((d) => d.detector)),
 });
 ```
 

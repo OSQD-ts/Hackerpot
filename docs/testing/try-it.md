@@ -89,13 +89,13 @@ honeypot concluded about each. With no argument it runs every scenario; name one
 
 ```bash
 npm run simulate                     # every scenario
-npm run simulate:web-shell           # one
+npm run simulate web-shell           # one
 npm run simulate -- ssh ftp          # several
-npm run simulate:list                # what there is
+npm run simulate -- --list           # what there is
 ```
 
 ```text
-$ npm run simulate:list
+$ npm run simulate -- --list
 decoys                     paths only an attacker would know: .env and its variants, .git, cloud credentials, framework debug endpoints
 path-bruteforce            a wordlist walk: twenty paths that do not exist, fast
 credential-bruteforce      ten guesses against one login endpoint
@@ -132,7 +132,7 @@ Every scenario has an `npm run simulate:<name>` script except `header-integrity`
 ### Reading the output
 
 ```text
-$ npm run simulate:web-shell
+$ npm run simulate web-shell
 Target http://127.0.0.1:4004 · management API http://127.0.0.1:9500 · dashboard http://127.0.0.1:9501/
 
 # web-shell — reaching for a dropped backdoor   (from 100.111.113.10)
@@ -195,7 +195,7 @@ $ npm run simulate:corpus
   1 skipped: is HTTP/2, which this raw HTTP/1.1 client cannot send
 ```
 
-`simulate:corpus:human` replays only the human cases, which is the quickest way to watch people go
+`simulate:corpus -- --audience human` replays only the human cases, which is the quickest way to watch people go
 through without anything firing. What each line means, and why the skipped cases cannot be replayed
 here, is in [the corpus](corpus.md#replaying-it-over-real-sockets).
 
@@ -223,7 +223,7 @@ The demo's dashboard reads the engine in the same process. The same page as a se
 the demo's management API the way it would read a real stack's, is one more terminal:
 
 ```text
-$ npm run dashboard -- --port 9502 --management-url http://127.0.0.1:9500 --api-key dev-key
+$ npm run hackerpot -- dashboard --port 9502 --management-url http://127.0.0.1:9500 --api-key dev-key
 {"ts":"2026-09-15T17:02:36.493Z","kind":"startup","service":"dashboard","url":"http://127.0.0.1:9502/","source":"management API at 127.0.0.1:9500"}
 ```
 

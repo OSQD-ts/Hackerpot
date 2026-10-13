@@ -1,6 +1,7 @@
 import { applyQuery } from "./query.js";
 import { usableScore } from "./scores.js";
 import type { HitQuery, HitStore, HoneypotHit } from "../types.js";
+import { upgradeHit } from "../detectors/legacy.js";
 
 export interface ElasticStoreOptions {
   /** Base URL of the cluster, e.g. "http://localhost:9200" (Elasticsearch or OpenSearch). */
@@ -152,7 +153,7 @@ export class ElasticStore implements HitStore {
       });
       if (!res.ok) throw new Error(`search failed: ${res.status} ${await res.text()}`);
       const json = (await res.json()) as { hits?: { hits?: Array<{ _source: HoneypotHit }> } };
-      return (json.hits?.hits ?? []).map((h) => h._source).reverse();
+      return (json.hits?.hits ?? []).map((h) => upgradeHit(h._source)).reverse();
     } catch (err) {
       this.onError?.(err instanceof Error ? err : new Error(String(err)));
       return [];
@@ -193,7 +194,7 @@ export class ElasticStore implements HitStore {
       if (!res.ok) throw new Error(`search failed: ${res.status} ${await res.text()}`);
       const json = (await res.json()) as { hits?: { hits?: Array<{ _source: HoneypotHit }> } };
       // Descending from the cluster (that is what `size` selects on), ascending out.
-      const hits = (json.hits?.hits ?? []).map((h) => h._source).reverse();
+      const hits = (json.hits?.hits ?? []).map((h) => upgradeHit(h._source)).reverse();
       return applyQuery(hits, query);
     } catch (err) {
       this.onError?.(err instanceof Error ? err : new Error(String(err)));

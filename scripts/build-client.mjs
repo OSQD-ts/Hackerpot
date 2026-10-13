@@ -53,6 +53,11 @@ export async function buildClient() {
     charset: "utf8",
     write: false,
     metafile: true,
+    // `@osqd/jql` is a `file:` dependency, which npm installs as a copy or as a symlink to the
+    // sibling checkout depending on `install-links`. Followed, the symlink writes `../JQL/…`
+    // into the committed bundle's module comments; kept, both installs write the same
+    // `node_modules/@osqd/jql/…`, so the bundle does not depend on how it was installed.
+    preserveSymlinks: true,
     logLevel: "silent",
   });
 

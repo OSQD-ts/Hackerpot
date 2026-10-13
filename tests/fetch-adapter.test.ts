@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { fetchHoneypot, withFetchHoneypot } from "../src/adapters/fetch.js";
 import { HoneypotEngine } from "../src/core.js";
-import { dripFeedAction, notFoundAction, tarpitAction } from "../src/responses/index.js";
+import { dripFeedAction, notFoundAction, tarpitAction } from "../src/actions/index.js";
 import type { HoneypotHit } from "../src/types.js";
 
 const BROWSER = {
@@ -66,7 +66,7 @@ describe("withFetchHoneypot", () => {
       const engine = new HoneypotEngine({ enricher: null, responseActions: [notFoundAction()], policy: () => "not-found", onHit: (hit) => void hits.push(hit) });
       const handler = withFetchHoneypot(engine, () => new Response(null, { status }));
       for (let i = 0; i < 20; i++) await handler(request(`/section-${i}/overview`), { ip });
-      return hits.some((hit) => hit.detections.some((d) => d.detectorId === "path-bruteforce"));
+      return hits.some((hit) => hit.detections.some((d) => d.detector === "path-bruteforce"));
     };
     expect(await run(404, "203.0.113.95")).toBe(true);
     expect(await run(200, "203.0.113.96")).toBe(false);

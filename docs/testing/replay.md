@@ -112,7 +112,7 @@ import { HoneypotEngine, MemoryStore, formatReplaySummary, parseLogLine, readLog
 
 const engine = new HoneypotEngine({ store: new MemoryStore(), enricher: null });   // an engine of its own
 const summary = await replayLog(engine, readLogLines("access.log"), {
-  onFlagged: (request, result) => console.log(request.ip, request.target, result.detections.map((d) => d.detectorId)),
+  onFlagged: (request, result) => console.log(request.ip, request.target, result.detections.map((d) => d.detector)),
 });
 console.log(formatReplaySummary(summary));
 ```

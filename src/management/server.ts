@@ -7,7 +7,8 @@ import { IncidentBroker } from "./broker.js";
 import { WebhookDispatcher } from "./webhooks.js";
 import { computeActors, computeIoc, computeSessions, computeStats, getIncident, listIncidents } from "./rest.js";
 import { IncidentCounters } from "./metrics.js";
-import { hardenHttpServer } from "../http-hardening.js";
+import type { EngineCounters } from "./metrics.js";
+import { hardenHttpServer } from "../internal/http-hardening.js";
 import type { ManagementConfig } from "./types.js";
 import type { TrafficAnomaly } from "../audit.js";
 
@@ -28,6 +29,11 @@ export interface ManagementServerOptions extends ManagementConfig {
    * `() => engine.detectorFailures`. A failure is not an incident, so the store cannot supply it.
    */
   detectorFailures?: () => Map<string, number> | Record<string, number>;
+  /**
+   * Everything else the engine counts that no incident carries — exemptions and evaluation time.
+   * Pass `() => engine.counters()`.
+   */
+  engineCounters?: () => EngineCounters;
 }
 
 /**
@@ -46,6 +52,7 @@ export class ManagementServer {
   private readonly onError: ((error: Error) => void) | undefined;
   private readonly metricsProvider: (() => Record<string, number> | Promise<Record<string, number>>) | undefined;
   private readonly detectorFailures: (() => Map<string, number> | Record<string, number>) | undefined;
+  private readonly engineCounters: (() => EngineCounters) | undefined;
   private server?: http.Server;
   private wss?: WebSocketServer;
   private webhooks?: WebhookDispatcher;
@@ -79,6 +86,7 @@ export class ManagementServer {
     this.onError = options.onError;
     this.metricsProvider = options.metrics;
     this.detectorFailures = options.detectorFailures;
+    this.engineCounters = options.engineCounters;
   }
 
   /**
@@ -385,7 +393,7 @@ export class ManagementServer {
    */
   async metricsText(): Promise<string> {
     const extra = this.metricsProvider ? await this.metricsProvider() : undefined;
-    return this.counters.render(extra, { stream_dropped_total: this.streamDroppedTotal }, this.detectorFailures?.());
+    return this.counters.render(extra, { stream_dropped_total: this.streamDroppedTotal }, this.detectorFailures?.(), this.engineCounters?.());
   }
 
   address(): ReturnType<http.Server["address"]> {

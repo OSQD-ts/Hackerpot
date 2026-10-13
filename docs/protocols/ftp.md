@@ -48,7 +48,7 @@ const ftp = new FtpHoneypot({
   port: 2121,                    // 21 needs privileges
   banner: "(vsFTPd 3.0.3)",
   store,
-  onHit: (hit) => console.warn("[ftp]", hit.detections[0]?.detectorId, hit.path),
+  onHit: (hit) => console.warn("[ftp]", hit.detections[0]?.detector, hit.path),
   dropAboveScore: 40,
 });
 await ftp.listen();
@@ -86,7 +86,7 @@ max_command_length = 512
 max_session_ms = 120000
 ```
 
-To try it: `npm run demo` starts it on `:2121`, and `npm run simulate:ftp` drives it.
+To try it: `npm run demo` starts it on `:2121`, and `npm run simulate ftp` drives it.
 
 ## Related
 

@@ -1,4 +1,6 @@
 import { createHmac } from "node:crypto";
+import { systemClock, type Clock } from "../internal/clock.js";
+import { TtlLru } from "../internal/lru.js";
 import { renderAlert, renderAnomaly, renderSuppressedSummary } from "./alerts.js";
 import type { TrafficAnomaly } from "../audit.js";
 import type { IncidentBroker } from "./broker.js";
@@ -53,12 +55,17 @@ export interface WebhookDispatcherOptions {
   globalMaxPerMinute?: number;
   /** Overrides how long suppressed alerts are counted before the summary is sent. Mainly for tests. */
   summaryIntervalMs?: number;
+  /** Where "now" comes from. Default the system clock. */
+  clock?: Clock;
 }
 
 /** Per-webhook delivery state for de-duplication, throttling and suppression summaries. */
 interface HookState {
-  /** Last-alert time per source IP, for de-duplication. */
-  recentByIp: Map<string, number>;
+  /**
+   * Last-alert time per source address, for de-duplication. Bounded and expiring: the
+   * addresses are attacker-chosen, and an entry older than the dedupe window says nothing.
+   */
+  recentByIp: TtlLru<number>;
   /** Timestamps of recent deliveries, for the throttle window. */
   sends: number[];
   /** Deliveries currently in flight — bounded by `maxInFlight`. */
@@ -89,12 +96,26 @@ export class WebhookDispatcher {
   private globalSends: number[] = [];
   private unsubscribe: (() => void) | undefined;
 
+  /** Where "now" comes from: the dedupe window, the throttle and the signature timestamp. */
+
+  private readonly clock: Clock;
+
+
   constructor(options: WebhookDispatcherOptions) {
+
+    this.clock = options.clock ?? systemClock;
     this.webhooks = options.webhooks;
     this.onError = options.onError;
     this.globalMaxPerMinute = options.globalMaxPerMinute;
     this.summaryIntervalMs = options.summaryIntervalMs;
-    this.state = this.webhooks.map(() => ({ recentByIp: new Map(), sends: [], inFlight: 0, dropped: 0, suppressed: 0, summaryTimer: undefined }));
+    this.state = this.webhooks.map((hook) => ({
+      recentByIp: new TtlLru<number>(10_000, Math.max(1_000, (hook.dedupeWindowSeconds ?? 0) * 1000), this.clock),
+      sends: [],
+      inFlight: 0,
+      dropped: 0,
+      suppressed: 0,
+      summaryTimer: undefined,
+    }));
   }
 
   attach(broker: IncidentBroker): void {
@@ -114,8 +135,18 @@ export class WebhookDispatcher {
     }
   }
 
+  /**
+   * Delivers one incident to every webhook that accepts it.
+   *
+   * The same path `attach()` drives, exposed for the notification hub, which fans out to
+   * every sink rather than each sink subscribing to a broker of its own.
+   */
+  async deliverIncident(incident: Incident): Promise<void> {
+    await this.dispatch(incident);
+  }
+
   private async dispatch(incident: Incident): Promise<void> {
-    const now = Date.now();
+    const now = this.clock.now();
     const pending: Array<Promise<void>> = [];
     for (let i = 0; i < this.webhooks.length; i++) {
       const hook = this.webhooks[i]!;
@@ -146,7 +177,7 @@ export class WebhookDispatcher {
   private shouldSend(hook: WebhookConfig, state: HookState, ip: string, now: number): boolean {
     const dedupeMs = (hook.dedupeWindowSeconds ?? 0) * 1000;
     if (dedupeMs > 0) {
-      const last = state.recentByIp.get(ip);
+      const last = state.recentByIp.peek(ip);
       if (last !== undefined && now - last < dedupeMs) return false;
     }
     if (hook.throttleWindowSeconds && hook.maxPerWindow) {
@@ -155,11 +186,7 @@ export class WebhookDispatcher {
       if (state.sends.length >= hook.maxPerWindow) return false;
       state.sends.push(now);
     }
-    if (dedupeMs > 0) {
-      state.recentByIp.set(ip, now);
-      // Bound the dedup map: drop entries older than the dedup window.
-      for (const [k, t] of state.recentByIp) if (now - t >= dedupeMs) state.recentByIp.delete(k);
-    }
+    if (dedupeMs > 0) state.recentByIp.set(ip, now);
     return true;
   }
 
@@ -169,7 +196,7 @@ export class WebhookDispatcher {
    * dedupe, throttle and `minScore` do not apply; the global cap and in-flight cap do.
    */
   announce(anomaly: TrafficAnomaly): void {
-    const now = Date.now();
+    const now = this.clock.now();
     for (let i = 0; i < this.webhooks.length; i++) {
       const hook = this.webhooks[i]!;
       if (hook.anomalies === false) continue;
@@ -223,7 +250,10 @@ export class WebhookDispatcher {
   private async deliver(hook: WebhookConfig, incident: Incident): Promise<void> {
     // Credentials are stripped from the copy that leaves the process unless the operator
     // opted out for this hook. See `WebhookConfig.redact`.
-    const outgoing = hook.redact === false ? incident : redactIncident(incident);
+    // The two are independent: a receiver may be trusted with credentials and still have no
+    // business knowing exactly which household an address belongs to, or the reverse.
+    const outgoing =
+      hook.redact === false && hook.maskIp !== true ? incident : redactIncident(incident, { credentials: hook.redact !== false, maskIp: hook.maskIp === true });
     // The renderer owns both the payload shape and the escaping the destination needs:
     // native incident JSON for your own receiver, an escaped and mention-neutered
     // message for a chat platform. It also decides the `omitBody` default per format.
@@ -248,7 +278,7 @@ export class WebhookDispatcher {
       const attemptHeaders = { ...headers };
       if (hook.secret) {
         // Signed per attempt, so a retry after a backoff is not rejected as stale.
-        const timestamp = String(Math.floor(Date.now() / 1000));
+        const timestamp = String(Math.floor(this.clock.now() / 1000));
         attemptHeaders["X-Hackerpot-Timestamp"] = timestamp;
         attemptHeaders["X-Hackerpot-Signature-V2"] = `sha256=${createHmac("sha256", hook.secret).update(`${timestamp}.${body}`).digest("hex")}`;
       }

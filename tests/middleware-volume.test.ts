@@ -2,7 +2,7 @@ import { EventEmitter } from "node:events";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { describe, expect, it } from "vitest";
 import { HoneypotEngine } from "../src/core.js";
-import { createMiddleware, type MiddlewareOptions } from "../src/middleware.js";
+import { createMiddleware, type MiddlewareOptions } from "../src/adapters/node.js";
 import { parseConfig } from "../src/config/schema.js";
 import type { RequestFacts } from "../src/detectors/types.js";
 import type { HoneypotHit } from "../src/types.js";
@@ -82,7 +82,7 @@ function site(options: MiddlewareOptions = {}) {
       res.end();
     });
   };
-  const fired = (id: string): boolean => hits.some((hit) => hit.detections.some((d) => d.detectorId === id));
+  const fired = (id: string): boolean => hits.some((hit) => hit.detections.some((d) => d.detector === id));
   return { engine, visit, fired };
 }
 

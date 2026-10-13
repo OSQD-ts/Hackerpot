@@ -12,6 +12,44 @@ import type { ActorGroup, AttackSession, Incident, IocEntry, StatsSummary, TabNa
 
 export type StreamState = "off" | "connecting" | "live" | "paused" | "down";
 
+/**
+ * What `/api/counts` returns.
+ *
+ * Kept apart from the incidents themselves because the list this page holds is bounded — by
+ * retention, by its page size, by what the live feed dropped — so its length answers "how many
+ * rows are here" and never "how many happened".
+ */
+/** One thing the engine said about itself. Mirrors `Notice` in the engine. */
+export interface DashboardNotice {
+  timestamp: string;
+  message: string;
+  /** Present when the notice came from a runtime change, and says which part and by whom. */
+  change?: { part: string; summary: string; by?: string };
+}
+
+export interface FeedCountsSnapshot {
+  total: number;
+  /** The earliest instant these counts can speak for. */
+  oldest?: number;
+  series: ReadonlyArray<{ at: number; total: number }>;
+}
+
+export type FeedOrder = "newest" | "oldest" | "score-high" | "score-low";
+export type FeedGroup = "none" | "ip" | "actor" | "detector" | "outcome" | "path";
+
+export interface FeedArrangement {
+  order: FeedOrder;
+  group: FeedGroup;
+  /** Zero-based page of the filtered rows. */
+  page: number;
+  pageSize: number;
+  /** Group keys rolled up. */
+  collapsed: Set<string>;
+  /** The From/To window, epoch milliseconds. Either end may be open. */
+  from: number | undefined;
+  to: number | undefined;
+}
+
 export interface State {
   /** The analytics corpus: the most recent incidents, oldest first. */
   all: Incident[];
@@ -22,6 +60,10 @@ export interface State {
   stats: StatsSummary | undefined;
   /** Incidents heard on the stream since `stats` was fetched, so the headline count keeps moving. */
   liveSinceStats: number;
+  /** How many incidents happened, as opposed to how many are held. Undefined until fetched. */
+  counts: FeedCountsSnapshot | undefined;
+  /** What the engine has said about itself. Empty when this dashboard reads another process. */
+  notices: DashboardNotice[];
   sessions: AttackSession[];
   actors: ActorGroup[];
   ioc: IocEntry[];
@@ -33,6 +75,8 @@ export interface State {
   iocMin: number;
   tab: TabName;
   filter: IncidentFilter;
+  /** How the Incidents table is arranged and paged, bothandlerjs's feed controls. */
+  feed: FeedArrangement;
   ipSort: { key: IpSortKey; dir: 1 | -1 };
   live: boolean;
   stream: StreamState;
@@ -55,6 +99,8 @@ export const state: State = {
   incidents: [],
   stats: undefined,
   liveSinceStats: 0,
+  counts: undefined,
+  notices: [],
   sessions: [],
   actors: [],
   ioc: [],
@@ -64,7 +110,8 @@ export const state: State = {
   proto: "",
   iocMin: 0,
   tab: "overview",
-  filter: { limit: 100, detector: "", ip: "" },
+  filter: { limit: 100, detector: "", ip: "", query: "", outcome: "" },
+  feed: { order: "newest", group: "none", page: 0, pageSize: 50, collapsed: new Set(), from: undefined, to: undefined },
   ipSort: { key: "score", dir: -1 },
   live: true,
   stream: "off",

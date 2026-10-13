@@ -3,7 +3,8 @@ import { isEmbedded } from "./dom.js";
 import { withToken } from "./query.js";
 
 /**
- * The page's one way of talking to its server: same-origin `GET`s under `${base}/api`.
+ * The page's one way of talking to its server: same-origin requests under `${base}/api` — `GET`s, and a `POST`
+ * for each control the deployment granted.
  *
  * `credentials: "same-origin"`, so whatever authenticated the page (a Basic prompt, a
  * session cookie your `authorize` reads) authenticates its requests too, and nothing is
@@ -74,6 +75,27 @@ export async function getJson<T>(path: string): Promise<T> {
   } catch {
     throw new ApiError(response.status, endpointName(path), "the answer was not JSON");
   }
+}
+
+/**
+ * A control's POST. Same-origin like every other request, which the server also requires of any
+ * unsafe method, so a page on another origin cannot drive a control with a viewer's credentials.
+ */
+export async function postJson<T>(path: string, body: unknown): Promise<T> {
+  let response: Response;
+  try {
+    response = await fetch(apiUrl(path), {
+      method: "POST",
+      credentials: "same-origin",
+      cache: "no-store",
+      headers: { accept: "application/json", "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  } catch (error) {
+    throw new ApiError(0, endpointName(path), error instanceof Error ? error.message : String(error));
+  }
+  if (!response.ok) throw new ApiError(response.status, endpointName(path), await readError(response));
+  return (await response.json()) as T;
 }
 
 export async function getText(path: string): Promise<string> {

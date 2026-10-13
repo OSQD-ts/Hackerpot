@@ -9,10 +9,15 @@ keeps the honeypot safe to run next to production and keeps the codebase honest.
 npm install
 npm run typecheck      # src + tests + examples (tsconfig.typecheck.json)
 npm test               # Vitest
+npm run test:browser   # the dashboard in a real browser (needs `npx playwright install`)
 npm run lint           # Biome (biome check .); npm run format applies fixes
 npm run build          # emit dist/ (ESM + CJS + .d.ts), src only
 npm run demo           # every listener + the dashboard, from source
 ```
+
+`@osqd/jql`, the query language the dashboard's search box speaks, is a development dependency
+bundled into the dashboard's browser script rather than shipped alongside it, so installing
+hackerpot never installs it.
 
 Node.js ≥ 20. TypeScript is `strict` with `exactOptionalPropertyTypes` and
 `noUncheckedIndexedAccess` — expect the compiler to be picky, on purpose.
@@ -23,16 +28,12 @@ The scripts you will use most:
 | --- | --- |
 | `npm run demo` | the HTTP honeypot :4004, SSH, SMTP, FTP, Telnet, port-scan sentinels, the management API :9500 (key `dev-key`) and the dashboard :9501 |
 | `npm run demo:embedded` | the dashboard as `<hackerpot-dashboard>` inside a page |
-| `npm run simulate` | fire every attack scenario at a running demo; `npm run simulate:<scenario>` for one, `npm run simulate:list` to list them |
-| `npm run simulate:corpus` | send the labelled corpus over real sockets and check what fired; `simulate:corpus:human` for the human cases only |
+| `npm run simulate` | fire every attack scenario at a running demo; `npm run simulate <scenario>` for one, `npm run simulate -- --list` to list them |
+| `npm run simulate:corpus` | send the labelled corpus over real sockets and check what fired; `simulate:corpus -- --audience human` for the human cases only |
 | `npm run corpus` | run the corpus against a configuration |
-| `npm run serve` | the real service from source (`hackerpot serve`) |
+| `npm run hackerpot -- <command>` | the `hackerpot` command from source: `serve`, `dashboard`, `replay <log>`, `explain "<UA\|curl\|headers>"`, `config`, `check` |
 | `npm start` | the built service (`bin/hackerpot.mjs`) |
-| `npm run dashboard` | `hackerpot dashboard`, reading a running management API |
-| `npm run replay -- <log>` | `hackerpot replay` |
-| `npm run explain -- "<UA\|curl\|headers>"` | `hackerpot explain` |
-| `npm run config:check` | `hackerpot config`: validate and print the resolved configuration |
-| `npm run config:verify` | `hackerpot check`: serve every enabled response action once |
+| `npm run check` | typecheck, lint, tests and the docs link check — what to run before a pull request |
 | `npm run docs:check` | every local markdown link and heading anchor resolves |
 | `npm run bench:guard` | fail if the request path got materially slower |
 | `npm run check:package` | build, pack, install into an empty project, load as ESM, CJS and a command |
@@ -53,55 +54,64 @@ current API, and a "Related" list.
 
 Detection and response are decoupled. A **detector** ([`src/detectors/`](src/detectors/))
 recognizes something and returns a scored `Detection`; it does not decide what
-happens next. A **response action** ([`src/responses/`](src/responses/)) produces the
+happens next. A **response action** ([`src/actions/`](src/actions/)) produces the
 reply. A **policy** picks the action from the detections and the IP's cumulative
 score. A **store** ([`src/stores/`](src/stores/)) holds incidents and scores. Add to a
 layer without touching the others.
 
 ## Project layout
 
+The same module map as bothandlerjs: the pipeline in `detectors/`, `policy/` and `actions/`, the
+front ends in `adapters/`, delivery in `notify/`, and anything without a public API of its own in
+`internal/`. What only a honeypot has — protocol emulators, the TOML service, the management API —
+sits beside it rather than inside it.
+
 ```
 src/
   core.ts              HoneypotEngine: runs detectors, scores, picks a response
-  middleware.ts        Express/Connect middleware (two-pass, body-safe) and trapFormGuard
-  adapters/            Koa, Fastify, Fetch; the @osqd/hackerpot/adapters entry
-  server.ts            the standalone HTTP server
+  types.ts             HoneypotHit, HitStore and the config the engine takes
+  evidence.ts          certainty and confidence: how strong a finding is
+  adapters/            the front ends: node.ts (Express/Connect middleware, trapFormGuard),
+                       server.ts (the standalone HTTP server), Koa, Fastify, Fetch;
+                       index.ts is the @osqd/hackerpot/adapters entry
+  detectors/           one file per detector + defaultDetectors()
+  policy/              choosing a response: rules, the ladder, presets
+  actions/             one file per response action + the response check
+  stores/              memory, file (with rotation), redis, elastic, composite, query semantics
+  notify/              the notification hub and its sinks, syslog forwarding, CEF and RFC 3164
+  site/                the site profile: what this site's own traffic looks like
+  dashboard/           the operator dashboard: server, sources, page
+  dashboard/client/    its browser code, bundled into client.generated.ts
+  element/             <hackerpot-dashboard>
+  management/          REST, WebSocket, webhooks, metrics, redaction, Slack/Discord rendering
+  protocols/           ssh/, ftp/, telnet/, smtp/ honeypots, and shell.ts, the scripted fake
+                       shell SSH and Telnet share — nothing executes
+  config/              TOML: schema, loading, environment, building the engine, reload planning
+  intel/               threat-intel feed ingest
+  corpus/              labelled traffic and its runner; the @osqd/hackerpot/corpus entry
+  internal/            no public API of its own: clock, DNS, deadlines, patterns, LRU, HTTP
+                       request reading and hardening, the text log format, delays
   service.ts           the service `hackerpot serve` runs: every listener a config enables
   cli.ts               the command line; standalone.ts runs it (the container CMD)
-  http-request.ts      bounded body read, null-prototype query, path normalisation
-  http-hardening.ts    timeouts and a connection cap
   state.ts             per-IP sliding windows and the fingerprint registry
-  fingerprint.ts       the actor fingerprint
+  audit.ts             the traffic audit
+  labels.ts            actor labels
+  service-tokens.ts    constant-time service tokens
+  crawler-ranges.ts    published crawler address ranges
   allowlist.ts         CIDR matching by value
   blocklist.ts         memory, Redis, composite blocklists
   firewall.ts          enforcing blocklist, command and webhook enforcers
-  audit.ts             the traffic audit
-  service-tokens.ts    constant-time service tokens
-  crawler-ranges.ts    published crawler address ranges
-  explain.ts           hackerpot explain
+  fingerprint.ts       the actor fingerprint
+  marker.ts            the signed marker cookie
+  enrichment.ts        special-use IP classification
+  explain.ts           hackerpot explain, and parseRequest
   replay.ts            hackerpot replay
   robots.ts            robots.txt generation
-  enrichment.ts        special-use IP classification
-  formats.ts           CEF and RFC 3164
-  syslog.ts            syslog forwarding, independent of the management API
-  logfmt.ts            the injection-safe text log
-  shell.ts             the scripted fake shell SSH and Telnet share — nothing executes
-  config/              TOML: schema, loading, environment, building the engine, reload planning
-  detectors/           one file per detector + defaultDetectors()
-  responses/           one file per response action + the default policy + the response check
-  stores/              memory, file (with rotation), redis, elastic, composite, query semantics
-  management/          REST, WebSocket, webhooks, metrics, redaction, Slack/Discord rendering
-  dashboard/           the operator dashboard: server, sources, page
-  dashboard/client/    its browser code, bundled into client.generated.ts
-  intel/               threat-intel feed ingest
-  smtp/ ssh/ ftp/      protocol honeypots
-  telnet/              Telnet honeypot + codec.ts (IAC negotiation)
-  internal/            DNS, deadlines, stateless patterns
 bin/hackerpot.mjs      the published command
 demo/                  the local demo stack
 scripts/               simulator, corpus runner, nginx generator, benchmarks, link and package checks
 examples/              a minimal integration to copy from
-tests/                 Vitest suites: unit, integration, false-positive, corpus, hardening
+tests/                 Vitest suites, one file per module (<module>.test.ts), helpers.ts shared
 hackerpot.toml         the default config — every built-in default, annotated
 Dockerfile             multi-stage image running dist/standalone.js
 docker-compose.yml     honeypot + redis + hit-log volume, and the dashboard profile

@@ -1,7 +1,7 @@
 import { EventEmitter } from "node:events";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { HoneypotEngine } from "../core.js";
-import { createMiddleware, type HoneypotMiddleware, type MiddlewareOptions } from "../middleware.js";
+import { createMiddleware, type HoneypotMiddleware, type MiddlewareOptions } from "./node.js";
 
 export interface FetchHoneypotContext {
   /**

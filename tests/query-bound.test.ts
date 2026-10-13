@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { HoneypotEngine } from "../src/core.js";
 import { defaultDetectors } from "../src/detectors/index.js";
 import type { Detector, RequestFacts } from "../src/detectors/types.js";
-import { MAX_QUERY_PARAMS, boundedQuery } from "../src/http-request.js";
+import { MAX_QUERY_PARAMS, boundedQuery } from "../src/internal/http.js";
 
 const BROWSER = {
   host: "shop.example",
@@ -41,9 +41,9 @@ describe("query parameters are bounded before detection", () => {
   it("flags the flood itself, so hiding a payload behind it does not evade detection", async () => {
     const hidden = flood(1000, { q: "' UNION SELECT password FROM users --" });
     const result = await new HoneypotEngine({ enricher: null, detectors: defaultDetectors() }).evaluate(facts(hidden));
-    const anomaly = result.detections.find((d) => d.detectorId === "header-anomaly");
+    const anomaly = result.detections.find((d) => d.detector === "header-anomaly");
     expect(anomaly?.metadata?.["kind"]).toBe("query-flood");
-    expect(anomaly?.reason).toContain("1001 query parameters");
+    expect(anomaly?.summary).toContain("1001 query parameters");
   });
 
   it("leaves an ordinary query alone", async () => {

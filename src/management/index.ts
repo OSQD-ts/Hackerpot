@@ -8,6 +8,7 @@ export type { WebhookDispatcherOptions } from "./webhooks.js";
 export { extractApiKey, isAuthorized } from "./auth.js";
 export { listIncidents, getIncident, computeStats, computeIoc, computeSessions, computeActors } from "./rest.js";
 export type { IncidentQuery, StatsSummary, IocEntry, AttackSession, ActorGroup } from "./rest.js";
-export { IncidentCounters, renderMetrics } from "./metrics.js";
+export { DURATION_BUCKETS_MS, IncidentCounters, SCORE_BUCKETS, renderMetrics } from "./metrics.js";
+export type { EngineCounters } from "./metrics.js";
 export { REDACTED, isSecretHeader, redactIncident } from "./redact.js";
 export type { Incident, ManagementConfig, WebhookConfig } from "./types.js";

@@ -1,4 +1,4 @@
-import { ConfigError, Section } from "./reader.js";
+import { ConfigError, Section, toRegExp } from "./reader.js";
 import { IpAllowlist } from "../allowlist.js";
 import { defaultDecoyPaths } from "../detectors/index.js";
 import type {
@@ -20,6 +20,8 @@ import type {
   PayloadInjectionOptions,
   PrototypePollutionOptions,
   RateSpikeOptions,
+  MarkerDriftOptions,
+  PathNoveltyOptions,
   RepeatActorOptions,
   ScannerSignatureOptions,
   SensitiveFileOptions,
@@ -39,9 +41,12 @@ import type {
   LargePayloadOptions,
   RateLimitOptions,
   TarpitOptions,
-} from "../responses/index.js";
+} from "../actions/index.js";
+import { PRESET_NAMES } from "../policy/presets.js";
+import { DEFAULT_MAX_EVENTS, MAX_IPS_PER_FINGERPRINT } from "../state.js";
+import type { PresetName } from "../policy/presets.js";
 import type { AlertFormat, WebhookConfig } from "../management/index.js";
-import type { SyslogMessageFormat } from "../syslog.js";
+import type { SyslogMessageFormat } from "../notify/syslog.js";
 
 /**
  * The shape of a hackerpot TOML file, after parsing, validation, and defaulting.
@@ -83,11 +88,71 @@ export interface EngineConfig {
   shadowDetectors: string[];
 }
 
+/**
+ * One `[[policy.rules]]` entry, as written in the file.
+ *
+ * Patterns are kept as their source text rather than compiled here, so two configurations
+ * compare equal exactly when the file says the same thing — which is what the SIGHUP reload
+ * uses to decide whether the policy actually changed. `buildPolicy` compiles them.
+ */
+export interface PolicyRuleConfig {
+  id: string;
+  /** A response action id, or `"@detector"` for whatever the detector asked for. */
+  respondWith: string;
+  fallbackAction?: string | undefined;
+  reason?: string | undefined;
+  match: {
+    detector?: string[] | undefined;
+    certain?: boolean | undefined;
+    minScore?: number | undefined;
+    maxScore?: number | undefined;
+    minConfidence?: number | undefined;
+    maxConfidence?: number | undefined;
+    minTotalScore?: number | undefined;
+    maxTotalScore?: number | undefined;
+    pathPrefix?: string[] | undefined;
+    pathPattern?: string[] | undefined;
+    method?: string[] | undefined;
+    ip?: string[] | undefined;
+  };
+}
+
+/**
+ * One `[[actors]]` entry: a name for a source you already know.
+ *
+ * Patterns are kept as their source text, as in `PolicyRuleConfig`, so two configurations
+ * compare equal exactly when the file says the same thing.
+ */
+export interface ActorLabelConfig {
+  name: string;
+  ip?: string[] | undefined;
+  asn?: number[] | undefined;
+  org?: string | undefined;
+  userAgent?: string | undefined;
+  hostname?: string | undefined;
+  note?: string | undefined;
+  hideFromFeed?: boolean | undefined;
+}
+
+export interface MarkersConfig {
+  enabled: boolean;
+  /** HMAC secret. Required when enabled: an unsigned marker is one an attacker can mint. */
+  secret: string;
+  name: string;
+  maxAgeSeconds: number;
+  secure: boolean;
+  sameSite: "Lax" | "Strict" | "None";
+}
+
 export interface PolicyConfig {
   /** Cumulative score at which an IP is blocked outright. */
   blockThreshold: number;
   /** Cumulative score at which unclaimed detections are tarpitted. */
   tarpitThreshold: number;
+  /** A shipped rule set to start from, consulted after any rules written here. */
+  preset?: PresetName | undefined;
+  /** Rules, in order. The first that matches decides the response. */
+  rules: PolicyRuleConfig[];
 }
 
 export interface FileStoreConfig {
@@ -242,6 +307,8 @@ export interface DetectorsConfig {
   "scanner-signature": Toggle<ScannerSignatureOptions>;
   "client-anomaly": Toggle<ClientAnomalyOptions>;
   "repeat-actor": Toggle<RepeatActorOptions>;
+  "path-novelty": Toggle<PathNoveltyOptions>;
+  "marker-drift": Toggle<MarkerDriftOptions>;
   "rate-spike": Toggle<RateSpikeOptions>;
   honeytoken: Toggle<HoneytokenOptions>;
 }
@@ -354,6 +421,10 @@ export interface TelnetConfig {
 }
 
 export interface SyslogConfig {
+  /** Strip credentials before an incident leaves for the collector. */
+  redact: boolean;
+  /** Send the source address as its network rather than in full. */
+  maskIp: boolean;
   enabled: boolean;
   /** Collector address. */
   host: string;
@@ -443,6 +514,15 @@ export interface HackerpotConfig {
   logging: LoggingConfig;
   engine: EngineConfig;
   policy: PolicyConfig;
+  /** Names for known sources. A label never exempts anybody — see `[[actors]]`. */
+  actors: ActorLabelConfig[];
+  /** The marker handed to whoever probes, for correlating a client across addresses. */
+  markers: MarkersConfig;
+  /**
+   * Webhooks configured at the top level, delivered whether or not the management API is
+   * enabled. `[[management.webhooks]]` still works and the two are delivered together.
+   */
+  webhooks: WebhookConfig[];
   store: StoreConfig;
   blocklist: BlocklistConfig;
   intel: IntelConfig;
@@ -703,14 +783,18 @@ function parseDetectors(section: Section): DetectorsConfig {
   const credentialOptions: CredentialBruteforceOptions = {};
   put(credentialOptions, "authPaths", credential.regexp("auth_paths"));
   put(credentialOptions, "windowMs", credential.integer("window_ms"));
-  put(credentialOptions, "attemptThreshold", credential.integer("attempt_threshold"));
+  const attempts = credential.integer("attempt_threshold");
+  put(credentialOptions, "attemptThreshold", attempts);
+  capped(credential, "attempt_threshold", attempts, DEFAULT_MAX_EVENTS, "one address's activity window holds only so many requests");
   const credentialBruteforce = toggle(credential, true, credentialOptions);
   credential.done();
 
   const pathBrute = child(section, "path-bruteforce");
   const pathOptions: PathBruteforceOptions = {};
   put(pathOptions, "windowMs", pathBrute.integer("window_ms"));
-  put(pathOptions, "uniquePathThreshold", pathBrute.integer("unique_path_threshold"));
+  const uniquePaths = pathBrute.integer("unique_path_threshold");
+  put(pathOptions, "uniquePathThreshold", uniquePaths);
+  capped(pathBrute, "unique_path_threshold", uniquePaths, DEFAULT_MAX_EVENTS, "one address's activity window holds only so many requests");
   const pathBruteforce = toggle(pathBrute, true, pathOptions);
   pathBrute.done();
 
@@ -727,9 +811,33 @@ function parseDetectors(section: Section): DetectorsConfig {
   const clientAnomaly = toggle(client, true, clientOptions);
   client.done();
 
+  const drift = child(section, "marker-drift");
+  const driftOptions: MarkerDriftOptions = {};
+  const driftThreshold = drift.integer("distinct_ip_threshold");
+  put(driftOptions, "distinctIpThreshold", driftThreshold);
+  capped(drift, "distinct_ip_threshold", driftThreshold, MAX_IPS_PER_FINGERPRINT, "the registry remembers only so many addresses per marker");
+  put(driftOptions, "windowMs", drift.integer("window_ms"));
+  // Off by default: it needs [markers], which only work in front of a real application.
+  const markerDrift = toggle(drift, false, driftOptions);
+  drift.done();
+
+  const novelty = child(section, "path-novelty");
+  const noveltyOptions: PathNoveltyOptions = {};
+  put(noveltyOptions, "windowMs", novelty.integer("window_ms"));
+  put(noveltyOptions, "unseenPathThreshold", novelty.integer("unseen_path_threshold"));
+  put(noveltyOptions, "walkerThreshold", novelty.integer("walker_threshold"));
+  put(noveltyOptions, "minObservations", novelty.integer("min_observations"));
+  put(noveltyOptions, "minServedPaths", novelty.integer("min_served_paths"));
+  // Off by default: it reads the site baseline, which is only fed where the application
+  // answers requests itself — middleware mode.
+  const pathNovelty = toggle(novelty, false, noveltyOptions);
+  novelty.done();
+
   const actor = child(section, "repeat-actor");
   const actorOptions: RepeatActorOptions = {};
-  put(actorOptions, "distinctIpThreshold", actor.integer("distinct_ip_threshold"));
+  const actorThreshold = actor.integer("distinct_ip_threshold");
+  put(actorOptions, "distinctIpThreshold", actorThreshold);
+  capped(actor, "distinct_ip_threshold", actorThreshold, MAX_IPS_PER_FINGERPRINT, "the registry remembers only so many addresses per fingerprint");
   put(actorOptions, "windowMs", actor.integer("window_ms"));
   const repeatActor = toggle(actor, true, actorOptions);
   actor.done();
@@ -769,6 +877,8 @@ function parseDetectors(section: Section): DetectorsConfig {
     "scanner-signature": scannerSignature,
     "client-anomaly": clientAnomaly,
     "repeat-actor": repeatActor,
+    "path-novelty": pathNovelty,
+    "marker-drift": markerDrift,
     "rate-spike": rateSpike,
     honeytoken,
   };
@@ -1080,6 +1190,8 @@ function parseSyslog(section: Section): SyslogConfig {
     minScore: section.integer("min_score", 0),
     maxBytes: section.integer("max_bytes", 1024),
     includeBody: section.boolean("include_body", false),
+    redact: section.boolean("redact", true),
+    maskIp: section.boolean("mask_ip", false),
   };
   // Enabled with nowhere to send is the failure an operator finds months later, when
   // they go looking for the events they assumed had been arriving all along.
@@ -1111,6 +1223,7 @@ function parseWebhook(section: Section): WebhookConfig {
   put(webhook, "dedupeWindowSeconds", section.integer("dedupe_window_seconds"));
   put(webhook, "omitBody", section.boolean("omit_body"));
   put(webhook, "redact", section.boolean("redact"));
+  put(webhook, "maskIp", section.boolean("mask_ip"));
   put(webhook, "anomalies", section.boolean("anomalies"));
 
   // Throttling needs both halves; setting one alone silently does nothing, which
@@ -1160,6 +1273,94 @@ function parseManagement(section: Section): ManagementApiConfig {
 }
 
 /** Validates a parsed TOML document and fills in every default. */
+/** A string that is a `/pattern/flags` literal rather than plain text to match. */
+const REGEX_LITERAL = /^\/(.*)\/([a-z]*)$/s;
+
+/**
+ * Refuses a threshold the state behind it can never reach.
+ *
+ * The registries are bounded on purpose — the keys are attacker-chosen — and a threshold
+ * above a bound is not a strict setting, it is a detector that never fires. Silence reads as
+ * "nothing happened", so this is a startup error rather than something to discover months
+ * later when the traffic it was meant to catch turns out never to have been flagged.
+ */
+function capped(section: Section, key: string, value: number | undefined, cap: number, because: string): void {
+  if (value !== undefined && value > cap) {
+    section.fail(key, `is ${value}, which can never be reached: ${because} (at most ${cap}), so this detector would never fire`);
+  }
+}
+
+/** One `[[actors]]` table: what to call a source, and how to recognise it. */
+function parseActorLabel(actor: Section): ActorLabelConfig {
+  const name = actor.string("name");
+  if (name === undefined || name.trim() === "") actor.fail("name", "is required: it is what replaces the address wherever this actor appears");
+  // A bare string matches as a case-insensitive substring; a /pattern/flags literal is a
+  // regular expression. Only the second can fail to compile, so only it is validated here.
+  const text = (key: string): string | undefined => {
+    const value = actor.string(key);
+    if (value !== undefined && REGEX_LITERAL.test(value)) toRegExp(value, (message) => actor.fail(key, message));
+    return value;
+  };
+  const label: ActorLabelConfig = {
+    name,
+    ...(actor.has("ip") ? { ip: actor.ipList("ip", []) } : {}),
+    ...(actor.has("asn") ? { asn: actor.integerArray("asn", []) } : {}),
+    ...(actor.has("org") ? { org: text("org") } : {}),
+    ...(actor.has("user_agent") ? { userAgent: text("user_agent") } : {}),
+    ...(actor.has("hostname") ? { hostname: text("hostname") } : {}),
+    ...(actor.has("note") ? { note: actor.string("note") } : {}),
+    ...(actor.has("hide_from_feed") ? { hideFromFeed: actor.boolean("hide_from_feed") } : {}),
+  };
+  // A label with nothing to match on would name nobody, silently.
+  if (label.ip === undefined && label.asn === undefined && label.org === undefined && label.userAgent === undefined && label.hostname === undefined) {
+    actor.fail(undefined, `label "${name}" has nothing to match on; give it at least one of ip, asn, org, user_agent or hostname`);
+  }
+  actor.done();
+  return label;
+}
+
+/** A confidence, which is a share and not a score: outside [0, 1] it is a misunderstanding, not a value. */
+function confidence(rule: Section, key: string): number | undefined {
+  const value = rule.number(key);
+  if (value !== undefined && (value < 0 || value > 1)) rule.fail(key, `must be between 0 and 1 (it is a confidence, not a score), got ${value}`);
+  return value;
+}
+
+/** One `[[policy.rules]]` table. Absent match keys are absent constraints, so `{}` matches everything. */
+function parsePolicyRule(rule: Section, index: number): PolicyRuleConfig {
+  const id = rule.string("id", `rule-${index + 1}`);
+  if (id.trim() === "") rule.fail("id", "must not be empty: it is what an incident names when this rule decides");
+  const respondWith = rule.string("respond_with");
+  if (respondWith === undefined) rule.fail("respond_with", 'is required: a rule must say which response action to run, or "@detector" for the detector\'s own choice');
+  // Prefixes and patterns are separate keys rather than one guessed-at value: "/admin/" is a
+  // perfectly good prefix and a perfectly good regular expression, and a rule that silently
+  // read it as the wrong one would match the wrong traffic.
+  const pathPattern = rule.stringArray("path_pattern");
+  for (const pattern of pathPattern ?? []) toRegExp(pattern, (message) => rule.fail("path_pattern", message));
+  const parsed: PolicyRuleConfig = {
+    id,
+    respondWith,
+    ...(rule.has("fallback_action") ? { fallbackAction: rule.string("fallback_action") } : {}),
+    ...(rule.has("reason") ? { reason: rule.string("reason") } : {}),
+    match: {
+      ...(rule.has("detector") ? { detector: rule.stringArray("detector", []) } : {}),
+      ...(rule.has("certain") ? { certain: rule.boolean("certain") } : {}),
+      ...(rule.has("min_score") ? { minScore: rule.number("min_score") } : {}),
+      ...(rule.has("max_score") ? { maxScore: rule.number("max_score") } : {}),
+      ...(rule.has("min_confidence") ? { minConfidence: confidence(rule, "min_confidence") } : {}),
+      ...(rule.has("max_confidence") ? { maxConfidence: confidence(rule, "max_confidence") } : {}),
+      ...(rule.has("min_total_score") ? { minTotalScore: rule.number("min_total_score") } : {}),
+      ...(rule.has("max_total_score") ? { maxTotalScore: rule.number("max_total_score") } : {}),
+      ...(rule.has("path_prefix") ? { pathPrefix: rule.stringArray("path_prefix", []) } : {}),
+      ...(pathPattern !== undefined ? { pathPattern } : {}),
+      ...(rule.has("method") ? { method: rule.stringArray("method", []) } : {}),
+      ...(rule.has("ip") ? { ip: rule.ipList("ip", []) } : {}),
+    },
+  };
+  rule.done();
+  return parsed;
+}
+
 export function parseConfig(raw: Record<string, unknown>, source: string): HackerpotConfig {
   const root = new Section(source, "", raw);
 
@@ -1197,14 +1398,53 @@ export function parseConfig(raw: Record<string, unknown>, source: string): Hacke
   engine.done();
 
   const policy = root.section("policy");
+  const preset = policy.string("preset");
+  if (preset !== undefined && !PRESET_NAMES.includes(preset as PresetName)) {
+    policy.fail("preset", `must be one of ${PRESET_NAMES.map((name) => `"${name}"`).join(", ")}, got "${preset}"`);
+  }
+  const rules = (policy.sections("rules") ?? []).map(parsePolicyRule);
+  const ruleIds = new Set<string>();
+  for (const rule of rules) {
+    if (ruleIds.has(rule.id)) policy.fail("rules", `has two rules with the id "${rule.id}"; an incident could not say which one decided`);
+    ruleIds.add(rule.id);
+  }
   const policyConfig: PolicyConfig = {
     blockThreshold: policy.integer("block_threshold", 40),
     tarpitThreshold: policy.integer("tarpit_threshold", 15),
+    ...(preset !== undefined ? { preset: preset as PresetName } : {}),
+    rules,
   };
   if (policyConfig.tarpitThreshold > policyConfig.blockThreshold) {
     policy.fail("tarpit_threshold", `(${policyConfig.tarpitThreshold}) must not exceed block_threshold (${policyConfig.blockThreshold}); nothing would ever be tarpitted`);
   }
   policy.done();
+
+  // Delivered by the notification hub, which exists with or without the management server:
+  // getting an alert into a chat channel must not require exposing a REST API over the
+  // captured data.
+  const topLevelWebhooks = (root.sections("webhooks") ?? []).map(parseWebhook);
+
+  const markersSection = root.section("markers");
+  const markerSecret = markersSection.string("secret", "");
+  const markers: MarkersConfig = {
+    enabled: markersSection.boolean("enabled", markerSecret !== ""),
+    secret: markerSecret,
+    name: markersSection.string("name", "__hp"),
+    maxAgeSeconds: markersSection.integer("max_age_seconds", 86_400),
+    secure: markersSection.boolean("secure", true),
+    sameSite: markersSection.enum("same_site", ["Lax", "Strict", "None"] as const, "Lax"),
+  };
+  if (markers.enabled && markers.secret === "") {
+    markersSection.fail("secret", "is required when markers are enabled: a marker anybody can mint correlates nothing, it invents actors");
+  }
+  markersSection.done();
+
+  const actors = (root.sections("actors") ?? []).map(parseActorLabel);
+  const actorNames = new Set<string>();
+  for (const actor of actors) {
+    if (actorNames.has(actor.name)) throw new ConfigError(`${source}: [[actors]] has two labels named "${actor.name}"; an incident could not say which one it is`);
+    actorNames.add(actor.name);
+  }
 
   const store = root.section("store");
   const memorySection = child(store, "memory");
@@ -1397,6 +1637,20 @@ export function parseConfig(raw: Record<string, unknown>, source: string): Hacke
   }
   const responses = parseResponses(root.section("responses"));
 
+  // A rule naming an action that is missing or switched off is not a loud failure at request
+  // time: the response silently degrades to a plain 404 (see `middleware.ts`). So it is a
+  // failure here, while the operator is still looking at the file.
+  for (const rule of policyConfig.rules) {
+    if (rule.respondWith === "@detector") continue;
+    const action = (responses as unknown as Record<string, { enabled: boolean } | undefined>)[rule.respondWith];
+    if (action === undefined) {
+      throw new ConfigError(`${source}: [policy.rules] rule "${rule.id}" responds with "${rule.respondWith}", which is not a response action; expected one of ${Object.keys(responses).join(", ")} or "@detector"`);
+    }
+    if (!action.enabled) {
+      throw new ConfigError(`${source}: [policy.rules] rule "${rule.id}" responds with "${rule.respondWith}", but [responses.${rule.respondWith}] is disabled; it would quietly serve a 404 instead`);
+    }
+  }
+
   const auditSection = root.section("audit");
   const audit: AuditConfig = {
     enabled: auditSection.boolean("enabled", true),
@@ -1457,6 +1711,9 @@ export function parseConfig(raw: Record<string, unknown>, source: string): Hacke
     logging: loggingConfig,
     engine: engineConfig,
     policy: policyConfig,
+    actors,
+    markers,
+    webhooks: topLevelWebhooks,
     store: { memory: memoryConfig, file: fileConfig, redis: redisConfig, elastic: elasticConfig },
     blocklist: blocklistConfig,
     intel,

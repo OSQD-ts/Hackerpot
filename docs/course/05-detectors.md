@@ -182,7 +182,7 @@ const engine = new HoneypotEngine({
 
 for (const host of ["pantry.example", "pantry.example:443", "evil.example"]) {
   const r = await engine.evaluate({ method: "POST", path: "/password-reset", query: {}, headers: { ...CHROME, host }, ip: "203.0.113.70" });
-  console.log(host.padEnd(20), r.detections.map((d) => `${d.detectorId} +${d.score}: ${d.reason}`).join("; ") || "nothing fired");
+  console.log(host.padEnd(20), r.detections.map((d) => `${d.detector} +${d.score}: ${d.summary}`).join("; ") || "nothing fired");
 }
 ```
 

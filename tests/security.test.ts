@@ -1,10 +1,11 @@
 import http from "node:http";
 import { afterEach, describe, expect, it } from "vitest";
 import { HoneypotEngine, HoneypotServer, MemoryStore, hardenHttpServer, sensitiveFileDetector, decoyPathDetector, prototypePollutionDetector } from "../src/index.js";
-import type { Detector, HitStore, HoneypotHit, RequestFacts } from "../src/index.js";
+import type { Detector, HitStore, HoneypotHit } from "../src/index.js";
+import { facts } from "./helpers.js";
 
 function makeHit(ip: string, score = 5): HoneypotHit {
-  return { id: Math.random().toString(36).slice(2), timestamp: new Date().toISOString(), ip, method: "GET", path: "/.env", headers: {}, detections: [{ detectorId: "decoy-path", reason: "x", score }], score, totalScore: score, respondedWith: "not-found" };
+  return { id: Math.random().toString(36).slice(2), timestamp: new Date().toISOString(), ip, method: "GET", path: "/.env", headers: {}, detections: [{ detector: "decoy-path", summary: "x", score }], score, totalScore: score, respondedWith: "not-found" };
 }
 
 function raw(port: number, path: string): Promise<{ status: number; body: string }> {
@@ -17,10 +18,6 @@ function raw(port: number, path: string): Promise<{ status: number; body: string
     req.on("error", reject);
     req.end();
   });
-}
-
-function facts(partial: Partial<RequestFacts> & Pick<RequestFacts, "path">): RequestFacts {
-  return { method: "GET", query: {}, headers: {}, ip: "10.0.0.1", ...partial };
 }
 
 describe("engine hardening", () => {
@@ -41,7 +38,7 @@ describe("engine hardening", () => {
 
     // Evaluation must not throw, and the detector AFTER the throwing one still runs.
     const result = await engine.evaluate(facts({ path: "/backup.sql", ip: "9.9.9.9" }));
-    expect(result.detections.map((d) => d.detectorId)).toContain("sensitive-file");
+    expect(result.detections.map((d) => d.detector)).toContain("sensitive-file");
     expect(errors).toEqual([{ source: "poison" }]); // the throw was surfaced, not swallowed silently
   });
 
@@ -75,7 +72,7 @@ describe("engine hardening", () => {
     const hits: string[][] = [];
     server = new HoneypotServer({
       detectors: [prototypePollutionDetector()],
-      onHit: (h) => { hits.push(h.detections.map((d) => d.detectorId)); },
+      onHit: (h) => { hits.push(h.detections.map((d) => d.detector)); },
     });
     await server.listen(0);
     const port = (server.address() as { port: number }).port;

@@ -56,8 +56,8 @@ export function targetIntegrityDetector(options: TargetIntegrityOptions = {}): D
 
       const findings = [...strong, ...weak];
       const detection: Detection = {
-        detectorId: "target-integrity",
-        reason: `Request target is ${findings.join(", ")}`,
+        detector: "target-integrity",
+        summary: `Request target is ${findings.join(", ")}`,
         score: strong.length > 0 ? score : weakScore,
         family: traversal ? "path-traversal" : "evasive-target",
         metadata: { findings, target: raw.length > 200 ? `${raw.slice(0, 200)}…` : raw },

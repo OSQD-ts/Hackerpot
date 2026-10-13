@@ -112,7 +112,7 @@ import { HoneypotEngine, clientAnomalyDetector, defaultDetectors } from "@osqd/h
 
 const engine = new HoneypotEngine({
   detectors: [...defaultDetectors().filter((d) => d.id !== "client-anomaly"), clientAnomalyDetector({ score: 12 })],
-  onShadow: (event) => console.log(`  [shadow] ${event.ip} ${event.path} ${event.detections.map((d) => d.detectorId)} alsoHit=${event.alsoHit}`),
+  onShadow: (event) => console.log(`  [shadow] ${event.ip} ${event.path} ${event.detections.map((d) => d.detector)} alsoHit=${event.alsoHit}`),
 });
 
 const copiedUserAgent = { host: "pantry.example", "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/126.0.0.0 Safari/537.36" };

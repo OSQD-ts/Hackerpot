@@ -36,7 +36,7 @@ const smtp = new SmtpHoneypot({
   hostname: "mail",
   localDomains: ["mycorp.test"], // mail for anything else, from an external sender, is relay abuse
   store,
-  onHit: (hit) => console.warn("[smtp]", hit.detections[0]?.detectorId, hit.path),
+  onHit: (hit) => console.warn("[smtp]", hit.detections[0]?.detector, hit.path),
   dropAboveScore: 40,
 });
 await smtp.listen();
@@ -79,7 +79,7 @@ capture_body = true
 max_body_chars = 2000
 ```
 
-To try it: `npm run demo` starts it on `:2525`, and `npm run simulate:smtp` drives relay,
+To try it: `npm run demo` starts it on `:2525`, and `npm run simulate smtp` drives relay,
 enumeration and brute-force attempts at it.
 
 ## Related

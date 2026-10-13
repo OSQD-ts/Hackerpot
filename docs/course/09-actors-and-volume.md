@@ -33,7 +33,7 @@ for (const [i, word] of words.entries()) {
     { method: "GET", path: `/${word}`, query: {}, headers, ip: "203.0.113.120" },
     { now: new Date(start + i * 1000) },
   );
-  if (r.detections.length > 0) console.log(`t+${i}s /${word}: ${r.detections.map((d) => `${d.detectorId} +${d.score} (${d.reason})`).join(", ")}  total ${r.totalScore}`);
+  if (r.detections.length > 0) console.log(`t+${i}s /${word}: ${r.detections.map((d) => `${d.detector} +${d.score} (${d.summary})`).join(", ")}  total ${r.totalScore}`);
 }
 ```
 
@@ -91,7 +91,7 @@ for (const activityStatus of ["seen", "passed"]) {
   let fired = "nothing fired";
   for (const [i, path] of assets.entries()) {
     const r = await engine.evaluate({ method: "GET", path, query: {}, headers: CHROME, ip: "198.51.100.44" }, { now: new Date(start + i * 50), activityStatus });
-    if (r.detections.length > 0) { fired = `request ${i + 1}: ${r.detections.map((d) => d.detectorId).join(", ")}`; break; }
+    if (r.detections.length > 0) { fired = `request ${i + 1}: ${r.detections.map((d) => d.detector).join(", ")}`; break; }
   }
   console.log(`${activityStatus.padEnd(6)} ${fired}`);
 }
@@ -129,8 +129,8 @@ const at = () => ({ now: new Date(start + (t += 1000)) });
 
 async function send(ip, path, headers = tool) {
   const r = await engine.evaluate({ method: "GET", path, query: {}, headers, ip }, at());
-  const actor = r.detections.find((d) => d.detectorId === "repeat-actor");
-  console.log(`${ip.padEnd(14)} ${path.padEnd(14)} fp ${r.fingerprint}  ${actor ? `repeat-actor +${actor.score}` : r.detections.map((d) => d.detectorId).join(", ") || "nothing fired"}`);
+  const actor = r.detections.find((d) => d.detector === "repeat-actor");
+  console.log(`${ip.padEnd(14)} ${path.padEnd(14)} fp ${r.fingerprint}  ${actor ? `repeat-actor +${actor.score}` : r.detections.map((d) => d.detector).join(", ") || "nothing fired"}`);
 }
 
 await send("203.0.113.131", "/.env");

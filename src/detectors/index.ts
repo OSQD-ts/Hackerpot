@@ -24,6 +24,7 @@ import { repeatActorDetector } from "./repeat-actor.js";
 import type { Detector } from "./types.js";
 
 export type { Detection, DetectionContext, Detector, RequestFacts } from "./types.js";
+export type { LegacyDetection } from "./legacy.js";
 export { decoyPathDetector, defaultDecoyPaths } from "./decoy-paths.js";
 export type { DecoyPath } from "./decoy-paths.js";
 export { pathBruteforceDetector } from "./path-bruteforce.js";
@@ -70,10 +71,19 @@ export { hostHeaderInjectionDetector } from "./host-header-injection.js";
 export type { HostHeaderInjectionOptions } from "./host-header-injection.js";
 export { repeatActorDetector } from "./repeat-actor.js";
 export type { RepeatActorOptions } from "./repeat-actor.js";
+// Off by default: it reads the site baseline, which only exists where outcomes are reported.
+export { pathNoveltyDetector } from "./path-novelty.js";
+export type { PathNoveltyOptions } from "./path-novelty.js";
+// Off by default too: it needs markers, which exist only in middleware mode.
+export { markerDriftDetector } from "./marker-drift.js";
+export type { MarkerDriftOptions } from "./marker-drift.js";
 export { crawlerVerificationDetector, verifiableCrawlers } from "./crawler-verification.js";
 export type { CrawlerVerificationOptions, VerifiableCrawler } from "./crawler-verification.js";
 export { cachingResolver, forwardConfirmedReverseDns, nodeDnsResolver } from "../internal/dns.js";
-export type { CachingResolverOptions, DnsResolver, DnsVerification } from "../internal/dns.js";
+export type { CachingResolverOptions, DnsResolver, VerificationOutcome } from "../internal/dns.js";
+import type { VerificationOutcome } from "../internal/dns.js";
+/** @deprecated Renamed `VerificationOutcome`, bothandlerjs's name for it. */
+export type DnsVerification = VerificationOutcome;
 export { DEFAULT_TRAP_PATHS, renderTrapField, renderTrapLink, trapDetector, trapRobotsEntries } from "./trap.js";
 export type { TrapOptions } from "./trap.js";
 export { honeytokenDetector } from "./honeytoken.js";

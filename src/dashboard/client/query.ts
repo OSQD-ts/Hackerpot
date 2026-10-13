@@ -1,3 +1,6 @@
+import { compile, defineVocabulary, type UntypedQuery } from "@osqd/jql";
+import { parseText, type Suggestions, suggest } from "@osqd/jql/text";
+import { classOf, RESPONSE_CLASSES } from "./analysis.js";
 import type { Incident, Sections, TabName } from "./types.js";
 
 /**
@@ -9,7 +12,7 @@ import type { Incident, Sections, TabName } from "./types.js";
  */
 
 /** The screens in tab-strip order. */
-export const TAB_ORDER: readonly TabName[] = ["overview", "incidents", "statistics", "sessions", "actors", "intel"];
+export const TAB_ORDER: readonly TabName[] = ["overview", "incidents", "statistics", "sessions", "actors", "intel", "policy", "reference"];
 
 export const TAB_LABELS: Readonly<Record<TabName, string>> = {
   overview: "Overview",
@@ -18,10 +21,17 @@ export const TAB_LABELS: Readonly<Record<TabName, string>> = {
   sessions: "Sessions",
   actors: "Actors",
   intel: "Threat intel",
+  policy: "Policy",
+  reference: "Reference",
 };
 
-export function availableTabs(sections: Sections): TabName[] {
-  return TAB_ORDER.filter((tab) => sections[tab] === true);
+/**
+ * The screens this dashboard has. Most exist because their section is on; `policy` because a
+ * control was granted; `reference` always, because it explains the library rather than this
+ * deployment and needs nothing from the server.
+ */
+export function availableTabs(sections: Sections, policy = false): TabName[] {
+  return TAB_ORDER.filter((tab) => (tab === "policy" ? policy : tab === "reference" ? true : sections[tab] === true));
 }
 
 export function isTabName(value: unknown): value is TabName {
@@ -45,6 +55,10 @@ export interface IncidentFilter {
   limit: number;
   detector: string;
   ip: string;
+  /** The search box: a filter expression. Applied here, never sent to the API. See `parseQuery`. */
+  query: string;
+  /** One response class (`decoy`, `time cost`, `block`, …), or empty for all. Applied here, like `query`. */
+  outcome?: string;
 }
 
 export const LIMITS = [50, 100, 250, 500, 1000] as const;
@@ -59,13 +73,102 @@ export function incidentQuery(filter: IncidentFilter): string {
   return params.toString();
 }
 
-/** Whether a live incident belongs on the Incidents screen under its current filter. Same semantics as the server's. */
+/**
+ * Whether a live incident belongs on the Incidents screen under its current filter.
+ *
+ * The detector and address boxes are the server's filter, repeated here so a streamed
+ * incident is judged the way a fetched one was. The search box is this page's alone: the API
+ * has no grammar, so those two narrow what is *fetched* and the expression refines what is
+ * *shown*. Which is which matters, because an expression can only ever search what the server
+ * already sent.
+ */
 export function matchesFilter(incident: Incident, filter: IncidentFilter): boolean {
   const detector = filter.detector.trim();
   const ip = filter.ip.trim();
-  if (detector !== "" && !incident.detections.some((d) => d.detectorId === detector)) return false;
+  if (detector !== "" && !incident.detections.some((d) => d.detector === detector)) return false;
   if (ip !== "" && incident.ip !== ip) return false;
+  if (filter.outcome !== undefined && filter.outcome !== "" && classOf(incident.respondedWith) !== filter.outcome) return false;
+  if (filter.query.trim() !== "" && !queryMatcher(filter.query)(incident)) return false;
   return true;
+}
+
+/**
+ * The search box's language, shared by every screen that searches.
+ *
+ * It is `@osqd/jql`'s text syntax, the same one bothandlerjs's feed takes: fielded terms
+ * (`ip:198.51.100`, `detector:decoy-path`, `score:>20`), quoted phrases, `-term` for not,
+ * `field:$in(a, b)` for a set, `has:rule`, parentheses, and `$and` / `$or` / `$not`, with
+ * adjacent terms an implicit `$and`. The text is parsed into a JQL query and the engine runs
+ * that, so there is no matcher here to drift from the one the other projects use.
+ *
+ * Two decisions worth stating, both JQL's now. The operators carry a `$` because a bare "or"
+ * is a word that appears in User-Agents and paths, and a language where an ordinary search
+ * word silently becomes an operator is one that lies about what it matched. And **nothing
+ * here throws**: this backs a box somebody types into, so half-written input parses to the
+ * best available reading rather than blanking the screen between keystrokes.
+ */
+
+/** Longest expression parsed. Beyond this the box holds a paste, not a query. JQL reads to 8 KB; this page stops sooner. */
+export const MAX_QUERY_CHARS = 512;
+
+/** The fields an incident answers to, how `field:value` reads each value, and what a bare word searches. */
+export const INCIDENT_VOCABULARY = defineVocabulary<Incident>()({
+  fields: {
+    // A whole component, so `ip:203.0.113.4` does not also find `203.0.113.45`; `ip:203.0.113` still finds the network.
+    ip: { kind: "word" },
+    path: {},
+    method: { kind: "exact" },
+    detector: { get: (incident) => incident.detections.map((detection) => detection.detector) },
+    // `reason` is the name the summary had before it matched bothandlerjs's; a saved filter may still use it.
+    summary: { aliases: ["reason"], get: (incident) => incident.detections.map((detection) => detection.summary) },
+    action: { path: "respondedWith" },
+    // What the chips above the search choose, so a query can say it too and a saved filter keeps it.
+    outcome: { kind: "exact", get: (incident) => classOf(incident.respondedWith), values: RESPONSE_CLASSES.map((c) => c.name) },
+    rule: {},
+    score: { kind: "number" },
+    total: { path: "totalScore", kind: "number" },
+    ua: {
+      get: (incident) => {
+        const value = incident.headers["user-agent"];
+        return Array.isArray(value) ? value.join(" ") : value;
+      },
+    },
+    actor: { get: (incident) => incident.actor?.name },
+  },
+  // A bare word searches what somebody scanning the table is already looking at. Not the
+  // summary: it quotes attacker text, and a free word matching it would make half the table
+  // match half the time.
+  text: ["path", "ip", "detector", "action", "ua", "actor"],
+});
+
+/**
+ * A search-box expression as the JQL query it means. An empty box is `{}`, which lets
+ * everything through.
+ *
+ * Cut to `MAX_QUERY_CHARS` before it is read, so a term past the cap is dropped rather than
+ * half-read.
+ */
+export function parseQuery(text: string): UntypedQuery {
+  return parseText(text.slice(0, MAX_QUERY_CHARS), { vocabulary: INCIDENT_VOCABULARY });
+}
+
+/** A compiled test for the search box's expression. */
+export function queryMatcher(text: string): (incident: Incident) => boolean {
+  return compile<Incident>(parseQuery(text), { vocabulary: INCIDENT_VOCABULARY });
+}
+
+/**
+ * Completion for the search box, the way bothandlerjs's feed completes its own.
+ *
+ * Field names come from the vocabulary itself, so a field added to the language is offered the day
+ * it exists. Values are offered only where the set is closed — the detectors and actions seen, the
+ * outcome classes — because guessing values for a path or an address is inventing options rather
+ * than completing them. The values seen change as incidents arrive, so they are passed in on each
+ * call, after the ones the vocabulary declares. JQL quotes a value with a space in it, and keeps
+ * completing inside a quote somebody has opened.
+ */
+export function suggestFor(input: string, caret: number, values: Readonly<Record<string, readonly string[]>>): Suggestions {
+  return suggest(input, caret, INCIDENT_VOCABULARY, { values });
 }
 
 /**
@@ -75,6 +178,27 @@ export function matchesFilter(incident: Incident, filter: IncidentFilter): boole
  * malformed frame from a proxy or a future version and stop drawing for good. A frame
  * that fails this is dropped rather than half-rendered.
  */
+/**
+ * An incident with its detections in the current shape. A server older than the rename writes
+ * `detectorId` and `reason`; an embedded element can be newer than the server it reads, so the
+ * page upgrades what it receives rather than rejecting it.
+ */
+export function upgradeIncident(value: unknown): unknown {
+  if (typeof value !== "object" || value === null) return value;
+  const v = value as Record<string, unknown>;
+  const upgrade = (list: unknown): unknown =>
+    Array.isArray(list)
+      ? list.map((d) => {
+          if (typeof d !== "object" || d === null) return d;
+          const r = d as Record<string, unknown>;
+          if (typeof r["detector"] === "string" || typeof r["detectorId"] !== "string") return d;
+          const { detectorId, reason, ...rest } = r;
+          return { ...rest, detector: detectorId, summary: reason };
+        })
+      : list;
+  return { ...v, detections: upgrade(v["detections"]), ...(v["shadowDetections"] !== undefined ? { shadowDetections: upgrade(v["shadowDetections"]) } : {}) };
+}
+
 export function isIncident(value: unknown): value is Incident {
   if (typeof value !== "object" || value === null) return false;
   const v = value as Record<string, unknown>;
@@ -88,7 +212,7 @@ export function isIncident(value: unknown): value is Incident {
     typeof v["score"] === "number" &&
     typeof v["totalScore"] === "number" &&
     Array.isArray(v["detections"]) &&
-    (v["detections"] as unknown[]).every((d) => typeof d === "object" && d !== null && typeof (d as Record<string, unknown>)["detectorId"] === "string") &&
+    (v["detections"] as unknown[]).every((d) => typeof d === "object" && d !== null && typeof (d as Record<string, unknown>)["detector"] === "string") &&
     typeof v["headers"] === "object" &&
     v["headers"] !== null
   );

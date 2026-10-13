@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { HoneypotEngine, IpAllowlist } from "../src/index.js";
-import type { RequestFacts } from "../src/index.js";
+import { HoneypotEngine, IpAllowlist, type RequestFacts } from "../src/index.js";
 
 describe("IpAllowlist", () => {
   it("matches exact IPv4 and IPv6 addresses", () => {
@@ -72,5 +71,41 @@ describe("engine allowlist bypass", () => {
     const engine = new HoneypotEngine({ allowlist: ["10.0.0.0/8"] });
     for (let i = 0; i < 30; i++) await engine.evaluate({ method: "GET", path: `/dir-${i}`, query: {}, headers: { host: "x" }, ip: "10.5.5.5" });
     expect(await engine.scoreFor("10.5.5.5")).toBe(0); // no path-bruteforce, no scoring
+  });
+});
+
+describe("an allowlisted IPv6 address matches however it is spelled", () => {
+  // These entries used to be compared as strings, which for IPv6 is not an equality test
+  // at all: one address has many valid spellings and which one arrives is decided by the
+  // peer's stack, not by what the operator typed. A monitor that failed to match was not
+  // merely un-exempted — it was scored, blocked and (with external enforcement wired)
+  // firewalled, silently.
+  const forms = ["2001:db8::1", "2001:0db8:0000:0000:0000:0000:0000:0001", "2001:DB8::0:1", "2001:db8:0:0:0:0:0:1"];
+
+  it("matches every equivalent form, whichever one is configured", () => {
+    for (const configured of forms) {
+      const allowlist = new IpAllowlist([configured]);
+      expect(allowlist.invalid).toEqual([]);
+      expect(allowlist.size).toBe(1);
+      for (const presented of forms) expect(allowlist.allows(presented)).toBe(true);
+    }
+  });
+
+  it("still refuses an address that is merely similar", () => {
+    const allowlist = new IpAllowlist(["2001:db8::1"]);
+    expect(allowlist.allows("2001:db8::2")).toBe(false);
+    expect(allowlist.allows("2001:db9::1")).toBe(false);
+    expect(allowlist.allows("::1")).toBe(false);
+  });
+
+  it("keeps IPv4, v4-mapped and CIDR behaviour unchanged", () => {
+    const allowlist = new IpAllowlist(["10.0.0.5", "192.168.0.0/16", "2001:db8:1::/48", "nonsense"]);
+    expect(allowlist.invalid).toEqual(["nonsense"]);
+    expect(allowlist.allows("10.0.0.5")).toBe(true);
+    expect(allowlist.allows("::ffff:10.0.0.5")).toBe(true);
+    expect(allowlist.allows("192.168.4.4")).toBe(true);
+    expect(allowlist.allows("2001:db8:1:2::9")).toBe(true);
+    expect(allowlist.allows("2001:db8:2::9")).toBe(false);
+    expect(allowlist.allows("10.0.0.6")).toBe(false);
   });
 });

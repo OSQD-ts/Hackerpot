@@ -308,8 +308,8 @@ export class HackerpotDashboardElement extends ElementBase {
       next.add(name);
       this.style.setProperty(name, String(value));
     }
-    // Removed one by one rather than clearing the style attribute: the client keeps its own
-    // measurements there (`--header-h`).
+    // Removed one by one rather than clearing the style attribute, which belongs to the host
+    // page as much as to this element.
     for (const name of this.appliedTokens) if (!next.has(name)) this.style.removeProperty(name);
     this.appliedTokens = next;
   }

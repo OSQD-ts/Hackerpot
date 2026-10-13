@@ -61,6 +61,48 @@ Stores cap the number of addresses whose scores they keep (`max_score_entries`, 
 100,000), shedding the least recently updated. An address under active attack is never the
 one evicted.
 
+## Confidence: how strong, not how much
+
+Scores answer *how much* evidence there is. They have one failure mode, and this project has
+measured it: an ordinary visitor once reached a cumulative **49** — past the default block
+threshold of 40 — in seven page views, because a shared browser fingerprint and one page load's
+worth of asset paths each contributed a few points. Addition cannot tell one damning finding
+from fifteen forgivable ones.
+
+So every detection also has a **certainty** — `weak`, `moderate`, `strong`, `certain` — derived
+from the bands above (3–5 weak, 6–8 moderate, 9+ strong, proof `certain`) unless a detector sets
+`certainty` itself. The four words and the field are bothandlerjs's. Certainties combine by
+noisy-OR rather than by addition:
+
+```
+confidence = 1 - Π (1 - weight(certainty))      weak .25  moderate .5  strong .8  certain 1
+```
+
+Each finding raises confidence by less than the last, one root cause still counts once
+(families apply here too), and — the point — **suspicion alone is capped at 0.95**. Fifteen weak
+findings are not proof; they are fifteen weak findings. Only a `certain` detection reaches 1.
+
+Confidence is on `HoneypotHit.confidence` and on the evaluation result, and a
+[rule](../responses/policy.md#rules) can match on it:
+
+```toml
+[[policy.rules]]
+id = "strong-evidence"
+min_confidence = 0.8
+respond_with = "tarpit"
+reason = "Strong evidence, rather than a large pile of weak evidence."
+```
+
+Nothing about scores changed: they still drive the ladder, the thresholds and the stored
+per-address total. Confidence is the second view, for a policy that would rather say "act on
+strong evidence" than "act on the number 40". In code: `confidenceOf(detections)`, `certaintyOf`,
+`certaintyOfConfidence` and `CERTAINTY_WEIGHT`. Their earlier names — `tier`, `tierOf`,
+`tierOfConfidence`, `TIER_WEIGHT`, `EvidenceTier` — still work, deprecated.
+
+The weights are this library's own. bothandlerjs uses the same names with lower values, because
+there they feed a bot score that gates a challenge on ordinary pages; here they feed a confidence
+beside an additive score, over traffic that has already reached a honeypot.
+
 ## The escalation ladder
 
 The built-in policy, `defaultResponsePolicy(blockThreshold = 40, tarpitThreshold = 15)`:

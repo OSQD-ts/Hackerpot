@@ -111,6 +111,35 @@ jobs:
       - name: Every local link and anchor in the markdown resolves
         run: npm run docs:check
 
+  # The dashboard's client is a real module, so the pure half of it — the search grammar, the
+  # outcome classification, the rule drafting — is unit tested in `npm test`. The rest is DOM
+  # work whose job is to behave under a keyboard, a scroll and a narrow viewport, and none of
+  # that can be checked by calling a function: a stylesheet once shipped truncated with every
+  # test green. This job installs a browser and drives the real page.
+  browser:
+    runs-on: ubuntu-latest
+    name: browser (${{ matrix.engine }})
+    # Every engine, because a page this size is mostly CSS and CSS is where engines differ.
+    # The feed's column headers are sticky, and sticky headers in a table are exactly the kind
+    # of thing that works in two engines and not the third.
+    strategy:
+      fail-fast: false
+      matrix:
+        engine: [chromium, firefox, webkit]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Install ${{ matrix.engine }}
+        run: npx playwright install --with-deps ${{ matrix.engine }}
+      - name: Test the dashboard in a browser
+        run: npm run test:browser
+        env:
+          BROWSER_ENGINE: ${{ matrix.engine }}
+
   # evaluate() runs inline on every request in middleware mode. The budgets are ratios
   # against a reference loop measured in the same process, so they mean the same thing on
   # a laptop and on whatever hardware this runner is today.

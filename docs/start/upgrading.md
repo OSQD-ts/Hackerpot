@@ -40,19 +40,50 @@ If you run hackerpot from a clone, the development scripts changed:
 
 | Removed | Use instead |
 | --- | --- |
-| `npm run dev` | `npm run demo` (every listener, the dashboard, a management key of `dev-key`) or `npm run serve` (the real service from source) |
+| `npm run dev` | `npm run demo` (every listener, the dashboard, a management key of `dev-key`) or `npm run hackerpot serve` (the real service from source) |
 | `npm run dev:gui`, `npm run start:gui`, `npm run build:gui` | `npm run demo`: the dashboard is part of it |
-| `npm run dashboard` (the old proxy on :8080, `MGMT_URL`, `DASHBOARD_PORT`) | `npm run dashboard`, which is now `hackerpot dashboard` on :9501 reading a management API |
+| `npm run dashboard` (the old proxy on :8080, `MGMT_URL`, `DASHBOARD_PORT`) | `npm run hackerpot dashboard`, which is `hackerpot dashboard` on :9501 reading a management API |
 | `npm run attack:all` | `npm run simulate` |
-| `npm run attack -- <scenario>`, `npm run attack:<scenario>` | `npm run simulate:<scenario>` (`npm run simulate:list` lists them) |
+| `npm run attack -- <scenario>`, `npm run attack:<scenario>` | `npm run simulate <scenario>` (`npm run simulate -- --list` lists them) |
 | `npm run attack:corpus` | `npm run simulate:corpus` |
 | `npm run docs:links` | `npm run docs:check` |
 | `npm run build:start` | `npm run build && npm start` |
+| `npm run serve`, `dashboard`, `replay`, `explain`, `config:check`, `config:verify` | `npm run hackerpot -- <command>`: `serve`, `dashboard`, `replay`, `explain`, `config`, `check` |
+| `npm run simulate:<scenario>`, `simulate:list`, `simulate:corpus:human` | `npm run simulate <scenario>`, `npm run simulate -- --list`, `npm run simulate:corpus -- --audience human` |
+| `npm run docker:build`, `docker:run` | `docker build -t hackerpot .`, `docker run --rm -p 4004:4004 hackerpot` |
 
 New ones: `npm run demo:embedded` (the dashboard as an element inside a page),
-`npm run corpus` (the labelled corpus against a configuration), `npm run explain`,
-`npm run replay`, `npm run lint` (Biome), `npm run format`. The full list is in
+`npm run corpus` (the labelled corpus against a configuration), `npm run check` (typecheck, lint,
+tests and the docs link check), `npm run lint` (Biome), `npm run format`. The full list is in
 [CONTRIBUTING.md](../../CONTRIBUTING.md#development).
+
+## Names shared with bothandlerjs
+
+Where hackerpot and bothandlerjs mean the same thing, they now use the same word. Every old name
+below still works for a release and is marked deprecated, except where the table says otherwise.
+
+| Was | Now | Notes |
+| --- | --- | --- |
+| `Detection.detectorId` | `Detection.detector` | See below: the one change that can break a build |
+| `Detection.reason` | `Detection.summary` | Same |
+| `Detection.tier`, `EvidenceTier` | `Detection.certainty`, `Certainty` | `tier` is still read when `certainty` is absent |
+| `tierOf`, `tierOfConfidence`, `TIER_WEIGHT` | `certaintyOf`, `certaintyOfConfidence`, `CERTAINTY_WEIGHT` | Same values; bothandlerjs's weights differ on purpose |
+| `SiteBaseline`, `SiteBaselineOptions`, `BaselineSnapshot` | `SiteProfile`, `SiteProfileOptions`, `SiteProfileSnapshot` | |
+| `HoneypotEngine({ baseline })`, `engine.baseline`, `ctx.baseline` | `site` in all three | The engine still sets `ctx.baseline` too |
+| `parseRequestText` | `parseRequest` | |
+
+**The detection fields.** A detection is `{ detector, summary, score, … }` where it was
+`{ detectorId, reason, score, … }`. Data written under the old names keeps working without a
+migration: the file, Redis and Elasticsearch stores upgrade old hits as they read them, a
+dashboard upgrades what an older management API sends it, and the engine upgrades a detection a
+custom detector returns in the old shape. Two things do need a change:
+
+- **TypeScript that names the old fields** — a custom detector declared to return `Detection`
+  with `detectorId`, or code reading `d.detectorId` — no longer type-checks. Rename the fields;
+  it still runs unchanged in the meantime.
+- **Anything consuming what the honeypot sends** — a webhook receiver, a script reading the
+  management API or its live feed — sees `detector` and `summary`. Read both names during the
+  switch-over if a receiver serves honeypots on either side of it.
 
 ## The dashboard is part of the library
 

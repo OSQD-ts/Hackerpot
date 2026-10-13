@@ -17,7 +17,7 @@ often a convincing fake, so the probe appears to have worked.
 ```ts
 interface DecoyPath {
   id: string;
-  description: string;                 // becomes the detection's reason
+  description: string;                 // becomes the detection's summary
   path: string | RegExp;               // an exact path, or a pattern
   match?: "exact" | "prefix";          // for a string path; default "exact"
   method?: string;
@@ -40,7 +40,7 @@ const engine = new HoneypotEngine();
 const paths = ["/.env", "/.env.production", "/.ENV", "/.envelope", "/.git/index", "//.env", "/%2eenv", "/admin", "/recipes/42"];
 for (const [i, path] of paths.entries()) {
   const r = await engine.evaluate({ method: "GET", path, query: {}, headers: CHROME, ip: `198.51.100.${i + 1}` });
-  const decoy = r.detections.find((d) => d.detectorId === "decoy-path");
+  const decoy = r.detections.find((d) => d.detector === "decoy-path");
   console.log(`${path.padEnd(18)} ${decoy ? `${decoy.metadata.decoyId} (+${decoy.score}) -> ${r.actionId}` : "no decoy"}`);
 }
 ```
@@ -111,7 +111,7 @@ const engine = new HoneypotEngine({
 
 for (const path of ["/admin", "/api/recipes/export", "/api/recipes/export/users.json"]) {
   const r = await engine.evaluate({ method: "GET", path, query: {}, headers: CHROME, ip: "198.51.100.21" });
-  console.log(path.padEnd(32), r.detections.map((d) => `${d.detectorId} +${d.score}`).join(", ") || "nothing fired", r.actionId ? `-> ${r.actionId}` : "");
+  console.log(path.padEnd(32), r.detections.map((d) => `${d.detector} +${d.score}`).join(", ") || "nothing fired", r.actionId ? `-> ${r.actionId}` : "");
 }
 
 const robots = generateRobotsTxt({ decoys, sitemap: "https://pantry.example/sitemap.xml" });
@@ -192,7 +192,7 @@ const before = new HoneypotEngine();
 for (const path of ["/api-docs", "/swagger", "/openapi"]) {
   const b = await before.evaluate({ method: "GET", path, query: {}, headers: CHROME, ip: "198.51.100.30" });
   const a = await engine.evaluate({ method: "GET", path, query: {}, headers: CHROME, ip: "198.51.100.31" });
-  console.log(path.padEnd(10), "before:", b.detections.map((d) => d.detectorId).join(",") || "-", " after:", a.detections.map((d) => d.detectorId).join(",") || "-");
+  console.log(path.padEnd(10), "before:", b.detections.map((d) => d.detector).join(",") || "-", " after:", a.detections.map((d) => d.detector).join(",") || "-");
 }
 ```
 

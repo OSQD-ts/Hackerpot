@@ -1,11 +1,10 @@
 import { spawn, execFileSync } from "node:child_process";
 import { mkdtempSync, writeFileSync } from "node:fs";
-import type { AddressInfo } from "node:net";
-import { createServer } from "node:net";
+import { type AddressInfo, createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { applyEnvOverrides, buildDashboardOptions, buildDashboardSource, parseConfigText } from "../src/config/index.js";
+import { applyEnvOverrides, buildDashboardOptions, buildDashboardSource, parseConfigText, describeConfig } from "../src/config/index.js";
 import { HoneypotEngine } from "../src/core.js";
 import { ManagementServer } from "../src/management/index.js";
 import { MemoryStore } from "../src/stores/index.js";
@@ -138,4 +137,70 @@ describe("hackerpot dashboard", () => {
     const boot = (await (await fetch(`${base}/api/bootstrap?token=dashboard-token-0123456789`)).json()) as { source: string };
     expect(boot.source).toMatch(/^management API at 127\.0\.0\.1:/);
   }, 90_000);
+});
+
+describe("--print-config never prints a credential", () => {
+  const withSecrets = `
+[management]
+enabled = true
+api_keys = ["SUPER-SECRET-MANAGEMENT-KEY"]
+
+[[management.webhooks]]
+url = "https://hooks.example/alert"
+secret = "WEBHOOK-HMAC-SIGNING-SECRET"
+headers = { authorization = "Bearer BEARER-TOKEN-VALUE" }
+
+[store.redis]
+url = "redis://:REDIS-PASSWORD@redis:6379"
+
+[store.elastic]
+node = "https://es.example:9200"
+username = "elastic"
+password = "ELASTIC-PASSWORD"
+
+[intel]
+enabled = true
+feeds = ["https://peer.example/ioc.txt"]
+api_key = "PEER-FEED-API-KEY"
+`;
+
+  it("redacts every secret in the resolved config", () => {
+    // This backs `npm run hackerpot config` — run casually, in CI, and over screen shares.
+    // Validating a config must not be the thing that copies its secrets into a log.
+    const printed = describeConfig(parseConfigText(withSecrets, "<test>"));
+    for (const secret of [
+      "SUPER-SECRET-MANAGEMENT-KEY",
+      "WEBHOOK-HMAC-SIGNING-SECRET",
+      "BEARER-TOKEN-VALUE",
+      "REDIS-PASSWORD",
+      "ELASTIC-PASSWORD",
+      "PEER-FEED-API-KEY",
+    ]) {
+      expect(printed, `${secret} leaked into --print-config`).not.toContain(secret);
+    }
+  });
+
+  it("keeps everything an operator is actually checking", () => {
+    const printed = describeConfig(parseConfigText(withSecrets, "<test>"));
+    // Non-secret values, and the host/port halves of credentialed URLs, stay readable.
+    expect(printed).toContain("https://hooks.example/alert");
+    expect(printed).toContain("https://es.example:9200");
+    expect(printed).toContain("redis:6379");
+    expect(printed).toContain("https://peer.example/ioc.txt");
+    expect(printed).toContain("elastic"); // username is not a credential
+    // The shape survives: one API key configured, one webhook header set.
+    expect(printed).toMatch(/"apiKeys":\s*\[\s*"«redacted»"\s*\]/);
+    expect(printed).toContain("authorization");
+  });
+
+  it("still distinguishes a configured secret from an unset one", () => {
+    const printed = describeConfig(parseConfigText(`[store.elastic]\nnode = "https://es.example:9200"\n`, "<test>"));
+    // Empty stays empty rather than becoming a misleading «redacted».
+    expect(printed).toMatch(/"password":\s*""/);
+  });
+
+  it("leaves a URL with no credentials byte-for-byte alone", () => {
+    const printed = describeConfig(parseConfigText(`[store.redis]\nurl = "redis://redis:6379/2"\n`, "<test>"));
+    expect(printed).toContain('"url": "redis://redis:6379/2"');
+  });
 });

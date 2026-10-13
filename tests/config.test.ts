@@ -2,47 +2,14 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import {
-  ConfigError,
-  applyEnvOverrides,
-  buildDetectors,
-  buildHoneypotConfig,
-  buildPolicy,
-  buildResponseActions,
-  createBlocklist,
-  createPortScanSentinel,
-  createStore,
-  createSmtpHoneypot,
-  createSshHoneypot,
-  defaultConfig,
-  discoverConfigPath,
-  loadConfig,
-  parseConfigText,
-  planReload,
-} from "../src/config/index.js";
-import {
-  CompositeBlocklist,
-  EnforcingBlocklist,
-  HoneypotEngine,
-  IpAllowlist,
-  IpTracker,
-  MemoryBlocklist,
-  MemoryStore,
-  applyIocEntries,
-  defaultDetectors,
-  defaultResponseActions,
-} from "../src/index.js";
-import type { HackerpotConfig } from "../src/config/index.js";
-import type { Detection, RequestFacts } from "../src/index.js";
+import { ConfigError, applyEnvOverrides, buildDetectors, buildHoneypotConfig, buildPolicy, buildResponseActions, createBlocklist, createPortScanSentinel, createStore, createSmtpHoneypot, createSshHoneypot, defaultConfig, discoverConfigPath, loadConfig, parseConfigText, planReload, type HackerpotConfig } from "../src/config/index.js";
+import { CompositeBlocklist, EnforcingBlocklist, HoneypotEngine, IpAllowlist, IpTracker, MemoryBlocklist, MemoryStore, applyIocEntries, defaultDetectors, defaultResponseActions, type Detection, type RequestFacts } from "../src/index.js";
+import { parseConfig } from "../src/config/schema.js";
+import { facts } from "./helpers.js";
 
 function parse(toml: string) {
   return parseConfigText(toml, "test.toml");
 }
-
-function facts(partial: Partial<RequestFacts> & Pick<RequestFacts, "path">): RequestFacts {
-  return { method: "GET", query: {}, headers: {}, ip: "10.0.0.1", ...partial };
-}
-
 
 /** Enabled-flags only — the part of the config that must match literally. */
 function toggles(config: HackerpotConfig): Record<string, boolean> {
@@ -106,7 +73,7 @@ async function probe(config: HackerpotConfig): Promise<unknown[]> {
     observed.push({
       path: request.path,
       actionId: result.actionId,
-      detections: result.detections.map((d) => ({ id: d.detectorId, score: d.score, reason: d.reason, respondWith: d.respondWith })),
+      detections: result.detections.map((d) => ({ id: d.detector, score: d.score, reason: d.summary, respondWith: d.respondWith })),
     });
   }
   return observed;
@@ -122,7 +89,7 @@ describe("config parsing", () => {
     // trust_proxy defaults OFF: on, the client IP comes from an attacker-supplied
     // header, which is what the allowlist, blocklist, and firewall enforcer all act on.
     expect(config.server).toEqual({ host: "0.0.0.0", port: 4004, trustProxy: false });
-    expect(config.policy).toEqual({ blockThreshold: 40, tarpitThreshold: 15 });
+    expect(config.policy).toEqual({ blockThreshold: 40, tarpitThreshold: 15, rules: [] });
     expect(config.logging.format).toBe("json");
     expect(config.store.file.enabled).toBe(false);
     expect(config.store.redis.enabled).toBe(false);
@@ -160,7 +127,7 @@ describe("config parsing", () => {
     expect(config.server).toEqual({ host: "127.0.0.1", port: 8080, trustProxy: false });
     expect(config.logging.format).toBe("text");
     expect(config.logging.includeBody).toBe(true);
-    expect(config.policy).toEqual({ blockThreshold: 50, tarpitThreshold: 20 });
+    expect(config.policy).toEqual({ blockThreshold: 50, tarpitThreshold: 20, rules: [] });
   });
 
   it("rejects an unknown key rather than silently ignoring it", () => {
@@ -319,11 +286,11 @@ describe("decoy configuration", () => {
     const engine = new HoneypotEngine({ detectors: buildDetectors(config) });
     return Promise.all([
       engine.evaluate(facts({ path: "/internal/backup.sql", ip: "10.0.0.10" })).then((result) => {
-        expect(result.detections[0]?.reason).toBe("Fake internal backup");
+        expect(result.detections[0]?.summary).toBe("Fake internal backup");
       }),
       // A built-in decoy still fires alongside the custom one.
       engine.evaluate(facts({ path: "/.env", ip: "10.0.0.11" })).then((result) => {
-        expect(result.detections.some((d) => d.detectorId === "decoy-path")).toBe(true);
+        expect(result.detections.some((d) => d.detector === "decoy-path")).toBe(true);
       }),
     ]);
   });
@@ -332,7 +299,7 @@ describe("decoy configuration", () => {
     const config = parse('[detectors.decoy-path]\ndisabled = ["swagger"]\n');
     const engine = new HoneypotEngine({ detectors: buildDetectors(config) });
     const result = await engine.evaluate(facts({ path: "/swagger" }));
-    expect(result.detections.some((d) => d.detectorId === "decoy-path")).toBe(false);
+    expect(result.detections.some((d) => d.detector === "decoy-path")).toBe(false);
   });
 
   it("rejects a `disabled` entry that names no built-in decoy", () => {
@@ -351,9 +318,9 @@ describe("decoy configuration", () => {
     `);
     const engine = new HoneypotEngine({ detectors: buildDetectors(config) });
     const builtIn = await engine.evaluate(facts({ path: "/.env", ip: "10.0.0.20" }));
-    expect(builtIn.detections.some((d) => d.detectorId === "decoy-path")).toBe(false);
+    expect(builtIn.detections.some((d) => d.detector === "decoy-path")).toBe(false);
     const custom = await engine.evaluate(facts({ path: "/only", ip: "10.0.0.21" }));
-    expect(custom.detections.some((d) => d.detectorId === "decoy-path")).toBe(true);
+    expect(custom.detections.some((d) => d.detector === "decoy-path")).toBe(true);
   });
 
   it("requires exactly one of `path` or `pattern`", () => {
@@ -378,7 +345,7 @@ describe("building from config", () => {
     const config = defaultConfig();
     // Opt-in detectors live in the schema but not in defaultDetectors(): honeytoken needs
     // seeded values, crawler-verification makes DNS lookups, and a trap is only proof once it is hidden in your markup.
-    const optIn = new Set(["honeytoken", "crawler-verification", "trap"]);
+    const optIn = new Set(["path-novelty", "marker-drift", "honeytoken", "crawler-verification", "trap"]);
     expect(Object.keys(config.detectors).filter((id) => !optIn.has(id)).sort()).toEqual(defaultDetectors().map((d) => d.id).sort());
     expect(Object.keys(config.responses).sort()).toEqual(defaultResponseActions().map((a) => a.id).sort());
   });
@@ -394,7 +361,7 @@ describe("building from config", () => {
     const engine = new HoneypotEngine({ detectors: buildDetectors(config) });
     for (const path of ["/a", "/b", "/c"]) await engine.evaluate(facts({ path, ip: "10.9.9.9" }));
     const result = await engine.evaluate(facts({ path: "/d", ip: "10.9.9.9" }));
-    const detection = result.detections.find((d) => d.detectorId === "path-bruteforce");
+    const detection = result.detections.find((d) => d.detector === "path-bruteforce");
     expect(detection?.score).toBe(42);
   });
 
@@ -411,7 +378,7 @@ describe("building from config", () => {
         headers: { host: "shop.example.com", "user-agent": "Mozilla/5.0", "x-forwarded-for": "10.0.0.7", forwarded: "for=192.168.1.10" },
       }),
     );
-    expect(result.detections.map((d) => d.detectorId)).not.toContain("ssrf-probe");
+    expect(result.detections.map((d) => d.detector)).not.toContain("ssrf-probe");
     expect(result.detections).toHaveLength(0);
   });
 
@@ -425,13 +392,13 @@ describe("building from config", () => {
     const spoofed = await engine.evaluate(
       facts({ path: "/login", query: { redirect_uri: "https://app.example/account" }, ip: "10.7.0.1", headers: { host: "evil.example", "user-agent": "Mozilla/5.0" } }),
     );
-    expect(spoofed.detections.map((d) => d.detectorId)).not.toContain("open-redirect");
+    expect(spoofed.detections.map((d) => d.detector)).not.toContain("open-redirect");
 
     // ...and a genuinely off-site target still fires.
     const offsite = await engine.evaluate(
       facts({ path: "/login", query: { redirect_uri: "https://evil.example/steal" }, ip: "10.7.0.2", headers: { host: "app.example", "user-agent": "Mozilla/5.0" } }),
     );
-    expect(offsite.detections.map((d) => d.detectorId)).toContain("open-redirect");
+    expect(offsite.detections.map((d) => d.detector)).toContain("open-redirect");
   });
 
   it("applies nosql-injection options and can switch off body scanning", async () => {
@@ -440,16 +407,16 @@ describe("building from config", () => {
 
     // The bracketed-key form is in the query, so it still fires with the body off.
     const query = await engine.evaluate(facts({ path: "/login", query: { "user[$ne]": "" }, ip: "10.8.0.1" }));
-    expect(query.detections.find((d) => d.detectorId === "nosql-injection")?.score).toBe(21);
+    expect(query.detections.find((d) => d.detector === "nosql-injection")?.score).toBe(21);
 
     // ...but the JSON-body form is not scanned once inspect_body is false.
     const body = await engine.evaluate(facts({ path: "/api/login", method: "POST", body: '{"password":{"$ne":null}}', ip: "10.8.0.2" }));
-    expect(body.detections.map((d) => d.detectorId)).not.toContain("nosql-injection");
+    expect(body.detections.map((d) => d.detector)).not.toContain("nosql-injection");
 
     // Default config does scan the body.
     const onByDefault = new HoneypotEngine({ detectors: buildDetectors(defaultConfig()) });
     const scanned = await onByDefault.evaluate(facts({ path: "/api/login", method: "POST", body: '{"password":{"$ne":null}}', ip: "10.8.0.3" }));
-    expect(scanned.detections.map((d) => d.detectorId)).toContain("nosql-injection");
+    expect(scanned.detections.map((d) => d.detector)).toContain("nosql-injection");
   });
 
   it("rejects expected_hosts entries that could never match", () => {
@@ -467,16 +434,16 @@ describe("building from config", () => {
     const engine = new HoneypotEngine({ detectors: buildDetectors(config) });
     // A canonical host with a port still matches, because the incoming port is stripped.
     const ok = await engine.evaluate(facts({ path: "/", ip: "10.10.0.1", headers: { host: "example.com:8443" } }));
-    expect(ok.detections.map((d) => d.detectorId)).not.toContain("host-header-injection");
+    expect(ok.detections.map((d) => d.detector)).not.toContain("host-header-injection");
     // An off-list host is flagged.
     const spoofed = await engine.evaluate(facts({ path: "/", ip: "10.10.0.2", headers: { host: "evil.example" } }));
-    expect(spoofed.detections.map((d) => d.detectorId)).toContain("host-header-injection");
+    expect(spoofed.detections.map((d) => d.detector)).toContain("host-header-injection");
 
     // Without the list, a differing X-Forwarded-Host must NOT fire — that is
     // normal behind a proxy and would false-positive on every proxied request.
     const bare = new HoneypotEngine({ detectors: buildDetectors(defaultConfig()) });
     const proxied = await bare.evaluate(facts({ path: "/", ip: "10.10.0.3", headers: { host: "internal.lb", "x-forwarded-host": "shop.example.com" } }));
-    expect(proxied.detections.map((d) => d.detectorId)).not.toContain("host-header-injection");
+    expect(proxied.detections.map((d) => d.detector)).not.toContain("host-header-injection");
   });
 
   it("applies options for the graphql, jwt, and client-anomaly detectors", async () => {
@@ -499,15 +466,15 @@ describe("building from config", () => {
 
     // The configured max_depth applies: 4 levels of nesting exceeds a limit of 3.
     const deep = await engine.evaluate(facts({ path: "/graphql", method: "POST", body: "{ a { b { c { d } } } }", ip: "10.9.0.1" }));
-    expect(deep.detections.find((d) => d.detectorId === "graphql-abuse")?.score).toBe(31);
+    expect(deep.detections.find((d) => d.detector === "graphql-abuse")?.score).toBe(31);
 
     // The configured header list replaces the built-in one, so Authorization is
     // no longer scanned while the named header is.
     const noneAlg = "eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.eyJzdWIiOiJhZG1pbiJ9.";
     const viaCustom = await engine.evaluate(facts({ path: "/api", ip: "10.9.0.2", headers: { "x-token": noneAlg } }));
-    expect(viaCustom.detections.map((d) => d.detectorId)).toContain("jwt-weakness");
+    expect(viaCustom.detections.map((d) => d.detector)).toContain("jwt-weakness");
     const viaAuth = await engine.evaluate(facts({ path: "/api", ip: "10.9.0.3", headers: { authorization: `Bearer ${noneAlg}` } }));
-    expect(viaAuth.detections.map((d) => d.detectorId)).not.toContain("jwt-weakness");
+    expect(viaAuth.detections.map((d) => d.detector)).not.toContain("jwt-weakness");
   });
 
   it("correlates a repeat actor only across IPs that already scored", async () => {
@@ -522,10 +489,10 @@ describe("building from config", () => {
     // next probe rather than on an address that has not yet done anything.
     await engine.evaluate(facts({ path: "/.env", ip: "203.0.113.1", headers: spoofing }));
     const second = await engine.evaluate(facts({ path: "/.env", ip: "203.0.113.2", headers: spoofing }));
-    expect(second.detections.map((d) => d.detectorId)).not.toContain("repeat-actor");
+    expect(second.detections.map((d) => d.detector)).not.toContain("repeat-actor");
 
     const third = await engine.evaluate(facts({ path: "/.env", ip: "203.0.113.2", headers: spoofing }));
-    expect(third.detections.find((d) => d.detectorId === "repeat-actor")?.score).toBe(27);
+    expect(third.detections.find((d) => d.detector === "repeat-actor")?.score).toBe(27);
 
     // Benign traffic sharing a fingerprint across many IPs must never correlate:
     // it scores nothing, so it never enters the registry in the first place.
@@ -559,13 +526,13 @@ describe("building from config", () => {
 
     const engine = new HoneypotEngine({ detectors: buildDetectors(config) });
     const ssrf = await engine.evaluate(facts({ path: "/fetch", query: { url: "http://169.254.169.254/" }, ip: "10.5.0.1" }));
-    expect(ssrf.detections.find((d) => d.detectorId === "ssrf-probe")?.score).toBe(30);
+    expect(ssrf.detections.find((d) => d.detector === "ssrf-probe")?.score).toBe(30);
 
     // The configured param list replaces the built-in one.
     const custom = await engine.evaluate(facts({ path: "/go", query: { backto: "//evil.example.com" }, ip: "10.5.0.2" }));
-    expect(custom.detections.find((d) => d.detectorId === "open-redirect")?.score).toBe(12);
+    expect(custom.detections.find((d) => d.detector === "open-redirect")?.score).toBe(12);
     const builtIn = await engine.evaluate(facts({ path: "/go", query: { next: "//evil.example.com" }, ip: "10.5.0.3" }));
-    expect(builtIn.detections.some((d) => d.detectorId === "open-redirect")).toBe(false);
+    expect(builtIn.detections.some((d) => d.detector === "open-redirect")).toBe(false);
   });
 
   it("applies fake-data options and can switch it off", () => {
@@ -625,7 +592,7 @@ describe("building from config", () => {
     expect(exempt.totalScore).toBe(0);
     // The same probe from outside it still fires.
     const flagged = await engine.evaluate(facts({ path: "/.env", ip: "203.0.113.9" }));
-    expect(flagged.detections.some((d) => d.detectorId === "decoy-path")).toBe(true);
+    expect(flagged.detections.some((d) => d.detector === "decoy-path")).toBe(true);
   });
 
   it("rejects a malformed allowlist entry instead of silently exempting nothing", () => {
@@ -812,7 +779,7 @@ describe("building from config", () => {
     // A captured SSH shell command is attacker-supplied text that reaches the log.
     // In text mode a bare newline would end the line and let them write entirely
     // fabricated entries after it; JSON mode was always safe.
-    const { formatValue, formatTextLine } = await import("../src/logfmt.js");
+    const { formatValue, formatTextLine } = await import("../src/internal/logfmt.js");
     const forged = 'ls\n[2026-01-01T00:00:00Z] kind=startup store=PWNED';
     expect(formatValue(forged)).not.toContain("\n");
     expect(formatValue(forged)).toBe(JSON.stringify(forged));
@@ -899,9 +866,12 @@ describe("building from config", () => {
   it("honors the configured escalation thresholds", () => {
     const policy = buildPolicy(parse("[policy]\nblock_threshold = 5\ntarpit_threshold = 2\n"));
     const at = (totalScore: number, respondWith?: string) => {
-      const detection: Detection = { detectorId: "test", reason: "test", score: totalScore };
+      const detection: Detection = { detector: "test", summary: "test", score: totalScore };
       if (respondWith) detection.respondWith = respondWith;
-      return policy({ detection, detections: [detection], ip: "10.0.0.1", path: "/", totalScore, tracker: new IpTracker("10.0.0.1", 60_000) });
+      // The built policy reports which rung decided, so an incident can say why; the id is
+      // what this test is about.
+      const decided = policy({ detection, detections: [detection], ip: "10.0.0.1", path: "/", totalScore, tracker: new IpTracker("10.0.0.1", 60_000) });
+      return typeof decided === "string" ? decided : decided.actionId;
     };
     expect(at(6)).toBe("block");
     expect(at(6, "decoy-content")).toBe("block"); // a confirmed attacker is blocked regardless
@@ -1006,5 +976,84 @@ describe("file discovery and env overrides", () => {
   it("rejects a malformed environment value", () => {
     expect(() => applyEnvOverrides(defaultConfig(), { PORT: "not-a-port" })).toThrow(/PORT: must be a non-negative integer/);
     expect(() => applyEnvOverrides(defaultConfig(), { TRUST_PROXY: "maybe" })).toThrow(/TRUST_PROXY: must be true or false/);
+  });
+});
+
+describe("gzip-bomb size is bounded at config parse time", () => {
+  it("rejects a decompressed_bytes that would be allocated in this process", () => {
+    expect(() => parseConfig({ responses: { "gzip-bomb": { decompressed_bytes: 8 * 1024 * 1024 * 1024 } } }, "<test>")).toThrow(/decompressed_bytes/);
+  });
+
+  it("accepts a sane value", () => {
+    expect(() => parseConfig({ responses: { "gzip-bomb": { decompressed_bytes: 10 * 1024 * 1024 } } }, "<test>")).not.toThrow();
+  });
+});
+
+describe("port numbers are validated where the operator can still see the file", () => {
+  // The schema already refuses two listeners claiming one port "rather than at bind
+  // time". An out-of-range port is the same class of mistake and was not caught at all:
+  // it validated cleanly, printed cleanly from --print-config, and then failed at bind
+  // with a RangeError from inside Node.
+  it("rejects an out-of-range port in every listener section", () => {
+    for (const toml of [
+      "[server]\nport = 70000\n",
+      "[management]\nenabled = true\napi_keys = [\"k\"]\nport = 99999\n",
+      "[smtp]\nenabled = true\nport = 65536\n",
+      "[ssh]\nenabled = true\nport = 123456\n",
+    ]) {
+      expect(() => parseConfigText(toml, "t.toml"), toml).toThrow(/TCP port between 0 and 65535/);
+    }
+  });
+
+  it("rejects an out-of-range sentinel port", () => {
+    expect(() => parseConfigText("[port-scan]\nports = [80, 70000]\n", "t.toml")).toThrow(/not a TCP port between 1 and 65535/);
+    expect(() => parseConfigText("[port-scan]\nports = [0]\n", "t.toml")).toThrow(/not a TCP port between 1 and 65535/);
+  });
+
+  it("applies the same rail to the environment overrides", () => {
+    const base = (): HackerpotConfig => parseConfigText("", "t.toml");
+    expect(() => applyEnvOverrides(base(), { PORT: "70000" })).toThrow(/TCP port between 0 and 65535/);
+    expect(() => applyEnvOverrides(base(), { MANAGEMENT_PORT: "99999" })).toThrow(/TCP port between 0 and 65535/);
+    expect(() => applyEnvOverrides(base(), { SCAN_PORTS: "80,70000" })).toThrow(/TCP port between 0 and 65535/);
+  });
+
+  it("still accepts the ports people actually use", () => {
+    const config = parseConfigText("[server]\nport = 65535\n\n[port-scan]\nports = [23, 3389]\n", "t.toml");
+    expect(config.server.port).toBe(65535);
+    expect(config.portScan.ports).toEqual([23, 3389]);
+    expect(applyEnvOverrides(parseConfigText("", "t.toml"), { PORT: "8080" }).server.port).toBe(8080);
+  });
+});
+
+describe("memory ceilings settable on the library API are reachable from the config file", () => {
+  // Every other bound in the engine is tunable from TOML (store.memory.max_hits,
+  // max_score_entries, the engine windows). These three were settable only by a
+  // library caller, so the standalone service — the primary deployment — was stuck
+  // with the defaults for the blocklist and the port-scan sentinel's growth surface.
+  it("plumbs [blocklist] max_entries through to the memory blocklist", () => {
+    const config = parseConfigText("[blocklist]\nmax_entries = 250\n", "t.toml");
+    expect(config.blocklist.maxEntries).toBe(250);
+    const built = createBlocklist(config);
+    expect(built.describe).toContain("250");
+  });
+
+  it("plumbs the port-scan sentinel's memory bounds", () => {
+    const config = parseConfigText("[port-scan]\nports = [9999]\nmax_tracked_ips = 32\nretention_ms = 5000\n", "t.toml");
+    expect(config.portScan.maxTrackedIps).toBe(32);
+    expect(config.portScan.retentionMs).toBe(5000);
+  });
+
+  it("enforces the cap it configures", () => {
+    const config = parseConfigText("[blocklist]\nmax_entries = 5\n", "t.toml");
+    const { blocklist } = createBlocklist(config);
+    const until = Date.now() + 60_000;
+    for (let i = 0; i < 50; i += 1) void blocklist.block(`203.0.113.${i}`, until);
+    // Without the plumbing this stayed at the 100 000 default and held all 50.
+    expect(blocklist.size?.()).toBeLessThanOrEqual(5);
+  });
+
+  it("refuses the values that would silently disable the feature", () => {
+    expect(() => parseConfigText("[port-scan]\nports = [9999]\nmax_tracked_ips = 0\n", "t.toml")).toThrow(/no sweep is ever reported/);
+    expect(() => parseConfigText("[port-scan]\nports = [9999]\nretention_ms = 0\n", "t.toml")).toThrow(/forgotten immediately/);
   });
 });

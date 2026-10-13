@@ -1,17 +1,22 @@
 import { type Analysis, analyze, CORPUS_LIMIT, chronological, scopeIncidents } from "./analysis.js";
 import { asApiError, getJson, getText } from "./api.js";
+import type { DashboardNotice, FeedCountsSnapshot } from "./store.js";
 import { app } from "./app.js";
 import { applyBoot, BOOT, SECTIONS } from "./boot.js";
 import { repaintVisible } from "./charts.js";
 import { $, all, byId, clear, el, eventTarget, isEmbedded, maybe, rootNode, setRoot, setText, setThemeHost, themeElement } from "./dom.js";
 import { fmtClock, fmtCompact } from "./format.js";
-import { initIncidents, loadIncidents, prependIncident, setDetectorOptions } from "./incidents.js";
-import { initIntel, renderActors, renderIoc, renderMetrics, renderSessions } from "./lists.js";
+import { clearQuery, incidentTotal, initIncidents, loadIncidents, prependIncident, setDetectorOptions, showAddress } from "./incidents.js";
+import { initIntel, renderActors, renderIoc, renderMetrics, renderNotices, renderSessions } from "./lists.js";
 import { renderOverview } from "./overview.js";
-import { availableTabs, explainFailure, type Failure, isIncident, isTabName, mergeIncident, parseMetrics, safeHref, streamNotice, TAB_ORDER, tabFromHash } from "./query.js";
+import { canPreviewPolicy, initPolicy, renderPolicyChanges } from "./policy.js";
+import { initReference, renderReference, setInstalledDetectors } from "./reference.js";
+import { availableTabs, explainFailure, type Failure, isIncident, isTabName, mergeIncident, parseMetrics, safeHref, streamNotice, TAB_ORDER, tabFromHash, upgradeIncident } from "./query.js";
 import { initStatistics, onStatisticsChange, renderStats } from "./statistics.js";
 import { state } from "./store.js";
 import { connectStream, streamAvailable, suspendStream } from "./stream.js";
+import { initTester } from "./tester.js";
+import { renderTiles, TILE_TABS } from "./tiles.js";
 import { initTooltip } from "./tooltip.js";
 import type { ActorGroup, AttackSession, Boot, IocEntry, StatsSummary, TabName } from "./types.js";
 
@@ -57,7 +62,6 @@ export function resumeDashboard(host: HTMLElement): void {
   if (!mounted) return;
   setThemeHost(host);
   applyStoredTheme();
-  measureHeader();
   if (state.live) connectStream();
   void refresh();
 }
@@ -86,10 +90,17 @@ const dirty = new Set<TabName>();
 let renderTimer: ReturnType<typeof setTimeout> | undefined;
 
 function renderTab(tab: TabName): void {
-  if (!dirty.has(tab) || !SECTIONS[tab]) return;
+  // The policy screen is drawn once, when it is initialised: it holds what somebody typed.
+  if (tab === "reference") {
+    renderReference();
+    return;
+  }
+  if (!dirty.has(tab) || tab === "policy" || !SECTIONS[tab]) return;
   dirty.delete(tab);
-  if (tab === "overview") renderOverview(analysisAll());
-  else if (tab === "statistics") renderStats(analysisScoped());
+  if (tab === "overview") {
+    renderOverview(analysisAll());
+    renderNotices();
+  } else if (tab === "statistics") renderStats(analysisScoped());
   else if (tab === "sessions") renderSessions();
   else if (tab === "actors") renderActors();
   else if (tab === "intel") {
@@ -101,6 +112,7 @@ function renderTab(tab: TabName): void {
 function renderAll(): void {
   for (const tab of TAB_ORDER) dirty.add(tab);
   renderTab(state.tab);
+  if (TILE_TABS.has(state.tab)) renderTiles();
 }
 
 /**
@@ -157,15 +169,41 @@ async function loadEverything(): Promise<void> {
         state.stats = stats;
         state.liveSinceStats = 0;
         setDetectorOptions(Object.keys(stats.byDetector ?? {}));
+        // The Reference index says which of the documented detectors this deployment runs.
+        setInstalledDetectors(Object.keys(stats.byDetector ?? {}));
+      }),
+    );
+  }
+  if (SECTIONS.overview || SECTIONS.statistics || SECTIONS.incidents) {
+    // Counted server-side in minute buckets, so this says how many incidents happened rather
+    // than how many the page managed to hold.
+    jobs.push(
+      attempt("/api/counts", getJson<FeedCountsSnapshot>, (counts) => {
+        state.counts = counts;
+      }),
+    );
+  }
+  if (SECTIONS.overview) {
+    // Only an engine in this process keeps notices; a dashboard reading a management API is
+    // answered 404 and simply shows none.
+    jobs.push(
+      attempt("/api/notices", getJson<{ notices?: DashboardNotice[] }>, (data) => {
+        state.notices = Array.isArray(data.notices) ? data.notices : [];
+        // The Policy screen is drawn once, when it is initialised, so it is told directly.
+        renderPolicyChanges();
       }),
     );
   }
   if (SECTIONS.overview || SECTIONS.statistics || SECTIONS.incidents) {
     jobs.push(
       attempt(`/api/incidents?limit=${CORPUS_LIMIT}`, getJson<{ incidents?: unknown }>, (data) => {
-        state.all = chronological(Array.isArray(data.incidents) ? data.incidents.filter(isIncident) : []);
+        state.all = chronological(Array.isArray(data.incidents) ? data.incidents.map(upgradeIncident).filter(isIncident) : []);
         state.version++;
-        if (!(SECTIONS.overview || SECTIONS.statistics)) setDetectorOptions([...new Set(state.all.flatMap((i) => i.detections.map((d) => d.detectorId)))]);
+        if (!(SECTIONS.overview || SECTIONS.statistics)) {
+          const seen = [...new Set(state.all.flatMap((i) => i.detections.map((d) => d.detector)))];
+          setDetectorOptions(seen);
+          setInstalledDetectors(seen);
+        }
       }),
     );
   }
@@ -186,7 +224,7 @@ async function loadEverything(): Promise<void> {
   await Promise.all(jobs);
   sideStale = false;
   state.loadedAt = Date.now();
-  setText("last-refresh", `updated ${fmtClock(state.loadedAt)}`);
+  setText("last-refresh", fmtClock(state.loadedAt));
   drawPills();
   renderAll();
 }
@@ -301,7 +339,8 @@ function drawNotice(): void {
 
 function drawPills(): void {
   const set = (id: string, n: number): void => setText(id, fmtCompact(n));
-  set("tc-incidents", state.incidents.length);
+  // What happened, when the server could say; what is loaded, when it could not.
+  set("tc-incidents", incidentTotal() ?? state.incidents.length);
   set("tc-sessions", state.sessions.length);
   set("tc-actors", state.actors.length);
   set("tc-ioc", state.ioc.length);
@@ -334,13 +373,6 @@ function labelThemeButton(): void {
   const next = currentScheme() === "dark" ? "light" : "dark";
   button.textContent = next === "dark" ? "Dark" : "Light";
   button.setAttribute("aria-label", `Switch to the ${next} colour scheme`);
-}
-
-/** The tab strip sticks under the header, whose height depends on how much of it wrapped. */
-function measureHeader(): void {
-  const header = rootNode().querySelector<HTMLElement>(".hp-header");
-  if (header === null) return;
-  themeElement().style.setProperty("--header-h", `${Math.ceil(header.getBoundingClientRect().height)}px`);
 }
 
 function initHeader(): void {
@@ -380,10 +412,6 @@ function initHeader(): void {
     labelThemeButton();
   });
 
-  measureHeader();
-  const header = rootNode().querySelector(".hp-header");
-  if (header !== null && typeof ResizeObserver === "function") new ResizeObserver(measureHeader).observe(header);
-
   // The skip link is a fragment anchor, and fragment navigation does not cross a shadow boundary.
   const skip = rootNode().querySelector<HTMLAnchorElement>("a.skip");
   skip?.addEventListener("click", (event) => {
@@ -394,6 +422,21 @@ function initHeader(): void {
     main.tabIndex = -1;
     main.focus();
   });
+
+  /**
+   * The feed's sticky column headers sit under this one, and the header is not a fixed
+   * height: the tab strip wraps on a narrow window and grows. Measure it, and let the CSS
+   * read the measurement rather than guess at a literal.
+   */
+  const header = rootNode().querySelector("header");
+  if (header !== null) {
+    const apply = (): void => {
+      themeElement().style.setProperty("--header-h", `${header.getBoundingClientRect().height}px`);
+    };
+    apply();
+    if (typeof ResizeObserver === "function") new ResizeObserver(apply).observe(header);
+    else addEventListener("resize", apply);
+  }
 }
 
 // ---- tabs -------------------------------------------------------------------------
@@ -415,13 +458,18 @@ function showTab(name: TabName, options: { focus?: boolean; push?: boolean } = {
   if (options.focus === true) $(`tab-${target}`).focus();
   if (options.push === true && !isEmbedded() && location.hash !== `#${target}`) history.pushState(null, "", `#${target}`);
   renderTab(target);
+  const tiles = maybe("tiles");
+  if (tiles !== null) {
+    tiles.hidden = !TILE_TABS.has(target);
+    if (!tiles.hidden) renderTiles();
+  }
   // Charts drawn while their screen was hidden were drawn at a guessed width.
   repaintVisible();
   if (isSideTab(target) && sideStale) void loadSide(target);
 }
 
 function initTabs(): void {
-  available = availableTabs(SECTIONS);
+  available = availableTabs(SECTIONS, canPreviewPolicy());
   available.forEach((tab, index) => {
     const button = $(`tab-${tab}`);
     button.addEventListener("click", () => showTab(tab, { push: true }));
@@ -452,13 +500,13 @@ function initTabs(): void {
  */
 function applySections(): void {
   for (const tab of TAB_ORDER) {
-    if (SECTIONS[tab]) continue;
+    if (tab === "policy" ? canPreviewPolicy() : tab === "reference" || SECTIONS[tab]) continue;
     maybe(`tab-${tab}`)?.remove();
     maybe(`pane-${tab}`)?.remove();
   }
   for (const node of all("[data-needs]")) {
     const needs = node.dataset["needs"];
-    if (isTabName(needs) && !SECTIONS[needs]) node.remove();
+    if (isTabName(needs) && needs !== "policy" && needs !== "reference" && !SECTIONS[needs]) node.remove();
   }
   if (availableTabs(SECTIONS).length === 0) {
     const main = $("hp-main");
@@ -471,15 +519,15 @@ function applySections(): void {
 
 function initToolbar(): void {
   $("refresh").addEventListener("click", () => void refresh());
-  const live = byId<HTMLInputElement>("live");
-  const liveLabel = maybe("live-label");
+  const live = byId<HTMLButtonElement>("live");
   if (!streamAvailable()) {
-    if (liveLabel !== null) liveLabel.hidden = true;
+    live.hidden = true;
     state.live = false;
   }
-  live.checked = state.live;
-  live.addEventListener("change", () => {
-    state.live = live.checked;
+  drawLiveButton();
+  live.addEventListener("click", () => {
+    state.live = !state.live;
+    drawLiveButton();
     if (state.live) {
       connectStream();
       // Whatever arrived while paused was not heard; reload rather than show a gap.
@@ -494,6 +542,61 @@ function initToolbar(): void {
   $("stream-notice-dismiss").addEventListener("click", () => {
     state.acknowledged = state.dropped + state.skipped;
     drawNotice();
+  });
+}
+
+/**
+ * Pause and Refresh are one control's two halves. While the feed is live the page is already
+ * current, so Refresh would only repeat what the stream delivers and is hidden; paused, or with
+ * no stream to follow, it is the only way to see what changed.
+ */
+function drawLiveButton(): void {
+  const live = byId<HTMLButtonElement>("live");
+  live.setAttribute("aria-pressed", String(!state.live));
+  live.textContent = state.live ? "Pause" : "Resume";
+  $("refresh").hidden = state.live;
+}
+
+/**
+ * The keys bothandlerjs's dashboard answers, so a hand used to one works in the other: `/` to
+ * search the incidents, 1 to 6 for the screens this dashboard has, and Escape to clear a search
+ * or dismiss the stream notice. Listened for on the dashboard's own root when embedded, so a key
+ * pressed while the host page has focus is the host page's.
+ */
+function initKeyboard(): void {
+  eventTarget().addEventListener("keydown", (raw) => {
+    const event = raw as KeyboardEvent;
+    const target = event.target as HTMLElement | null;
+    const typing = target !== null && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.tagName === "SELECT");
+    if (event.key === "Escape") {
+      if (target?.id === "f-query" && (target as HTMLInputElement).value !== "") {
+        clearQuery();
+        return;
+      }
+      if (typing) {
+        target?.blur();
+        return;
+      }
+      if (!$("stream-notice").hidden) {
+        state.acknowledged = state.dropped + state.skipped;
+        drawNotice();
+      }
+      return;
+    }
+    if (typing || event.metaKey || event.ctrlKey || event.altKey) return;
+    if (event.key === "/" && SECTIONS.incidents) {
+      event.preventDefault();
+      showTab("incidents", { push: true });
+      const query = byId<HTMLInputElement>("f-query");
+      query.focus();
+      query.select();
+      return;
+    }
+    const digit = ["1", "2", "3", "4", "5", "6"].indexOf(event.key);
+    if (digit !== -1 && digit < available.length) {
+      event.preventDefault();
+      showTab(available[digit] as TabName, { focus: true, push: true });
+    }
   });
 }
 
@@ -514,13 +617,11 @@ function initTableToggles(): void {
   }
 }
 
+/** "Show only this address", from a session, an actor or an opened incident: a search, as in bothandlerjs. */
 function incidentsFor(ip: string): void {
   if (!SECTIONS.incidents) return;
-  state.filter.ip = ip;
-  const input = maybe<HTMLInputElement>("f-ip");
-  if (input !== null) input.value = ip;
+  showAddress(ip);
   showTab("incidents", { push: true });
-  void loadIncidents();
 }
 
 function initialTab(): TabName | undefined {
@@ -552,7 +653,12 @@ function start(): void {
   initToolbar();
   initTooltip();
   initTableToggles();
-  if (SECTIONS.incidents) initIncidents();
+  if (SECTIONS.incidents) {
+    initIncidents();
+    initTester();
+  }
+  if (canPreviewPolicy()) initPolicy();
+  initReference();
   if (SECTIONS.statistics) {
     initStatistics();
     onStatisticsChange(() => {
@@ -571,13 +677,7 @@ function start(): void {
     if (resizeTimer !== undefined) clearTimeout(resizeTimer);
     resizeTimer = setTimeout(repaintVisible, 160);
   });
-  // Escape closes the tooltip-like transient states: here, the stream notice.
-  eventTarget().addEventListener("keydown", (event) => {
-    if ((event as KeyboardEvent).key === "Escape" && !$("stream-notice").hidden) {
-      state.acknowledged = state.dropped + state.skipped;
-      drawNotice();
-    }
-  });
+  initKeyboard();
 
   void refresh();
   if (state.live) connectStream();

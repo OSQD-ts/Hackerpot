@@ -4,8 +4,8 @@ import { HoneypotEngine } from "../src/core.js";
 import { toRegExp } from "../src/config/reader.js";
 import { decoyPathDetector, headerIntegrityDetector, sensitiveFileDetector, targetIntegrityDetector } from "../src/detectors/index.js";
 import type { DetectionContext, RequestFacts } from "../src/detectors/types.js";
-import { normalizePath } from "../src/http-request.js";
-import { HoneypotServer } from "../src/server.js";
+import { normalizePath } from "../src/internal/http.js";
+import { HoneypotServer } from "../src/adapters/server.js";
 import type { HoneypotHit } from "../src/types.js";
 
 const BROWSER = {
@@ -60,9 +60,9 @@ describe("decoy detection survives alternate spellings of the same path", () => 
   ];
 
   it.each(variants)("%s spelled %s still fires decoy-path", async (canonical, spelled) => {
-    const expected = (await new HoneypotEngine({ enricher: null }).evaluate(facts(canonical))).detections.find((d) => d.detectorId === "decoy-path");
+    const expected = (await new HoneypotEngine({ enricher: null }).evaluate(facts(canonical))).detections.find((d) => d.detector === "decoy-path");
     const result = await new HoneypotEngine({ enricher: null }).evaluate(facts(spelled));
-    const decoy = result.detections.find((d) => d.detectorId === "decoy-path");
+    const decoy = result.detections.find((d) => d.detector === "decoy-path");
     expect(expected).toBeDefined();
     expect(decoy?.score).toBe(expected!.score);
   });
@@ -159,12 +159,12 @@ describe("target-integrity and one-act scoring", () => {
   it("flags a double-encoded target without decoding it twice", async () => {
     const result = await new HoneypotEngine({ enricher: null }).evaluate(facts("/%252e%252e%252fsecret"));
     expect(result.path).toBe("/%2e%2e%2fsecret");
-    expect(result.detections.find((d) => d.detectorId === "target-integrity")?.metadata?.["findings"]).toContain("double-encoded");
+    expect(result.detections.find((d) => d.detector === "target-integrity")?.metadata?.["findings"]).toContain("double-encoded");
   });
 
   it("counts an encoded traversal once even though two detectors see it", async () => {
     const result = await new HoneypotEngine({ enricher: null }).evaluate(facts("/%2e%2e%2f%2e%2e%2fapp/config.yml"));
-    const ids = result.detections.map((d) => d.detectorId);
+    const ids = result.detections.map((d) => d.detector);
     expect(ids).toEqual(expect.arrayContaining(["payload-injection", "target-integrity"]));
     const traversal = result.detections.filter((d) => d.family === "path-traversal");
     const naive = result.detections.reduce((sum, d) => sum + d.score, 0);

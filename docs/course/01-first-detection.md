@@ -44,7 +44,7 @@ console.log("totalScore", result.totalScore);
 console.log("response  ", result.actionId);
 console.log("path      ", result.path);
 for (const d of result.detections) {
-  console.log(`  +${d.score} ${d.detectorId}: ${d.reason}`);
+  console.log(`  +${d.score} ${d.detector}: ${d.summary}`);
 }
 ```
 
@@ -69,7 +69,7 @@ If you got that, the library is installed and working.
 
 | Field | |
 | ----- | - |
-| `detections` | everything that fired, highest score first. Each has a `detectorId`, a `reason`, a `score`, and sometimes `certain`, `family`, `respondWith` and `metadata` |
+| `detections` | everything that fired, highest score first. Each has a `detector`, a `summary`, a `score`, and sometimes `certain`, `family`, `respondWith` and `metadata` |
 | `score` | what **this request** added |
 | `totalScore` | the **address's** cumulative score after it — [lesson 3](03-scores-and-responses.md) |
 | `actionId` | the response the policy chose. An empty string means nothing fired: pass the request on |
@@ -152,7 +152,7 @@ const result = await engine.evaluate({
 });
 console.log("score     ", result.score);
 console.log("response  ", result.actionId);
-for (const d of result.detections) console.log(`  +${d.score} ${d.detectorId}: ${d.reason}`);
+for (const d of result.detections) console.log(`  +${d.score} ${d.detector}: ${d.summary}`);
 const [hit] = await engine.store.list();
 console.log("stored    ", hit.ip, hit.path, hit.respondedWith, hit.detections.length, "detections");
 ```

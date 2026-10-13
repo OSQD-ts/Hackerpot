@@ -58,8 +58,8 @@ export function crlfInjectionDetector(options: CrlfInjectionOptions = {}): Detec
         const kind = scan(target.value);
         if (!kind) continue;
         const detection: Detection = {
-          detectorId: "crlf-injection",
-          reason: `CRLF injection — ${kind} in ${target.location}`,
+          detector: "crlf-injection",
+          summary: `CRLF injection — ${kind} in ${target.location}`,
           score,
           metadata: { location: target.location, sample: target.value.slice(0, 200) },
         };

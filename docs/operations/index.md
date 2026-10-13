@@ -42,7 +42,7 @@ Most of what hackerpot records is not worth waking anyone for: the internet prob
 address constantly. Three things are:
 
 1. **A replayed honeytoken or a sprung trap.** Somebody read bait and used it. Route
-   `min_score` high on a [webhook](webhooks.md), or match `detectorId` in `onHit`.
+   `min_score` high on a [webhook](webhooks.md), or match `detector` in `onHit`.
 2. **`hackerpot_downgrades_total` rising** (or the audit's `downgrade-spike`). Scores are
    reaching the block threshold without proof: in middleware mode, the shape of detectors adding
    up on real visitors. See [metrics](metrics.md).

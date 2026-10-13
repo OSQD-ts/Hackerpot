@@ -56,8 +56,8 @@ const GPTBOT = "Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko); compatible; 
 
 async function claim(label, ip, userAgent) {
   const r = await engine.evaluate({ method: "GET", path: "/recipes/42", query: {}, headers: { host: "pantry.example", "user-agent": userAgent }, ip });
-  const v = r.detections.find((d) => d.detectorId === "crawler-verification");
-  console.log(`${label.padEnd(28)} ${v ? `certain=${v.certain} +${v.score} ${v.reason}` : "no detection"}`);
+  const v = r.detections.find((d) => d.detector === "crawler-verification");
+  console.log(`${label.padEnd(28)} ${v ? `certain=${v.certain} +${v.score} ${v.summary}` : "no detection"}`);
 }
 
 await claim("Googlebot, Google's address", "66.249.66.1", GOOGLEBOT);
@@ -173,7 +173,7 @@ import { HoneypotEngine, crawlerVerificationDetector } from "@osqd/hackerpot";
 const resolver = { async reverse() { throw Object.assign(new Error("nx"), { code: "ENOTFOUND" }); }, async resolveAddresses() { throw Object.assign(new Error("nx"), { code: "ENOTFOUND" }); } };
 const engine = new HoneypotEngine({ extraDetectors: [crawlerVerificationDetector({ resolver })] });
 const r = await engine.evaluate({ method: "GET", path: "/feed.xml", query: {}, headers: { host: "pantry.example", "user-agent": "Feedly/1.0 (+http://www.feedly.com/fetcher.html; like FeedFetcher-Google)" }, ip: "203.0.113.95" });
-console.log(r.detections.map((d) => d.detectorId).join(", ") || "nothing fired");
+console.log(r.detections.map((d) => d.detector).join(", ") || "nothing fired");
 ```
 
 ```

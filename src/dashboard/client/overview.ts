@@ -46,7 +46,7 @@ export function renderOverview(a: Analysis): void {
   setText("c-blockshare-sub", a.n ? `${fmtInt(blocked)} requests refused at the door` : "");
 
   setText("ov-bucket", a.n ? `${fmtDur(a.bucketSize)} buckets` : "");
-  volumeChart($("ov-vol"), a, maybe("ov-vol-table"), "Incident volume over time");
+  volumeChart($("ov-vol"), a, maybe("ov-vol-table"), "Incident volume over time", state.notices.filter((notice) => notice.change !== undefined));
 
   const detectors = ranked(a.byDetector, 10);
   rankedBars($("p-detectors"), detectors, { total: a.n });
@@ -72,7 +72,7 @@ export function timeline(incidents: readonly Incident[]): HTMLElement {
     path.title = incident.path;
     item.append(el("span", "tl-time", Number.isFinite(timeOf(incident)) ? fmtTime(incident.timestamp) : DASH), el("span", "ip", incident.ip), el("span", "method", incident.method), path);
     const badges = detectorBadges(
-      incident.detections.map((d) => d.detectorId),
+      incident.detections.map((d) => d.detector),
       3,
     );
     badges.classList.add("push");

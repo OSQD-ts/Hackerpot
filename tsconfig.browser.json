@@ -9,6 +9,6 @@
     "noUnusedLocals": true,
     "noUnusedParameters": true
   },
-  "include": ["src/dashboard/client/**/*", "src/element/**/*"],
+  "include": ["src/dashboard/client/**/*", "src/element/**/*", "tests/browser/**/*"],
   "exclude": ["dist", "node_modules"]
 }

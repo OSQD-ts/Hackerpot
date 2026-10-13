@@ -34,8 +34,8 @@ function oversizedPageDetector({ max = 50, score = 5 } = {}) {
       const perPage = Number(raw);
       if (perPage <= max) return undefined;
       return {
-        detectorId: "oversized-page",
-        reason: `Asked for ${perPage} recipes per page; the API documents at most ${max}`,
+        detector: "oversized-page",
+        summary: `Asked for ${perPage} recipes per page; the API documents at most ${max}`,
         score,              // suspicion: a careless integration does this too
         metadata: { perPage },
       };
@@ -73,7 +73,7 @@ const ladder = defaultResponsePolicy(40, 15);
 const policy = (ctx) => {
   const chosen = ladder(ctx);
   if (chosen === "block") return chosen;
-  if (ctx.detections.some((d) => d.detectorId === "oversized-page")) return "empty-recipes";
+  if (ctx.detections.some((d) => d.detector === "oversized-page")) return "empty-recipes";
   return chosen;
 };
 
@@ -88,7 +88,7 @@ const engine = new HoneypotEngine({
 const browser = { host: "pantry.example", "user-agent": "Mozilla/5.0 Chrome/126.0.0.0", accept: "application/json", "accept-language": "en", "accept-encoding": "gzip" };
 for (const perPage of ["20", "5000"]) {
   const r = await engine.evaluate({ method: "GET", path: "/api/recipes", query: { per_page: perPage }, headers: browser, ip: "203.0.113.150" });
-  console.log(`per_page=${perPage.padEnd(5)} ${r.detections.map((d) => `${d.detectorId} +${d.score}: ${d.reason}`).join("; ") || "nothing fired"}${r.actionId ? ` -> ${r.actionId}` : ""}`);
+  console.log(`per_page=${perPage.padEnd(5)} ${r.detections.map((d) => `${d.detector} +${d.score}: ${d.summary}`).join("; ") || "nothing fired"}${r.actionId ? ` -> ${r.actionId}` : ""}`);
 }
 console.log("stored", store.hits.length, "score", store.scoreFor("203.0.113.150"));
 console.log(await checkResponseActions([emptyRecipesAction()]));
@@ -232,7 +232,7 @@ The replayed key now blocks at 37, which is what lesson 7 wanted.
 has seen a single fake file. That is defensible — a self-declared attack tool is proof — but it
 also means the decoys never engage it, and Pantry learns less about what it was looking for.
 A policy that blocks only on *planted* proof keeps the decoys working:
-`ctx.detections.some((d) => d.detectorId === "honeytoken" || d.detectorId === "trap")`.
+`ctx.detections.some((d) => d.detector === "honeytoken" || d.detector === "trap")`.
 
 Branching on proof has one more property worth having: the policy now behaves the same in
 front of Pantry and standalone, because it never asks the guard for anything it would refuse.

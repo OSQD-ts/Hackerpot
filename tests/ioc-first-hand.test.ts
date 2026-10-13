@@ -3,7 +3,7 @@ import { IpAllowlist } from "../src/allowlist.js";
 import { CompositeBlocklist, MemoryBlocklist } from "../src/blocklist.js";
 import { applyIocEntries } from "../src/intel/index.js";
 import { computeIoc } from "../src/management/rest.js";
-import { HoneypotServer } from "../src/server.js";
+import { HoneypotServer } from "../src/adapters/server.js";
 import { MemoryStore } from "../src/stores/index.js";
 
 /**

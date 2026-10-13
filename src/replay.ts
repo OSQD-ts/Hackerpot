@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import type { EvaluationResult, HoneypotEngine } from "./core.js";
 import type { RequestFacts } from "./detectors/types.js";
-import { parseQuery, pathOf } from "./http-request.js";
+import { parseQuery, pathOf } from "./internal/http.js";
 
 /** One request recovered from an access log. */
 export interface LogRequest {
@@ -149,7 +149,7 @@ export async function replayLog(engine: HoneypotEngine, lines: Iterable<string>,
       summary.flagged += 1;
       source.flagged += 1;
       source.totalScore = Math.max(source.totalScore, result.totalScore);
-      for (const detection of result.detections) summary.byDetector[detection.detectorId] = (summary.byDetector[detection.detectorId] ?? 0) + 1;
+      for (const detection of result.detections) summary.byDetector[detection.detector] = (summary.byDetector[detection.detector] ?? 0) + 1;
       summary.byResponse[result.actionId] = (summary.byResponse[result.actionId] ?? 0) + 1;
       if (result.downgradedFrom !== undefined) summary.downgraded += 1;
       options.onFlagged?.(request, result);

@@ -76,6 +76,18 @@ function gridlines(svg: SVGSVGElement, scale: { step: number; ticks: number; max
   }
 }
 
+/**
+ * Something that happened at a moment, drawn across the plot.
+ *
+ * A panel answers "was there a change?"; a mark on the traffic answers "did the traffic
+ * change because of it", which is the question somebody actually has after tuning a rule.
+ */
+export interface ChartMark {
+  /** Where it falls, as a fraction of the axis: 0 is the first bucket, 1 the last. */
+  at: number;
+  label: string;
+}
+
 export interface Series {
   name: string;
   values: readonly number[];
@@ -87,7 +99,12 @@ export interface Series {
  * are lines with a legend, so identity is never colour alone. A crosshair and a marker per
  * series follow the hovered bucket, and the tooltip reads every series at once.
  */
-export function timeChart(target: HTMLElement, buckets: ReadonlyArray<{ label: string; full: string }>, series: readonly Series[], options: { height?: number; label: string }): void {
+export function timeChart(
+  target: HTMLElement,
+  buckets: ReadonlyArray<{ label: string; full: string }>,
+  series: readonly Series[],
+  options: { height?: number; label: string; marks?: readonly ChartMark[] },
+): void {
   draw(target, (W) => {
     if (buckets.length === 0) return [noData()];
     const H = options.height ?? 190;
@@ -118,6 +135,14 @@ export function timeChart(target: HTMLElement, buckets: ReadonlyArray<{ label: s
     label(0);
     if (n > 2) label(Math.floor((n - 1) / 2));
     if (n > 1) label(n - 1);
+
+    // Drawn under the crosshair and the hit areas, so a mark never swallows a hover.
+    for (const mark of options.marks ?? []) {
+      const mx = P.l + Math.min(1, Math.max(0, mark.at)) * iw;
+      const line = svgEl("line", { class: "mark", x1: mx.toFixed(1), x2: mx.toFixed(1), y1: P.t, y2: P.t + ih });
+      setTip(line, { title: mark.label, lines: [] });
+      svg.append(line);
+    }
 
     const cross = svgEl("line", { class: "cross", x1: 0, x2: 0, y1: P.t, y2: P.t + ih });
     const markers = series.map((s) => svgEl("circle", { class: `marker ring fill-${slot(s.slot)}`, r: 4, cx: 0, cy: 0 }));
@@ -198,12 +223,17 @@ export interface RankedOptions {
   total?: number;
   unit?: string;
   share?: boolean;
-  wide?: boolean;
   slot?: number;
   emptyText?: string;
 }
 
-/** Ranked horizontal bars: magnitude in one hue, biggest first. Width-independent, so plain HTML. */
+/**
+ * Ranked horizontal bars: magnitude in one hue, biggest first. Width-independent, so plain HTML.
+ *
+ * The name is drawn inside its own track, as bothandlerjs's dashboard draws it, rather than in a
+ * fixed-width column beside a thin bar: a long detector id or address gets the whole row to be
+ * read in instead of being cut at a width chosen for the shortest.
+ */
 export function rankedBars(target: HTMLElement, entries: ReadonlyArray<readonly [name: string, n: number, note?: string]>, options: RankedOptions = {}): void {
   if (entries.length === 0) {
     replace(target, noData(options.emptyText));
@@ -212,21 +242,23 @@ export function rankedBars(target: HTMLElement, entries: ReadonlyArray<readonly 
   const total = options.total ?? entries.reduce((sum, entry) => sum + entry[1], 0);
   const max = Math.max(1, ...entries.map((entry) => entry[1]));
   const rows = entries.map(([name, n, note]) => {
-    const row = el("div", options.wide === true ? "barrow wide" : "barrow");
+    const row = el("div", "barrow");
     const label = el("div", "name", name);
     label.title = name;
     const bar = el("div", "bar");
     const fill = el("span", `bg-${slot(options.slot ?? 0)}`);
     fill.style.width = `${Math.max(1, (n / max) * 100).toFixed(2)}%`;
-    bar.append(fill);
+    bar.append(fill, label);
     const count = el("div", "n", fmtCompact(n));
     if (options.share !== false) count.append(" ", el("em", null, fmtPct(n, total, 0)));
-    row.append(label, bar, count);
+    row.append(bar, count);
     const line: TipPart[] = [{ strong: fmtInt(n) }, ` ${options.unit ?? "incidents"}`];
     if (total) line.push(` · ${fmtPct(n, total)} of ${fmtInt(total)}`);
     setTip(row, { title: name, lines: note === undefined ? [line] : [line, [note]] });
     return row;
   });
+  // The same container bothandlerjs draws bars in: one grid, one gap, one padding.
+  target.classList.add("bars");
   replace(target, ...rows);
 }
 
@@ -352,15 +384,21 @@ export function dataTable(target: HTMLElement | null, headers: readonly string[]
     body.append(tr);
   }
   table.append(head, body);
+  // A region that scrolls sideways has to be reachable by keyboard, or its right-hand columns
+  // are mouse-only. A group with a name is what a screen reader needs to announce landing in it.
   const wrap = el("div", "scrollx");
+  wrap.tabIndex = 0;
+  wrap.setAttribute("role", "group");
+  wrap.setAttribute("aria-label", `${headers[0] ?? "Data"} table`);
   wrap.append(table);
   replace(target, wrap);
 }
 
 /** One ratio against its whole: a meter, not a two-slice pie. */
 export function meter(target: HTMLElement, value: number, total: number, options: { unit?: string; note?: string } = {}): void {
+  const unit = options.unit ?? "incidents";
   const head = el("div", "meter-head");
-  head.append(el("div", "meter-value num", fmtPct(value, total, 1)), el("div", "faint small", `${fmtInt(value)} of ${fmtInt(total)} ${options.unit ?? "incidents"}`));
+  head.append(el("div", "meter-value num", fmtPct(value, total, 1)), el("div", "faint small", `${fmtInt(value)} of ${fmtInt(total)} ${unit}`));
   const track = el("div", "meter-track");
   const fill = el("div", "meter-fill");
   fill.style.width = `${total ? ((value / total) * 100).toFixed(2) : "0"}%`;
@@ -369,6 +407,8 @@ export function meter(target: HTMLElement, value: number, total: number, options
   track.setAttribute("aria-valuemin", "0");
   track.setAttribute("aria-valuemax", String(total));
   track.setAttribute("aria-valuenow", String(value));
+  // A meter announces its value; without a name it announces it about nothing.
+  track.setAttribute("aria-label", `${fmtInt(value)} of ${fmtInt(total)} ${unit}`);
   const content: Node[] = [head, track];
   if (options.note !== undefined) content.push(el("p", "sub meter-note", options.note));
   replace(target, ...content);

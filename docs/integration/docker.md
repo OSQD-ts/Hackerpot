@@ -53,8 +53,8 @@ It shuts down gracefully on `SIGTERM`. Its `HEALTHCHECK` is a plain TCP connect,
 HTTP request, so the probe never registers as a honeypot hit or trips `scanner-signature`.
 
 ```bash
-npm run docker:build      # docker build -t hackerpot .
-npm run docker:run        # docker run --rm -p 4004:4004 hackerpot
+docker build -t hackerpot .
+docker run --rm -p 4004:4004 hackerpot
 ```
 
 ## The compose stack
@@ -86,7 +86,7 @@ The honeypot's environment:
 
 **After changing any source, run `docker compose up -d --build`.** The file sets both `build:` and
 `image: hackerpot`, so compose reuses an existing image with that tag instead of building, and
-`npm run docker:build` tags exactly that name. Without `--build` you silently keep running the old build.
+`docker build -t hackerpot .` tags exactly that name. Without `--build` you silently keep running the old build.
 
 To use your own config, uncomment the `./hackerpot.toml:/app/hackerpot.toml:ro` mount. The environment
 above still overrides it.

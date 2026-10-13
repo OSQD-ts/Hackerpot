@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { HoneypotEngine } from "../src/core.js";
 import { DEFAULT_TRAP_PATHS, renderTrapField, renderTrapLink, trapDetector, trapRobotsEntries } from "../src/detectors/index.js";
 import type { RequestFacts } from "../src/detectors/types.js";
-import { createMiddleware, trapFormGuard } from "../src/middleware.js";
+import { createMiddleware, trapFormGuard } from "../src/adapters/node.js";
 import { generateRobotsTxt } from "../src/robots.js";
 
 const facts = (extra: Partial<RequestFacts> = {}): RequestFacts => ({ method: "GET", path: "/", query: {}, headers: { host: "shop.example" }, ip: "198.51.100.20", ...extra });
@@ -13,7 +13,7 @@ const engineWith = (options: Parameters<typeof trapDetector>[0] = {}) => new Hon
 describe("trapDetector", () => {
   it("treats a request for a trap path as proof", async () => {
     const result = await engineWith().evaluate(facts({ path: DEFAULT_TRAP_PATHS[0]! }));
-    expect(result.detections[0]).toMatchObject({ detectorId: "trap", certain: true, score: 15 });
+    expect(result.detections[0]).toMatchObject({ detector: "trap", certain: true, score: 15 });
   });
 
   it("matches a trailing-slash entry as a prefix and everything else exactly", async () => {
@@ -99,7 +99,7 @@ describe("trapFormGuard", () => {
 
   it("lets a person who left the field empty through, and answers a bot that filled it", async () => {
     const hits: string[] = [];
-    const engine = new HoneypotEngine({ enricher: null, detectors: [trapDetector({ formFields: ["website"] })], policy: () => "not-found", onHit: (hit) => void hits.push(hit.detections[0]!.detectorId) });
+    const engine = new HoneypotEngine({ enricher: null, detectors: [trapDetector({ formFields: ["website"] })], policy: () => "not-found", onHit: (hit) => void hits.push(hit.detections[0]!.detector) });
     const url = await start(engine);
     const person = await post(url, "email=a%40example.com&website=");
     expect(person.status).toBe(201);

@@ -36,7 +36,7 @@ const ssh = new SshHoneypot({
   port: 2222,                            // 22 needs privileges
   ident: "OpenSSH_8.4",                  // the client sees "SSH-2.0-OpenSSH_8.4"
   store,
-  onHit: (hit) => console.warn("[ssh]", hit.ip, hit.detections[0]?.detectorId),
+  onHit: (hit) => console.warn("[ssh]", hit.ip, hit.detections[0]?.detector),
   maxAuthAttempts: 6,
   dropAboveScore: 40,
 });
@@ -105,7 +105,7 @@ Host key files are read when the listener is built, not when the config is valid
 `hackerpot config` never touches private key material. If you also run the port-scan sentinel,
 keep 2222 out of its port list.
 
-To try it: `npm run demo` starts it on `:2222`, and `npm run simulate:ssh` drives a credential
+To try it: `npm run demo` starts it on `:2222`, and `npm run simulate ssh` drives a credential
 spray at it. See [try it locally](../testing/try-it.md).
 
 ## Related

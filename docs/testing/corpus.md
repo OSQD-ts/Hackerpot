@@ -215,10 +215,48 @@ depending on where the honeypot sits.
 | Bodies | a first pass on headers, and a second with the body only when the first fired | one pass with everything |
 | `path-bruteforce` | counts a path only once the app answered `404` or a detector fired | counts every path |
 
-That is exactly `src/middleware.ts`. The two modes must catch the same attacks; they differ only in what
+That is exactly `src/adapters/node.ts`. The two modes must catch the same attacks; they differ only in what
 an unproven guess is allowed to do. A human false positive is a false positive in both.
 
 ---
+
+## Comparing two runs
+
+A passing corpus answers "does this configuration behave?". It does not answer the question an
+upgrade actually asks: **did anything that used to be served stop being served?** A case can
+meet its expectations before and after a change and still move from "answered normally" to
+"tarpitted", because the corpus deliberately does not pin every case to an exact action — if it
+did, no tuning would be possible at all.
+
+Record a run, then compare the next one against it:
+
+```bash
+npm run corpus -- --json > before.json     # today's behaviour
+# …change a threshold, add a detector, edit a rule…
+npm run corpus -- --baseline before.json
+```
+
+```text
+──────────────────────────────────────────────────────────────────────────────
+  against before.json
+──────────────────────────────────────────────────────────────────────────────
+
+  REGRESSIONS: 1. Traffic that changed side since that run.
+    human-rss-reader (human): served -> tarpit
+```
+
+A regression is traffic that lost service, or a case that stopped meeting its expectations;
+either exits non-zero, so this belongs in the check you run before a release. Traffic that
+*gained* service is listed too, and never fails — a change that serves more people is reported
+so you can confirm it was the one you meant.
+
+Cases the two runs do not share are reported and not failed: a corpus that grew, or a filtered
+run (`--audience`, `--tag`), is not lost service. Skipped cases are left out of a baseline
+entirely — a case that ran nothing has no behaviour to record, and "not skipped any more" is
+not a change in how traffic is treated.
+
+The baseline is the `--json` output itself, whose `cases` array holds one record per case: its
+id, audience, whether it was served, the action it received and which detectors fired.
 
 ## Against your own configuration
 
@@ -369,7 +407,7 @@ run's job. What is not replayed, and why:
 | is HTTP/2 | the replayer speaks HTTP/1.1 |
 
 The demo seeds the corpus's honeytoken and trap, so those cases do run. Addresses come from the same
-`addressFor(caseIndex, from)` the in-process run uses. `npm run simulate:corpus:human` replays only the
+`addressFor(caseIndex, from)` the in-process run uses. `npm run simulate:corpus -- --audience human` replays only the
 human cases, and `--verbose` prints a line for every passing case too. The exit code is `1` on any wire
 failure, or when the management API does not answer.
 

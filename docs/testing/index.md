@@ -37,7 +37,7 @@ a realistic attack for each detector at it:
 ```bash
 npm run demo              # terminal 1
 npm run simulate          # terminal 2: every scenario
-npm run simulate:ssh      # or one
+npm run simulate ssh      # or one
 npm run simulate:corpus   # the labelled corpus, over real sockets
 ```
 

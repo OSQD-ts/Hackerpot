@@ -90,7 +90,7 @@ headers.
 const ws = new WebSocket("ws://127.0.0.1:9500/stream?api_key=" + KEY);
 ws.onmessage = (event) => {
   const message = JSON.parse(event.data);
-  if (message.type === "incident") console.log(message.incident.ip, message.incident.detections.map((d) => d.detectorId));
+  if (message.type === "incident") console.log(message.incident.ip, message.incident.detections.map((d) => d.detector));
 };
 ```
 

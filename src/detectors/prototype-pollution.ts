@@ -58,8 +58,8 @@ export function prototypePollutionDetector(options: PrototypePollutionOptions = 
         const kind = scan(target.value);
         if (!kind) continue;
         const detection: Detection = {
-          detectorId: "prototype-pollution",
-          reason: `Prototype pollution — ${kind} in ${target.location}`,
+          detector: "prototype-pollution",
+          summary: `Prototype pollution — ${kind} in ${target.location}`,
           score,
           metadata: { location: target.location, sample: target.value.slice(0, 200) },
         };

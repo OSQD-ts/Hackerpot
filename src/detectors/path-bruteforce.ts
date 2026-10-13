@@ -29,9 +29,12 @@ export function pathBruteforceDetector(options: PathBruteforceOptions = {}): Det
       const unique = ctx.tracker.uniquePathsIn(windowMs, ctx.timestamp.getTime());
       if (unique < threshold) return undefined;
       const detection: Detection = {
-        detectorId: "path-bruteforce",
-        reason: `${unique} distinct paths requested in ${Math.round(windowMs / 1000)}s`,
+        detector: "path-bruteforce",
+        summary: `${unique} distinct paths requested in ${Math.round(windowMs / 1000)}s`,
         score,
+        // Shared with `path-novelty`, which measures the same walk against the paths this
+        // site actually serves: one act seen twice must be scored once.
+        family: "path-probing",
         metadata: { uniquePaths: unique, windowMs },
       };
       if (options.respondWith) detection.respondWith = options.respondWith;

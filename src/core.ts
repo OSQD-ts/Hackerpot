@@ -5,11 +5,24 @@ import { IpAllowlist } from "./allowlist.js";
 import { MemoryBlocklist, type Blocklist } from "./blocklist.js";
 import { defaultDetectors } from "./detectors/index.js";
 import type { Detection, DetectionContext, Detector, RequestFacts } from "./detectors/types.js";
-import { defaultResponseActions, defaultResponsePolicy } from "./responses/index.js";
-import type { PolicyContext, ResponseAction, ResponsePolicy } from "./responses/types.js";
+import { upgradeDetection } from "./detectors/legacy.js";
+import type { LegacyDetection } from "./detectors/legacy.js";
+import { SiteProfile } from "./site/index.js";
+import type { ActorLabels } from "./labels.js";
+import type { MarkerCookie } from "./marker.js";
+import type { RequestOutcome } from "./site/index.js";
+import { defaultResponseActions } from "./actions/index.js";
+import { ladderPolicy } from "./policy/index.js";
+import type { ResponseAction } from "./actions/types.js";
+import type { PolicyContext, ResponseDecision, ResponsePolicy } from "./policy/types.js";
 import { computeFingerprint } from "./fingerprint.js";
-import { MAX_RAW_PATH_CHARS, boundedQuery, normalizePath } from "./http-request.js";
+import { confidenceOf } from "./evidence.js";
+import { DURATION_BUCKETS_MS, Histogram } from "./internal/histogram.js";
+import type { HistogramSnapshot } from "./internal/histogram.js";
+import { MAX_RAW_PATH_CHARS, boundedQuery, normalizePath } from "./internal/http.js";
 import { withDeadline } from "./internal/async.js";
+import { systemClock, type Clock } from "./internal/clock.js";
+import { Emitter } from "./internal/emitter.js";
 import { defaultIpEnricher, type IpEnricher } from "./enrichment.js";
 import { ActivityRegistry, FingerprintRegistry, IpTracker } from "./state.js";
 import { MemoryStore } from "./stores/index.js";
@@ -84,6 +97,17 @@ export interface EvaluationResult {
   path: string;
   /** Set to `"block"` when the policy chose a block that `blockRequiresProof` refused. */
   downgradedFrom?: string;
+  /** Id of the policy rule that chose the response. `"default"` for the shipped ladder. */
+  rule?: string;
+  /** One sentence saying why this response was chosen, safe to log and to show an operator. */
+  reason?: string;
+  /** The verified marker this client presented, when markers are configured. */
+  marker?: string;
+  /**
+   * How strongly this request's evidence supports acting, in [0, 1] — see `confidenceOf`.
+   * Suspicion alone is capped below 1; only proof reaches it. Scores are unaffected.
+   */
+  confidence: number;
   /** Findings from shadowed detectors: reported, never acted on. See `HoneypotConfig.shadowDetectors`. */
   shadowDetections: Detection[];
   /** The name of the service token that exempted this request, if one did. */
@@ -112,6 +136,52 @@ function combinedScore(detections: Detection[]): number {
   for (const score of best.values()) total += score;
   return total;
 }
+
+/** Why a request was exempted from detection. */
+export type BypassReason = "allowlist" | "service-token";
+
+/** Who made a runtime change, carried into the event and the notice it raises. */
+export interface ChangeContext {
+  /** A person or a process: an operator's name, "SIGHUP", "dashboard". */
+  by?: string;
+}
+
+/** One part of the engine replaced at runtime. */
+export interface ChangeEvent {
+  /** What was replaced: "detectors", "responses", "policy", "allowlist", "shadow-detectors", "service-tokens". */
+  part: string;
+  /** A sentence an operator can read, e.g. "24 detectors installed". */
+  summary: string;
+  by?: string | undefined;
+}
+
+/** Something an operator should know that is not an error: a change, a risky setting, a degraded component. */
+export interface Notice {
+  timestamp: string;
+  message: string;
+  /** Present when the notice came from a runtime change. */
+  change?: ChangeEvent | undefined;
+}
+
+/**
+ * What the engine announces.
+ *
+ * `onHit`, `onError` and `onShadow` stay what they are: the one handler a deployment
+ * configures when it builds the engine. These are for everything attached afterwards — a
+ * dashboard, a SIEM sink, an operator's own logging — where several consumers want the same
+ * facts and none of them should be able to take a request down by throwing.
+ */
+export interface HoneypotEngineEvents extends Record<string, unknown> {
+  hit: HoneypotHit;
+  shadow: ShadowEvent;
+  error: { error: unknown; source: string };
+  warning: Notice;
+  change: ChangeEvent;
+  outcome: RequestOutcome;
+}
+
+/** Notices kept for the dashboard and `notices()`. Small: this is a recent-history panel, not a log. */
+const MAX_NOTICES = 200;
 
 function toServiceTokens(value: ServiceTokenOptions | ServiceTokens | undefined): ServiceTokens | undefined {
   if (value === undefined) return undefined;
@@ -144,23 +214,67 @@ export class HoneypotEngine {
   serviceTokens: ServiceTokens | undefined;
   readonly audit: TrafficAudit | undefined;
   /**
+   * What this site actually serves, learned from `reportOutcome()`. Always present unless
+   * disabled with `site: null`, and empty — so every consumer stands down — until
+   * outcomes are reported, which happens in middleware mode.
+   */
+  readonly site: SiteProfile | undefined;
+
+  /** @deprecated Renamed `site`. */
+  get baseline(): SiteProfile | undefined {
+    return this.site;
+  }
+  /**
+   * Names for sources you already know. Labels never exempt anybody — a labelled actor is
+   * detected, scored and answered exactly as it would be otherwise. See `ActorLabels`.
+   */
+  labels: ActorLabels | undefined;
+  /**
+   * The marker handed to whoever probes, for correlating one client across addresses. Only
+   * ever issued on the honeypot's own responses; see `MarkerCookie`.
+   */
+  readonly markers: MarkerCookie | undefined;
+  /**
    * Failures and timeouts per detector id since the engine started, for `/metrics`. Bounded
    * by the number of detectors, since only detector ids are counted.
    */
   readonly detectorFailures = new Map<string, number>();
-  /** Listeners told about every recorded hit. See `subscribe`. */
-  private readonly listeners = new Set<(hit: HoneypotHit) => void>();
+  /**
+   * Requests exempted from detection, by reason. Both reasons start at zero, so a scrape has a
+   * series for each from the first request rather than only after the first exemption.
+   */
+  readonly bypassed = new Map<string, number>([["allowlist", 0], ["service-token", 0]]);
+  /**
+   * Time spent evaluating a request. Measured with a monotonic high-resolution timer rather than
+   * `clock`: that clock models wall time for the activity windows at millisecond resolution,
+   * and detection is usually well under a millisecond, so it would put every sample at zero.
+   */
+  private readonly evaluationDuration = new Histogram(DURATION_BUCKETS_MS);
+  /**
+   * Where every window in this engine reads "now": the activity window, the fingerprint
+   * registry, the default blocklist's expiry, and the timestamp on a recorded hit. Injecting
+   * it is what lets a test assert "forgotten after an hour" without waiting an hour.
+   */
+  readonly clock: Clock;
+  /**
+   * Everything the engine announces. Listeners are isolated: one that throws is reported on
+   * the error channel and the rest still hear the event.
+   */
+  private readonly events = new Emitter<HoneypotEngineEvents>((error, event) => this.onError?.(error, { source: `listener:${event}` }));
+  /** Recent notices, newest last. Bounded, because this is a panel rather than a log. */
+  private readonly recentNotices: Notice[] = [];
 
   constructor(config: HoneypotConfig = {}) {
+    this.clock = config.clock ?? systemClock;
     this.detectors = config.detectors ?? [...defaultDetectors(), ...(config.extraDetectors ?? [])];
     const actions = config.responseActions ?? [...defaultResponseActions(), ...(config.extraResponseActions ?? [])];
     this.actions = new Map(actions.map((action) => [action.id, action]));
-    this.policy = config.policy ?? defaultResponsePolicy();
+    this.policy = config.policy ?? ladderPolicy();
     this.store = config.store ?? new MemoryStore();
-    this.registry = new ActivityRegistry(config.activityWindowMs ?? 60_000);
-    this.fingerprints = new FingerprintRegistry(config.fingerprintWindowMs ?? 3_600_000);
+    this.registry = new ActivityRegistry(config.activityWindowMs ?? 60_000, undefined, undefined, this.clock);
+    this.fingerprints = new FingerprintRegistry(config.fingerprintWindowMs ?? 3_600_000, undefined, this.clock);
     this.allowlist = new IpAllowlist(config.allowlist ?? []);
-    this.blocklist = config.blocklist ?? new MemoryBlocklist();
+    this.blocklist = config.blocklist ?? new MemoryBlocklist({ clock: this.clock });
     // null disables; undefined gets the dependency-free default classifier.
     this.enricher = config.enricher === null ? undefined : config.enricher ?? defaultIpEnricher();
     this.onHit = config.onHit;
@@ -171,6 +285,29 @@ export class HoneypotEngine {
     this.onShadow = config.onShadow;
     this.serviceTokens = toServiceTokens(config.serviceTokens);
     this.audit = config.audit;
+    const site = config.site !== undefined ? config.site : config.baseline;
+    this.site = site === null ? undefined : (site ?? new SiteProfile({ clock: this.clock }));
+    this.labels = config.labels;
+    this.markers = config.markers;
+  }
+
+  /**
+   * Reports what a request was finally answered with.
+   *
+   * This is the honeypot's one piece of ground truth about the site it is protecting: the
+   * application knows which paths are real, and its status codes say so. The middleware calls
+   * this on every request it lets through; call it yourself if you dispatch some other way.
+   * Cheap, synchronous, and safe to call for traffic nothing flagged.
+   */
+  reportOutcome(outcome: RequestOutcome): void {
+    try {
+      this.site?.record(outcome);
+    } catch (err) {
+      // The baseline is bookkeeping. A failure here must never reach the request that was
+      // merely reporting its own status.
+      this.reportError(err, { source: "baseline" });
+    }
+    this.events.emit("outcome", outcome);
   }
 
   /**
@@ -182,20 +319,79 @@ export class HoneypotEngine {
    * can't be rebound without dropping state or connections; a reload must refuse those
    * rather than silently ignore them.
    */
-  reconfigure(patch: {
-    detectors?: Detector[];
-    responseActions?: ResponseAction[];
-    policy?: ResponsePolicy;
-    allowlist?: string[];
-    shadowDetectors?: string[];
-    serviceTokens?: ServiceTokenOptions | ServiceTokens;
-  }): void {
-    if (patch.detectors) this.detectors = patch.detectors;
-    if (patch.responseActions) this.actions = new Map(patch.responseActions.map((a) => [a.id, a]));
-    if (patch.policy) this.policy = patch.policy;
-    if (patch.allowlist) this.allowlist = new IpAllowlist(patch.allowlist);
-    if (patch.shadowDetectors) this.shadowed = new Set(patch.shadowDetectors);
-    if (patch.serviceTokens) this.serviceTokens = toServiceTokens(patch.serviceTokens);
+  reconfigure(
+    patch: {
+      detectors?: Detector[];
+      responseActions?: ResponseAction[];
+      policy?: ResponsePolicy;
+      allowlist?: string[];
+      shadowDetectors?: string[];
+      serviceTokens?: ServiceTokenOptions | ServiceTokens;
+    },
+    context: ChangeContext = {},
+  ): ChangeEvent[] {
+    const changes: ChangeEvent[] = [];
+    const changed = (part: string, summary: string): void => {
+      const event: ChangeEvent = { part, summary, by: context.by };
+      changes.push(event);
+      // The notice and the event carry the same sentence: an audit trail that can say a rule
+      // set was replaced but not by whom is half of one.
+      this.warn(`${summary}${context.by === undefined ? "" : ` (by ${context.by})`}`, event);
+      this.events.emit("change", event);
+    };
+
+    if (patch.detectors) {
+      this.detectors = patch.detectors;
+      changed("detectors", `${patch.detectors.length} detector(s) installed`);
+    }
+    if (patch.responseActions) {
+      this.actions = new Map(patch.responseActions.map((a) => [a.id, a]));
+      changed("responses", `${this.actions.size} response action(s) registered`);
+    }
+    if (patch.policy) {
+      this.policy = patch.policy;
+      changed("policy", "the response policy was replaced");
+    }
+    if (patch.allowlist) {
+      this.allowlist = new IpAllowlist(patch.allowlist);
+      changed("allowlist", `allowlist replaced: ${this.allowlist.size} entr${this.allowlist.size === 1 ? "y" : "ies"}`);
+      // An entry that cannot be matched exempts nobody, and the symptom is silence.
+      if (this.allowlist.invalid.length > 0) this.warn(`allowlist entries that match nothing: ${this.allowlist.invalid.join(", ")}`);
+    }
+    if (patch.shadowDetectors) {
+      this.shadowed = new Set(patch.shadowDetectors);
+      changed("shadow-detectors", this.shadowed.size === 0 ? "no detectors are shadowed" : `shadowed: ${[...this.shadowed].join(", ")}`);
+    }
+    if (patch.serviceTokens) {
+      this.serviceTokens = toServiceTokens(patch.serviceTokens);
+      const weak = this.serviceTokens?.weak ?? [];
+      changed("service-tokens", `${this.serviceTokens?.size ?? 0} service token(s) accepted`);
+      if (weak.length > 0) this.warn(`service tokens short enough to guess: ${weak.join(", ")}`);
+    }
+    return changes;
+  }
+
+  /**
+   * Whether this request is exempt from detection, and why — counted.
+   *
+   * For the front end that decides it: the middleware and the standalone server call this once
+   * per request, before evaluating anything. `isAllowlisted` and `serviceTokenFor` stay pure,
+   * because they are also asked on a second pass over the same request (`trapFormGuard`) and
+   * repeatedly within one protocol session, where counting would report one exemption many times.
+   */
+  exempt(ip: string, headers: Readonly<Record<string, string | string[] | undefined>>): BypassReason | undefined {
+    const reason: BypassReason | undefined = this.allowlist.allows(ip) ? "allowlist" : this.serviceTokens?.identify(headers) !== undefined ? "service-token" : undefined;
+    if (reason !== undefined) this.countBypass(reason);
+    return reason;
+  }
+
+  /** What the engine counts that no incident carries, for `/metrics`. */
+  counters(): { detectorFailures: Map<string, number>; bypassed: Map<string, number>; evaluationDuration: HistogramSnapshot } {
+    return { detectorFailures: this.detectorFailures, bypassed: this.bypassed, evaluationDuration: this.evaluationDuration.snapshot() };
+  }
+
+  private countBypass(reason: BypassReason): void {
+    this.bypassed.set(reason, (this.bypassed.get(reason) ?? 0) + 1);
   }
 
   /** The name of the valid service token these headers present, or undefined. */
@@ -220,6 +416,7 @@ export class HoneypotEngine {
    */
   reportError(error: unknown, context: { source: string }): void {
     this.onError?.(error, context);
+    this.events.emit("error", { error, source: context.source });
   }
 
   /** True if this detector set has any detector that inspects the request body. */
@@ -282,28 +479,41 @@ export class HoneypotEngine {
     const recordHit = options.recordHit ?? true;
     const tracker = this.registry.for(facts.ip);
     const fingerprint = computeFingerprint(facts);
+    // A marker we did not sign reads as no marker at all — a forgery must not become an actor.
+    const marker = this.markers?.read(facts.headers);
 
     // Allowlisted sources are fully exempt: no detection, no scoring, no footprint.
     if (this.allowlist.allows(facts.ip)) {
-      return { detections: [], score: 0, totalScore: 0, tracker, actionId: "", action: undefined, fingerprint, path, shadowDetections: [] };
+      // Counted on a real pass only: a caller evaluating directly reaches this branch, while the
+      // middleware and the standalone server have already counted it through `exempt()`.
+      if (options.audit !== false) this.countBypass("allowlist");
+      return { detections: [], score: 0, totalScore: 0, tracker, actionId: "", action: undefined, fingerprint, path, shadowDetections: [], confidence: 0 };
     }
     // So is a request presenting one of your service tokens, whatever its address.
     const serviceToken = this.serviceTokens?.identify(facts.headers);
     if (serviceToken !== undefined) {
-      return { detections: [], score: 0, totalScore: 0, tracker, actionId: "", action: undefined, fingerprint, path, shadowDetections: [], serviceToken };
+      if (options.audit !== false) this.countBypass("service-token");
+      return { detections: [], score: 0, totalScore: 0, tracker, actionId: "", action: undefined, fingerprint, path, shadowDetections: [], confidence: 0, serviceToken };
     }
 
-    const now = options.now ?? new Date();
+    // Timed from here: an exempt request ran no detection, so it has no detection time to report.
+    // `audit: false` marks an evaluation that is not traffic — the dashboard's dry run, or a second
+    // pass over a request already counted — and those are not timed either.
+    const started = performance.now();
+    const measured = options.audit !== false;
+    const now = options.now ?? new Date(this.clock.now());
     if (trackActivity) tracker.record({ method: facts.method, path: facts.path, status: options.activityStatus ?? "seen" }, now.getTime());
 
-    const ctx: DetectionContext = { ...facts, tracker, timestamp: now, fingerprint, fingerprintRegistry: this.fingerprints };
+    const ctx: DetectionContext = { ...facts, tracker, timestamp: now, fingerprint, fingerprintRegistry: this.fingerprints, ...(this.site !== undefined ? { site: this.site, baseline: this.site } : {}), ...(marker !== undefined ? { marker } : {}) };
     const detections: Detection[] = [];
     const shadowDetections: Detection[] = [];
     const failed: string[] = [];
     for (const detector of this.detectors) {
-      let detection: Detection | undefined;
+      let detection: Detection | LegacyDetection | undefined;
       try {
-        const pending = detector.inspect(ctx);
+        // Typed as the current shape; a detector written against the old names returns the old
+        // one at run time, which `upgradeDetection` below turns into this.
+        const pending = detector.inspect(ctx) as Detection | LegacyDetection | undefined | Promise<Detection | LegacyDetection | undefined>;
         // Only an asynchronous result gets a deadline; synchronous detectors pay nothing.
         detection =
           isThenable(pending) && this.detectorTimeoutMs > 0
@@ -313,11 +523,11 @@ export class HoneypotEngine {
         // A detector must never throw; if one does (crafted input, a latent bug), isolate
         // it — skip only this detector — so an attacker can't crash evaluation or bypass
         // every other detector by feeding one a poison input. The rest still run.
-        this.onError?.(err, { source: detector.id });
+        this.reportError(err, { source: detector.id });
         failed.push(detector.id);
         continue;
       }
-      if (detection) (this.shadowed.has(detector.id) ? shadowDetections : detections).push(detection);
+      if (detection) (this.shadowed.has(detector.id) ? shadowDetections : detections).push(upgradeDetection(detection));
     }
 
     // Reported once per request, by the pass that commits (a deferred pass writes nothing).
@@ -334,15 +544,23 @@ export class HoneypotEngine {
 
     if (detections.length === 0) {
       settle("", false);
-      return { detections, score: 0, totalScore: await this.safeScore(facts.ip), tracker, actionId: "", action: undefined, fingerprint, path, shadowDetections };
+      if (measured) this.evaluationDuration.observe(performance.now() - started);
+      return { detections, score: 0, totalScore: await this.safeScore(facts.ip), tracker, actionId: "", action: undefined, fingerprint, path, shadowDetections, confidence: 0 };
     }
 
     // Record this fingerprint→IP only now that the request has scored — the registry
     // holds attackers only, so repeat-actor can't correlate benign traffic (see its docs).
     if (recordHit) this.fingerprints.record(fingerprint, facts.ip, now.getTime());
+    // Markers share that registry — it is keyed by a string, and written only for requests
+    // that already scored, which is the gate a marker needs too. The prefix keeps the two
+    // key spaces apart.
+    if (recordHit && marker !== undefined) this.fingerprints.record(`marker:${marker}`, facts.ip, now.getTime());
 
     detections.sort((a, b) => b.score - a.score);
     const score = combinedScore(detections);
+    // The second reading of the same detections: how strong they are, rather than how much
+    // they add up to. Both are recorded; the policy may use either.
+    const confidence = confidenceOf(detections);
     const priorScore = await this.safeScore(facts.ip);
     const totalScore = priorScore + score;
 
@@ -351,25 +569,39 @@ export class HoneypotEngine {
       detections,
       ip: facts.ip,
       path: facts.path,
+      method: facts.method,
+      score,
       totalScore,
+      confidence,
       tracker,
     };
-    let actionId = this.policy(policyCtx);
+    // A policy may answer with a bare action id (the closure form) or with a decision that
+    // names the rule and says why. Both are normalised here, so an incident always records
+    // the reasoning when there was any.
+    const decided = this.policy(policyCtx);
+    const decision: ResponseDecision = typeof decided === "string" ? { actionId: decided, rule: "default", reason: "" } : decided;
+    let actionId = decision.actionId;
     // Blocking writes the address to the blocklist (and the firewall enforcer), refusing
     // every later request from it, the host app's own pages included. Summed guesses
     // reached that for real visitors more than once, so a front end in front of real
     // users can require proof: without a `certain` detection the block becomes a
     // response to this one request and nothing is blocklisted.
     let downgradedFrom: string | undefined;
+    let reason = decision.reason;
     if (actionId === "block" && options.blockRequiresProof === true && !detections.some((detection) => detection.certain === true)) {
       downgradedFrom = actionId;
       actionId = options.unprovenBlockFallback ?? "tarpit";
+      // The substitution is recorded rather than silent: a policy quietly doing less than it
+      // says is worse than one that refuses out loud.
+      reason = `${reason === "" ? `Rule "${decision.rule}" asked to block.` : reason} No detection was proof, so the block was refused and ${actionId} served instead.`;
     }
+    const outcome = { rule: decision.rule, ...(reason === "" ? {} : { reason }) };
 
     // A deferred pass reports what it found but writes nothing: the caller is going to
     // evaluate this same request again, and that pass is the one that commits.
     if (!recordHit) {
-      return { detections, score, totalScore, tracker, actionId, action: this.actions.get(actionId), fingerprint, path, shadowDetections, ...(downgradedFrom !== undefined ? { downgradedFrom } : {}) };
+      if (measured) this.evaluationDuration.observe(performance.now() - started);
+      return { detections, score, totalScore, tracker, actionId, action: this.actions.get(actionId), fingerprint, path, shadowDetections, confidence, ...outcome, ...(marker !== undefined ? { marker } : {}), ...(downgradedFrom !== undefined ? { downgradedFrom } : {}) };
     }
 
     settle(actionId, downgradedFrom !== undefined);
@@ -378,7 +610,16 @@ export class HoneypotEngine {
     try {
       enrichment = this.enricher ? await this.enricher.enrich(facts.ip) : undefined;
     } catch (err) {
-      this.onError?.(err, { source: "enricher" });
+      this.reportError(err, { source: "enricher" });
+    }
+
+    // Named after enrichment, because a label may be written against an ASN or an
+    // organisation the enricher supplies. Synchronous, and never able to fail the request.
+    let actor: HoneypotHit["actor"];
+    try {
+      actor = this.labels?.labelFor({ ip: facts.ip, enrichment, headers: facts.headers });
+    } catch (err) {
+      this.reportError(err, { source: "labels" });
     }
 
     const hit: HoneypotHit = {
@@ -392,11 +633,15 @@ export class HoneypotEngine {
       body: facts.body,
       fingerprint,
       ...(enrichment ? { enrichment } : {}),
+      ...(actor ? { actor } : {}),
+      ...(marker !== undefined ? { marker } : {}),
+      confidence,
       detections,
       ...(shadowDetections.length > 0 ? { shadowDetections } : {}),
       score,
       totalScore,
       respondedWith: actionId,
+      ...outcome,
       ...(downgradedFrom !== undefined ? { downgradedFrom } : {}),
     };
     // Recording is best-effort: a flaky store or a throwing onHit must not fail the
@@ -405,16 +650,17 @@ export class HoneypotEngine {
     try {
       await this.store.record(hit);
     } catch (err) {
-      this.onError?.(err, { source: "store" });
+      this.reportError(err, { source: "store" });
     }
     try {
       await this.onHit?.(hit);
     } catch (err) {
-      this.onError?.(err, { source: "onHit" });
+      this.reportError(err, { source: "onHit" });
     }
     this.publish(hit);
 
-    return { detections, score, totalScore, tracker, actionId, action: this.actions.get(actionId), fingerprint, path, shadowDetections, ...(downgradedFrom !== undefined ? { downgradedFrom } : {}) };
+    if (measured) this.evaluationDuration.observe(performance.now() - started);
+    return { detections, score, totalScore, tracker, actionId, action: this.actions.get(actionId), fingerprint, path, shadowDetections, confidence, ...outcome, ...(marker !== undefined ? { marker } : {}), ...(downgradedFrom !== undefined ? { downgradedFrom } : {}) };
   }
 
   /**
@@ -424,12 +670,13 @@ export class HoneypotEngine {
    * when only shadowed detectors fired no committing pass follows, so the front end
    * reports them itself.
    */
-  reportShadow(facts: Pick<RequestFacts, "ip" | "method" | "path">, detections: Detection[], alsoHit: boolean, at: Date = new Date()): void {
-    if (!this.onShadow) return;
+  reportShadow(facts: Pick<RequestFacts, "ip" | "method" | "path">, detections: Detection[], alsoHit: boolean, at: Date = new Date(this.clock.now())): void {
     try {
-      this.onShadow({ timestamp: at.toISOString(), ip: facts.ip, method: facts.method, path: facts.path, detections, alsoHit });
+      const event: ShadowEvent = { timestamp: at.toISOString(), ip: facts.ip, method: facts.method, path: facts.path, detections, alsoHit };
+      this.onShadow?.(event);
+      this.events.emit("shadow", event);
     } catch (err) {
-      this.onError?.(err, { source: "onShadow" });
+      this.reportError(err, { source: "onShadow" });
     }
   }
 
@@ -440,10 +687,7 @@ export class HoneypotEngine {
    * never reaches the request.
    */
   subscribe(listener: (hit: HoneypotHit) => void): () => void {
-    this.listeners.add(listener);
-    return () => {
-      this.listeners.delete(listener);
-    };
+    return this.events.on("hit", listener);
   }
 
   /**
@@ -452,13 +696,35 @@ export class HoneypotEngine {
    * Records nothing itself.
    */
   publish(hit: HoneypotHit): void {
-    for (const listener of this.listeners) {
-      try {
-        listener(hit);
-      } catch (err) {
-        this.onError?.(err, { source: "subscriber" });
-      }
-    }
+    this.events.emit("hit", hit);
+  }
+
+  /**
+   * Listens to what the engine announces, and returns the way to stop.
+   *
+   * `on("hit")` is what `subscribe` does; the others are `shadow` (a shadowed detector
+   * fired), `error` (something the engine isolated), `warning` (an operator-facing notice)
+   * and `change` (a part replaced at runtime).
+   */
+  on<K extends keyof HoneypotEngineEvents & string>(event: K, listener: (payload: HoneypotEngineEvents[K]) => void): () => void {
+    return this.events.on(event, listener);
+  }
+
+  /**
+   * Raises an operator-facing notice: a risky setting, a component running degraded, a
+   * change somebody made. Kept in a short history as well as emitted, so a dashboard opened
+   * after the fact can still show what happened.
+   */
+  warn(message: string, change?: ChangeEvent): void {
+    const notice: Notice = { timestamp: new Date(this.clock.now()).toISOString(), message, ...(change !== undefined ? { change } : {}) };
+    this.recentNotices.push(notice);
+    if (this.recentNotices.length > MAX_NOTICES) this.recentNotices.splice(0, this.recentNotices.length - MAX_NOTICES);
+    this.events.emit("warning", notice);
+  }
+
+  /** The recent notices, oldest first. */
+  notices(): readonly Notice[] {
+    return [...this.recentNotices];
   }
 
   /** Read an IP's prior score without letting a flaky store crash evaluation — degrades to 0. */
@@ -466,7 +732,7 @@ export class HoneypotEngine {
     try {
       return await this.store.scoreFor(ip);
     } catch (err) {
-      this.onError?.(err, { source: "store" });
+      this.reportError(err, { source: "store" });
       return 0;
     }
   }

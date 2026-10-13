@@ -82,7 +82,7 @@ export const PROTOCOLS = ["http", "ssh", "smtp", "ftp", "telnet"] as const;
 
 export function protoOf(incident: Incident): string {
   for (const detection of incident.detections) {
-    const prefix = detection.detectorId.split("-", 1)[0] ?? "";
+    const prefix = detection.detector.split("-", 1)[0] ?? "";
     if (prefix !== "http" && (PROTOCOLS as readonly string[]).includes(prefix)) return prefix;
   }
   return "http";
@@ -281,8 +281,8 @@ export function analyze(input: readonly Incident[]): Analysis {
 
   for (const incident of list) {
     const t = timeOf(incident);
-    const ids = [...new Set(incident.detections.map((d) => d.detectorId))];
-    for (const detection of incident.detections) tally(a.detectorScore, detection.detectorId, Number(detection.score) || 0);
+    const ids = [...new Set(incident.detections.map((d) => d.detector))];
+    for (const detection of incident.detections) tally(a.detectorScore, detection.detector, Number(detection.score) || 0);
     for (const id of ids) tally(a.byDetector, id);
     for (let i = 0; i < ids.length; i++) {
       for (let j = i + 1; j < ids.length; j++) tally(a.cooc, pairKey(ids[i] as string, ids[j] as string));

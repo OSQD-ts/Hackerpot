@@ -62,7 +62,7 @@ const base = defaultResponsePolicy();
 const demoPolicy: ResponsePolicy = (ctx) => {
   const chosen = base(ctx);
   if (chosen === "block") return "block";
-  const ids = new Set(ctx.detections.map((d) => d.detectorId));
+  const ids = new Set(ctx.detections.map((d) => d.detector));
   if (ids.has("web-shell")) return "fake-success";
   if (ids.has("ssrf-probe")) return "gzip-bomb";
   if (ids.has("open-redirect")) return "rate-limit";
@@ -77,7 +77,7 @@ let management: ManagementServer | undefined;
 
 const logHit = (hit: HoneypotHit): void => {
   console.log(`[hit] ${hit.timestamp} ip=${hit.ip} ${hit.method} ${hit.path} score=+${hit.score} total=${hit.totalScore} -> ${hit.respondedWith}`);
-  console.log(`      detections: ${hit.detections.map((d) => `${d.detectorId}(${d.reason})`).join(", ")}`);
+  console.log(`      detections: ${hit.detections.map((d) => `${d.detector}(${d.summary})`).join(", ")}`);
   management?.publish(hit);
 };
 
@@ -143,7 +143,7 @@ const started = {
   management: await tryListen("management API", "MGMT_PORT", mgmtPort, () => management!.listen()),
   // Loopback and no auth: the operating system is the access control on 127.0.0.1.
   dashboard: await tryListen("dashboard", "GUI_PORT", guiPort, async () => {
-    dashboardUrl = (await startDashboard(engineSource(server.engine), { port: guiPort, title: "hackerpot demo", instance: "demo" })).url;
+    dashboardUrl = (await startDashboard(engineSource(server.engine), { port: guiPort, title: "hackerpot demo", instance: "demo", controls: { testRequest: true, previewPolicy: true } })).url;
   }),
   smtp: await tryListen("SMTP honeypot", "SMTP_PORT", smtpPort, () => smtp.listen()),
   ssh: await tryListen("SSH honeypot", "SSH_PORT", sshPort, () => ssh.listen()),

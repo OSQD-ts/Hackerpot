@@ -12,7 +12,7 @@ function hit(partial: Partial<HoneypotHit> = {}): HoneypotHit {
     method: "GET",
     path: "/.env",
     headers: { "user-agent": "sqlmap/1.7" },
-    detections: [{ detectorId: "sensitive-file", reason: "requested /.env", score: 10 }],
+    detections: [{ detector: "sensitive-file", summary: "requested /.env", score: 10 }],
     score: 10,
     totalScore: 25,
     respondedWith: "tarpit",
@@ -161,6 +161,55 @@ describe("syslog sink", () => {
     server.close();
 
     expect(message.split("\n")).toHaveLength(1);
+  });
+
+  it("strips credentials before they reach the collector", async () => {
+    const server = dgram.createSocket("udp4");
+    const received = new Promise<string>((resolve) => server.once("message", (msg) => resolve(msg.toString())));
+    await new Promise<void>((resolve) => server.bind(0, "127.0.0.1", () => resolve()));
+    const port = server.address().port;
+
+    sink = new SyslogSink({ host: "127.0.0.1", port, format: "json", includeBody: true });
+    sink.send(hit({ body: "user=ada&password=hunter2" }));
+    const message = await received;
+    server.close();
+
+    // A SIEM indexes and retains what it is sent, so a captured password reaching it once
+    // lives there for as long as the retention policy says.
+    expect(message).not.toContain("hunter2");
+    // The field name stays, so it is still visible that a password was submitted.
+    expect(message).toContain("password");
+  });
+
+  it("can be told not to, for a collector that is meant to see everything", async () => {
+    const server = dgram.createSocket("udp4");
+    const received = new Promise<string>((resolve) => server.once("message", (msg) => resolve(msg.toString())));
+    await new Promise<void>((resolve) => server.bind(0, "127.0.0.1", () => resolve()));
+    const port = server.address().port;
+
+    sink = new SyslogSink({ host: "127.0.0.1", port, format: "json", includeBody: true, redact: false });
+    sink.send(hit({ body: "user=ada&password=hunter2" }));
+    const message = await received;
+    server.close();
+
+    expect(message).toContain("hunter2");
+  });
+
+  it("can send the network instead of the address", async () => {
+    const server = dgram.createSocket("udp4");
+    const received = new Promise<string>((resolve) => server.once("message", (msg) => resolve(msg.toString())));
+    await new Promise<void>((resolve) => server.bind(0, "127.0.0.1", () => resolve()));
+    const port = server.address().port;
+
+    sink = new SyslogSink({ host: "127.0.0.1", port, format: "json", maskIp: true });
+    sink.send(hit());
+    const message = await received;
+    server.close();
+
+    // Enough to recognise a network and correlate repeat offenders, which is what the
+    // collector is for; not enough to name a household.
+    expect(message).toContain("198.51.100.0/24");
+    expect(message).not.toContain("198.51.100.7\"");
   });
 
   it("honours the score gate", async () => {

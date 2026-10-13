@@ -1,21 +1,11 @@
 import { describe, expect, it } from "vitest";
-import {
-  HoneypotEngine,
-  computeFingerprint,
-  uaClass,
-  decoyPathDetector,
-  repeatActorDetector,
-  sensitiveFileDetector,
-} from "../src/index.js";
-import type { RequestFacts } from "../src/index.js";
+import { HoneypotEngine, computeFingerprint, uaClass, decoyPathDetector, repeatActorDetector, sensitiveFileDetector, type RequestFacts } from "../src/index.js";
+import { facts } from "./helpers.js";
 
 // A curl-like raw header block: [name, value, name, value, …], order + casing preserved.
 const CURL = ["Host", "x", "User-Agent", "curl/8.4.0", "Accept", "*/*"];
-const CHROME = ["Host", "x", "Connection", "keep-alive", "User-Agent", "Mozilla/5.0 Chrome/123.0", "Accept", "text/html", "Accept-Encoding", "gzip", "Accept-Language", "en-US"];
 
-function facts(partial: Partial<RequestFacts> & Pick<RequestFacts, "path">): RequestFacts {
-  return { method: "GET", query: {}, headers: {}, ip: "10.0.0.1", ...partial };
-}
+const CHROME = ["Host", "x", "Connection", "keep-alive", "User-Agent", "Mozilla/5.0 Chrome/123.0", "Accept", "text/html", "Accept-Encoding", "gzip", "Accept-Language", "en-US"];
 
 /** Build facts whose parsed headers + rawHeaders both reflect a raw block. */
 function withRaw(raw: string[], partial: Partial<RequestFacts> & Pick<RequestFacts, "path">): RequestFacts {
@@ -51,12 +41,12 @@ describe("repeat-actor detector", () => {
     const r1 = await engine.evaluate(withRaw(CURL, { path: "/.env", ip: "203.0.113.1" }));
     const r2 = await engine.evaluate(withRaw(CURL, { path: "/.env", ip: "203.0.113.2" }));
     const r3 = await engine.evaluate(withRaw(CURL, { path: "/.env", ip: "203.0.113.3" }));
-    for (const r of [r1, r2, r3]) expect(r.detections.map((d) => d.detectorId)).not.toContain("repeat-actor");
+    for (const r of [r1, r2, r3]) expect(r.detections.map((d) => d.detector)).not.toContain("repeat-actor");
 
     // Now three IPs are confirmed under this fingerprint, so the actor's next probe —
     // from any of them — is recognized as rotation.
     const r4 = await engine.evaluate(withRaw(CURL, { path: "/.env", ip: "203.0.113.1" }));
-    const hit = r4.detections.find((d) => d.detectorId === "repeat-actor");
+    const hit = r4.detections.find((d) => d.detector === "repeat-actor");
     expect(hit).toBeDefined();
     expect(hit!.metadata?.["distinctIps"]).toBe(3);
     expect(r4.fingerprint).toBe(r1.fingerprint);
@@ -109,8 +99,8 @@ describe("repeat-actor detector", () => {
     // The registry stayed empty, so a later genuinely-suspicious request from that
     // same fingerprint is NOT pushed over the rotation threshold by benign siblings.
     const probe = await engine.evaluate(withRaw(CHROME, { path: "/backup.sql", ip: "198.51.100.9" }));
-    expect(probe.detections.map((d) => d.detectorId)).toContain("sensitive-file");
-    expect(probe.detections.map((d) => d.detectorId)).not.toContain("repeat-actor");
+    expect(probe.detections.map((d) => d.detector)).toContain("sensitive-file");
+    expect(probe.detections.map((d) => d.detector)).not.toContain("repeat-actor");
   });
 
   it("an attacker shuffling header order cannot exhaust memory (registry is bounded)", async () => {
@@ -120,5 +110,24 @@ describe("repeat-actor detector", () => {
       await engine.evaluate(withRaw(["Host", "x", "X-N", String(i), "User-Agent", "curl/8"], { path: "/.env", ip: "203.0.113.50" }));
     }
     expect(engine.fingerprints.size).toBeLessThanOrEqual(50);
+  });
+});
+
+describe("uaClass groups crawler user agents as bots", () => {
+  // The alternation used to bind its word boundaries to only the first and last branch,
+  // so the mainstream crawlers — the entire point of the "bot" class — were classified
+  // "other". Tool and browser classes must keep winning where they overlap.
+  it("classifies the crawlers that actually appear in logs", () => {
+    for (const ua of ["Googlebot/2.1", "Mozilla/5.0 (compatible; Googlebot/2.1)", "bingbot/2.0", "AhrefsBot", "zgrabber"]) {
+      expect(uaClass(ua), `misclassified ${ua}`).toBe("bot");
+    }
+  });
+
+  it("keeps the existing tool, browser and empty classifications", () => {
+    expect(uaClass("sqlmap/1.7")).toBe("bot");
+    expect(uaClass("curl/8.4.0")).toBe("tool:curl");
+    expect(uaClass("Mozilla/5.0 ... Chrome/123.0 Safari/537")).toBe("browser:chrome");
+    expect(uaClass(undefined)).toBe("none");
+    expect(uaClass("Mozilla/5.0 (X11; Linux) AppleWebKit Firefox/121.0")).toBe("browser:firefox");
   });
 });

@@ -47,7 +47,7 @@ const ask = (ip, userAgent) =>
 for (const [ip, ua] of [["203.0.113.10", "curl/8.4.0"], ["203.0.113.11", "sqlmap/1.7.2#stable (https://sqlmap.org)"]]) {
   const result = await ask(ip, ua);
   console.log(ua);
-  for (const d of result.detections) console.log(`  ${String(d.certain === true).padEnd(5)} +${d.score} ${d.detectorId}`);
+  for (const d of result.detections) console.log(`  ${String(d.certain === true).padEnd(5)} +${d.score} ${d.detector}`);
 }
 ```
 
@@ -117,7 +117,7 @@ const result = await engine.evaluate({
   headers: CHROME,
   ip: "203.0.113.30",
 });
-for (const d of result.detections) console.log(`${d.detectorId.padEnd(18)} +${String(d.score).padEnd(3)} family ${d.family ?? "-"}`);
+for (const d of result.detections) console.log(`${d.detector.padEnd(18)} +${String(d.score).padEnd(3)} family ${d.family ?? "-"}`);
 console.log("path ", result.path);
 console.log("score", result.score);
 ```

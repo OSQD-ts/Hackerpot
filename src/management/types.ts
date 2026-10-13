@@ -24,6 +24,14 @@ export interface WebhookConfig {
   /** Only deliver incidents whose total score is at least this — the "danger" gate for alert webhooks. Default 0 (all). */
   minScore?: number;
   /**
+   * Send the source address as its network (`/24`, `/48`) rather than in full. Default false.
+   *
+   * Worth turning on for a channel somebody else operates. Off by default because a receiver
+   * may be feeding automation from these deliveries, and coarsening an address it acts on
+   * would break it silently.
+   */
+  maskIp?: boolean;
+  /**
    * Suppress repeat alerts for the same source IP within this many seconds — one noisy
    * attacker becomes one alert, not hundreds. 0/unset disables de-duplication.
    */

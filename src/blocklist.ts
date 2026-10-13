@@ -1,4 +1,5 @@
 import type { Redis } from "ioredis";
+import { systemClock, type Clock } from "./internal/clock.js";
 
 /**
  * Where "this IP is blocked until T" lives. The default is in-memory and
@@ -15,6 +16,8 @@ export interface Blocklist {
 }
 
 export interface MemoryBlocklistOptions {
+  /** Where "now" comes from. Default the system clock; a `ManualClock` makes expiry testable. */
+  clock?: Clock;
   /**
    * Hard ceiling on tracked blocks. Expired entries are swept first; if that is not
    * enough, the soonest-to-expire live blocks are shed until we fit. Default 100000.
@@ -26,13 +29,15 @@ export interface MemoryBlocklistOptions {
 export class MemoryBlocklist implements Blocklist {
   private readonly until = new Map<string, number>();
   private readonly maxEntries: number;
+  private readonly clock: Clock;
 
   constructor(options: MemoryBlocklistOptions = {}) {
     this.maxEntries = Math.max(1, options.maxEntries ?? 100_000);
+    this.clock = options.clock ?? systemClock;
   }
 
   block(ip: string, untilEpochMs: number): void {
-    if (!this.until.has(ip) && this.until.size >= this.maxEntries) this.evict(Date.now());
+    if (!this.until.has(ip) && this.until.size >= this.maxEntries) this.evict(this.clock.now());
     this.until.set(ip, Math.max(this.until.get(ip) ?? 0, untilEpochMs));
   }
 
@@ -67,7 +72,7 @@ export class MemoryBlocklist implements Blocklist {
     }
   }
 
-  isBlocked(ip: string, now = Date.now()): boolean {
+  isBlocked(ip: string, now = this.clock.now()): boolean {
     const until = this.until.get(ip);
     if (until === undefined) return false;
     if (until <= now) {
@@ -78,7 +83,7 @@ export class MemoryBlocklist implements Blocklist {
   }
 
   /** Currently-*active* blocks. The map itself is capped separately (see `evict`). */
-  size(now = Date.now()): number {
+  size(now = this.clock.now()): number {
     let n = 0;
     for (const until of this.until.values()) if (until > now) n += 1;
     return n;
@@ -110,7 +115,8 @@ export class CompositeBlocklist implements Blocklist {
     await this.children[0]!.block(ip, untilEpochMs);
   }
 
-  async isBlocked(ip: string, now = Date.now()): Promise<boolean> {
+  // No clock of its own: each child reads its own when `now` is not given.
+  async isBlocked(ip: string, now?: number): Promise<boolean> {
     for (const child of this.children) {
       if (await child.isBlocked(ip, now)) return true;
     }
@@ -132,6 +138,8 @@ export class CompositeBlocklist implements Blocklist {
 }
 
 export interface RedisBlocklistOptions {
+  /** Where "now" comes from. Default the system clock. */
+  clock?: Clock;
   client: Redis;
   /** Key namespace. Default "hackerpot:block:". */
   keyPrefix?: string;
@@ -147,13 +155,20 @@ export class RedisBlocklist implements Blocklist {
   private readonly redis: Redis;
   private readonly prefix: string;
 
+  /** Where "now" comes from, for expiry checks and the key's time to live. */
+
+  private readonly clock: Clock;
+
+
   constructor(options: RedisBlocklistOptions) {
+
+    this.clock = options.clock ?? systemClock;
     this.redis = options.client;
     this.prefix = options.keyPrefix ?? "hackerpot:block:";
   }
 
   async block(ip: string, untilEpochMs: number): Promise<void> {
-    const ms = untilEpochMs - Date.now();
+    const ms = untilEpochMs - this.clock.now();
     if (ms <= 0) return;
     // PX sets a millisecond TTL; a later, longer block extends it (NX would not).
     await this.redis.set(`${this.prefix}${ip}`, "1", "PX", ms);

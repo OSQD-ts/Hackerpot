@@ -154,7 +154,7 @@ arbitrary values would produce false positives, and this detector feeds proof.
 The detection records the label and where it was found:
 
 ```json
-{ "detectorId": "honeytoken", "reason": "Honeytoken \"decoy-env-aws-key\" replayed in header.authorization (basic, decoded)", "score": 15, "certain": true }
+{ "detector": "honeytoken", "summary": "Honeytoken \"decoy-env-aws-key\" replayed in header.authorization (basic, decoded)", "score": 15, "certain": true }
 ```
 
 ### Planting well

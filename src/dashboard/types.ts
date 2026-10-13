@@ -1,4 +1,5 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
+import type { Clock } from "../internal/clock.js";
 
 /**
  * How a viewer proves they may read the dashboard.
@@ -75,6 +76,45 @@ export interface DashboardSections {
   intel?: boolean;
 }
 
+/**
+ * What a viewer of this dashboard may *do*, as opposed to what they may see.
+ *
+ * {@link DashboardSections} withholds data; this withholds powers, and the two are separate
+ * questions. Somebody who may read every incident is not automatically somebody who may change
+ * what the honeypot does to the next request.
+ *
+ * **Every control is off unless you turn it on** — the opposite of sections, which are on
+ * unless you turn them off. A section reveals something the dashboard already holds; a control
+ * reaches back into the engine, to probe it or to change it, so silence has to mean no.
+ *
+ * There is no role model in here, deliberately. A role is one listener per capability over the
+ * same handler: a read-only dashboard on one port, an editing one on another, each with its own
+ * `auth` and its own `allowedClients`. A second copy of your user table, quietly disagreeing
+ * with the first, is worse than not having one.
+ */
+export interface DashboardControls {
+  /**
+   * Run a pasted request through the detectors and show what would have happened. A dry run:
+   * every detector runs and the decision is real, including the proof guard, but nothing is
+   * recorded, nobody's score moves and no response is served.
+   */
+  testRequest?: boolean;
+  /**
+   * Replay the incidents this dashboard can already see against a candidate rule set, and
+   * show which of them would be answered differently. Reads; changes nothing.
+   */
+  previewPolicy?: boolean;
+  /**
+   * Replace the running policy from the page.
+   *
+   * Requires authentication: with `auth: false` a dashboard refuses to start with this on,
+   * loopback or not. Anything that can reach an unauthenticated page could otherwise decide
+   * what the honeypot does to every later request, which is a larger power than reading the
+   * captured data that page already shows.
+   */
+  editPolicy?: boolean;
+}
+
 /** What is removed from incidents before they reach a browser. */
 export interface DashboardRedaction {
   /**
@@ -114,6 +154,13 @@ export interface DashboardOptions {
   /** Links shown in the header: your runbook, your SIEM. */
   links?: ReadonlyArray<{ label: string; href: string }>;
   sections?: DashboardSections;
+  /** What a viewer may *do*: probe the engine, or change it. Every control is off by default. */
+  controls?: DashboardControls;
+  /**
+   * Where filters saved on the Incidents screen are kept. In memory by default, so they survive a
+   * reload and a change of browser; set `file` to keep them across restarts as well.
+   */
+  savedFilters?: { file?: string };
   redact?: DashboardRedaction;
   /**
    * `Host` header values to answer, compared without the port. On a loopback bind the
@@ -134,6 +181,17 @@ export interface DashboardOptions {
   maxClients?: number;
   /** Incidents per second pushed to each viewer. Default 100; the surplus is counted and skipped. */
   maxEventsPerSecond?: number;
+  /**
+   * Show actors whose label sets `hideFromFeed`. Default false.
+   *
+   * Muting applies to the live pane and nowhere else: a hidden actor is still detected,
+   * scored, recorded, counted in the statistics and returned by the incident listings. It
+   * keeps a known constant source — your uptime checker, a contracted scanner — from
+   * scrolling the requests that matter off the screen.
+   */
+  showHiddenActors?: boolean;
+  /** Where "now" comes from: the stream's rate window and the credential throttle. Default the system clock. */
+  clock?: Clock;
   /** Called with failures the dashboard absorbs: a source that is down, a viewer's socket error. */
   onError?: (error: unknown) => void;
 }
@@ -174,6 +232,8 @@ export interface DashboardBootstrap {
   /** The package version the handler runs, so an embedded element can detect version skew. */
   version: string;
   sections: Required<DashboardSections>;
+  /** What this viewer may do. Every control is off unless the deployment turned it on. */
+  controls: Required<DashboardControls>;
   links: Array<{ label: string; href: string }>;
   /** Where the data comes from, e.g. `"this process"` or `"management API at http://10.0.0.5:9500"`. */
   source: string;

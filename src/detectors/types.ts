@@ -1,3 +1,5 @@
+import type { SiteProfile } from "../site/index.js";
+import type { Certainty } from "../evidence.js";
 import type { FingerprintRegistry, IpTracker } from "../state.js";
 
 export interface RequestFacts {
@@ -52,12 +54,22 @@ export interface DetectionContext extends RequestFacts {
    * the detectors that run after it: the volume detectors skip a verified crawler.
    */
   verifiedCrawler?: string;
+  /**
+   * What this site actually serves, learned from the statuses the application answered with
+   * (`engine.reportOutcome`). Present only when a site profile is enabled, and worth reading
+   * only once `isWarm()` — see `SiteProfile`. Named `site`, as in bothandlerjs.
+   */
+  site?: SiteProfile;
+  /** @deprecated Renamed `site`. Set to the same object, for detectors written against the old name. */
+  baseline?: SiteProfile;
+  /** The verified marker this client presented, when markers are configured. See `MarkerCookie`. */
+  marker?: string;
 }
 
 export interface Detection {
-  detectorId: string;
+  detector: string;
   /** Human-readable explanation of what tripped the detector, for logs and alerts. */
-  reason: string;
+  summary: string;
   /** Suspicion points added to this IP's running total. */
   score: number;
   /** Id of the response action to run. Falls back to the engine's default policy when omitted. */
@@ -74,6 +86,14 @@ export interface Detection {
    * each count on their own.
    */
   family?: string;
+  /**
+   * How strong this finding is, as opposed to how much it scores. Derived from `score` and
+   * `certain` when absent, so a detector need only set it to disagree with that reading —
+   * a high score that is still only suspicion, or a cheap finding that is not. See `certaintyOf`.
+   */
+  certainty?: Certainty;
+  /** @deprecated Renamed `certainty`, bothandlerjs's name for it. Still read when `certainty` is absent. */
+  tier?: Certainty;
   metadata?: Record<string, unknown>;
 }
 
@@ -87,5 +107,10 @@ export interface Detector {
    * honeypot, so real downstream routes always receive an intact stream.
    */
   needsBody?: boolean;
+  /**
+   * A detection, or undefined to pass. A detector written before the fields were renamed, still
+   * returning `detectorId` and `reason`, keeps working: the engine upgrades that shape at run
+   * time (see `LegacyDetection`), though it no longer type-checks against this signature.
+   */
   inspect(ctx: DetectionContext): Detection | undefined | Promise<Detection | undefined>;
 }

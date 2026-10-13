@@ -1,4 +1,6 @@
 import net from "node:net";
+import { systemClock, type Clock } from "../internal/clock.js";
+import { TtlLru } from "../internal/lru.js";
 import { StringDecoder } from "node:string_decoder";
 
 /** Longest probe banner retained per connection. */
@@ -39,6 +41,8 @@ export interface PortScanSentinelOptions {
   isAllowlisted?: (ip: string) => boolean;
   /** How long an IP's touched-port set is remembered, in ms. Default 3600000 (1h). */
   retentionMs?: number;
+  /** Where "now" comes from. Default the system clock. */
+  clock?: Clock;
   onEvent?: (event: PortScanEvent) => void | Promise<void>;
 }
 
@@ -52,51 +56,36 @@ export class PortScanSentinel {
   private servers: net.Server[] = [];
   /** Live probe connections, so `close()` can end them instead of waiting on them. */
   private readonly sockets = new Set<net.Socket>();
-  private readonly seen = new Map<string, { ports: Set<number>; at: number }>();
+  /** Ports each address has touched, bounded and expiring: see `remember`. */
+  private readonly seen: TtlLru<{ ports: Set<number>; at: number }>;
   private readonly options: PortScanSentinelOptions;
   private readonly maxTrackedIps: number;
   private readonly retentionMs: number;
+  private readonly clock: Clock;
 
   constructor(options: PortScanSentinelOptions) {
     this.options = options;
     this.maxTrackedIps = options.maxTrackedIps ?? 10_000;
     this.retentionMs = options.retentionMs ?? 3_600_000;
+    this.clock = options.clock ?? systemClock;
+    this.seen = new TtlLru(this.maxTrackedIps, this.retentionMs, this.clock);
   }
 
   /**
-   * Records that `ip` touched `port`, keeping the tracking map bounded.
+   * Records that `ip` touched `port`.
    *
-   * This map previously grew forever: one permanent entry per distinct source address,
-   * never expired and never capped. Sentinel ports exist precisely to be connected to
-   * by anything on the internet, so the entry count tracks "how many hosts have scanned
-   * us since boot" — which for an internet-facing honeypot is unbounded and rises on its
-   * own, no attacker effort required. A single host spoofing source addresses drives it
-   * far faster. Entries now age out on a retention window and the map is hard-capped,
-   * shedding least-recently-seen first.
+   * Sentinel ports exist to be connected to by anything on the internet, so this table
+   * tracks "how many hosts have scanned us", which for an internet-facing honeypot rises on
+   * its own and rises far faster against spoofed sources. It is therefore a bounded cache
+   * with a retention window rather than a map: entries age out, and past the ceiling the
+   * least recently seen address is forgotten first.
    */
-  private remember(ip: string, port: number, now: number): Set<number> {
-    const existing = this.seen.get(ip);
-    if (existing) {
-      existing.ports.add(port);
-      existing.at = now;
-      // Re-insert so Map iteration order stays least-recently-seen first.
-      this.seen.delete(ip);
-      this.seen.set(ip, existing);
-      return existing.ports;
-    }
-
-    const cutoff = now - this.retentionMs;
-    for (const [key, entry] of this.seen) {
-      if (entry.at >= cutoff) break; // insertion-ordered: the rest are newer
-      this.seen.delete(key);
-    }
-    while (this.seen.size >= this.maxTrackedIps) {
-      const oldest = this.seen.keys().next();
-      if (oldest.done) break;
-      this.seen.delete(oldest.value);
-    }
-
-    const entry = { ports: new Set<number>([port]), at: now };
+  private remember(ip: string, port: number): Set<number> {
+    const now = this.clock.now();
+    const entry = this.seen.getOrCreate(ip, () => ({ ports: new Set<number>(), at: now }));
+    entry.ports.add(port);
+    entry.at = now;
+    // Re-inserted so the retention window restarts while this address is still active.
     this.seen.set(ip, entry);
     return entry.ports;
   }
@@ -117,7 +106,7 @@ export class PortScanSentinel {
                 socket.destroy();
                 return;
               }
-              const ports = this.remember(ip, port, Date.now());
+              const ports = this.remember(ip, port);
               this.sockets.add(socket);
               socket.once("close", () => this.sockets.delete(socket));
 

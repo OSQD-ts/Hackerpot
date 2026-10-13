@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { buildResponseActions } from "../src/config/build.js";
 import { parseConfig } from "../src/config/schema.js";
-import { checkResponseActions, type ResponseAction } from "../src/responses/index.js";
+import { checkResponseActions, type ResponseAction } from "../src/actions/index.js";
 
 describe("checkResponseActions", () => {
   it("reports every default action, in order, and fails none", async () => {

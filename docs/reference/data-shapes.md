@@ -27,13 +27,13 @@ WebSocket and webhooks push, and `onHit` receives.
   "enrichment": { "category": "documentation", "global": false },
   "detections": [                                  // highest score first
     {
-      "detectorId": "decoy-path",
+      "detector": "decoy-path",
       "reason": "Exposed .env file probe",
       "score": 10,
       "metadata": { "decoyId": "dotenv", "payload": { "status": 200, "contentType": "text/plain; charset=utf-8" } }
     },
     {
-      "detectorId": "scanner-signature",
+      "detector": "scanner-signature",
       "reason": "User-Agent matches known tooling signature: curl/8.5.0",
       "score": 6,
       "metadata": { "userAgent": "curl/8.5.0", "pattern": "python-requests|go-http-client|libwww-perl|curl\\/|wget\\/" }
@@ -54,19 +54,26 @@ WebSocket and webhooks push, and `onHit` receives.
 
 ```ts
 {
-  detectorId: string;
-  reason: string;
+  detector: string;       // which detector fired
+  summary: string;        // what it saw, log-safe
   score: number;
   respondWith?: string;
   certain?: boolean;      // proof
   family?: string;        // e.g. "path-traversal"
+  certainty?: "weak" | "moderate" | "strong" | "certain";
   metadata?: Record<string, unknown>;
 }
 ```
 
+`detector` and `summary` are the names bothandlerjs gives the same two fields. Until this release
+they were `detectorId` and `reason`, and hits recorded under those names still read: the file,
+Redis and Elasticsearch stores, a dashboard reading an older management API, and a detector
+still returning the old shape are all upgraded as the data arrives. What leaves the process —
+webhooks, the management API, the live feed — uses the new names only.
+
 ### Protocol incidents
 
-The protocol honeypots map their findings into the same shape. The finding is the `detectorId`
+The protocol honeypots map their findings into the same shape. The finding is the `detector`
 (`ssh-auth-bruteforce`, `smtp-open-relay`, `ftp-bounce`, `telnet-command`…), `method` names the
 protocol, and captures ride in `path`, `body` and `headers`:
 
@@ -249,7 +256,7 @@ One JSON object per line on stdout (with `[logging] format = "json"`). A hit:
 ```json
 {
   "request": { "method": "GET", "path": "/.env", "query": {}, "headers": { "user-agent": "sqlmap/1.7.2#stable" }, "ip": "203.0.113.10" },
-  "detections": [ { "detectorId": "decoy-path", "…": "…" }, { "detectorId": "scanner-signature", "certain": true, "…": "…" } ],
+  "detections": [ { "detector": "decoy-path", "…": "…" }, { "detector": "scanner-signature", "certain": true, "…": "…" } ],
   "score": 16,
   "totalScore": 16,
   "actionId": "decoy-content",

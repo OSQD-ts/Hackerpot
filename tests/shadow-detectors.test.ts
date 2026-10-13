@@ -4,7 +4,7 @@ import { parseConfig } from "../src/config/schema.js";
 import type net from "node:net";
 import { describe, expect, it } from "vitest";
 import { HoneypotEngine } from "../src/core.js";
-import { createMiddleware } from "../src/middleware.js";
+import { createMiddleware } from "../src/adapters/node.js";
 import { MemoryStore } from "../src/stores/index.js";
 import type { RequestFacts } from "../src/detectors/types.js";
 import type { HoneypotHit, ShadowEvent } from "../src/types.js";
@@ -32,7 +32,7 @@ describe("shadow detectors report findings without acting on them", () => {
     const { engine, store, hits, shadows } = engineWith(["decoy-path"]);
     const result = await engine.evaluate(facts("/.env"));
     expect(result.detections).toEqual([]);
-    expect(result.shadowDetections.map((d) => d.detectorId)).toEqual(["decoy-path"]);
+    expect(result.shadowDetections.map((d) => d.detector)).toEqual(["decoy-path"]);
     expect(result.actionId).toBe("");
     expect(hits).toHaveLength(0);
     expect(await store.scoreFor("203.0.113.60")).toBe(0);
@@ -42,9 +42,9 @@ describe("shadow detectors report findings without acting on them", () => {
   it("rides along on a hit live detectors caused, adding nothing to its score", async () => {
     const { engine, hits, shadows } = engineWith(["decoy-path"]);
     const result = await engine.evaluate(facts("/.env", { ...BROWSER, "user-agent": "sqlmap/1.7" }));
-    expect(result.detections.map((d) => d.detectorId)).toEqual(["scanner-signature"]);
+    expect(result.detections.map((d) => d.detector)).toEqual(["scanner-signature"]);
     expect(result.score).toBe(result.detections[0]!.score);
-    expect(hits[0]!.shadowDetections?.map((d) => d.detectorId)).toEqual(["decoy-path"]);
+    expect(hits[0]!.shadowDetections?.map((d) => d.detector)).toEqual(["decoy-path"]);
     expect(shadows).toMatchObject([{ alsoHit: true }]);
   });
 
@@ -52,7 +52,7 @@ describe("shadow detectors report findings without acting on them", () => {
     const { engine } = engineWith(["decoy-path"]);
     engine.reconfigure({ shadowDetectors: [] });
     const result = await engine.evaluate(facts("/.env"));
-    expect(result.detections.map((d) => d.detectorId)).toContain("decoy-path");
+    expect(result.detections.map((d) => d.detector)).toContain("decoy-path");
   });
 
   it("reports a throwing onShadow on the error channel instead of failing the request", async () => {
@@ -96,7 +96,7 @@ describe("shadow detectors report findings without acting on them", () => {
         req.end("item=42");
       });
       expect(reply).toBe("app:item=42");
-      expect(shadows.map((event) => event.detections[0]!.detectorId)).toEqual(["payload-injection"]);
+      expect(shadows.map((event) => event.detections[0]!.detector)).toEqual(["payload-injection"]);
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }

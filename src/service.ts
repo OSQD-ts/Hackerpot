@@ -1,4 +1,6 @@
-import { HoneypotServer } from "./server.js";
+import { HoneypotServer } from "./adapters/server.js";
+import { NotificationHub, syslogNotifySink, webhookNotifySink } from "./notify/index.js";
+import { WebhookDispatcher } from "./management/index.js";
 import {
   buildDetectors,
   buildHoneypotConfig,
@@ -18,16 +20,16 @@ import {
 } from "./config/index.js";
 import type { HackerpotConfig } from "./config/index.js";
 import type { ManagementServer } from "./management/index.js";
-import type { SyslogSink } from "./syslog.js";
-import { formatTextLine } from "./logfmt.js";
+import type { SyslogSink } from "./notify/syslog.js";
+import { formatTextLine } from "./internal/logfmt.js";
 import type { IpAllowlist } from "./allowlist.js";
 import type { Blocklist } from "./blocklist.js";
 import { applyIocEntries, fetchIocFeed } from "./intel/index.js";
-import { checkResponseActions } from "./responses/index.js";
+import { checkResponseActions } from "./actions/index.js";
 import { HoneypotEngine } from "./core.js";
 import { MemoryStore } from "./stores/index.js";
 import { formatReplaySummary, readLogLines, replayLog } from "./replay.js";
-import { formatExplanation, parseRequestText } from "./explain.js";
+import { formatExplanation, parseRequest } from "./explain.js";
 import { CrawlerRanges, startCrawlerRangeRefresh } from "./crawler-ranges.js";
 import { ServiceTokens } from "./service-tokens.js";
 import { buildDashboardOptions } from "./config/build.js";
@@ -161,8 +163,8 @@ function hitEvent(config: HackerpotConfig, hit: HoneypotHit): Record<string, unk
     score: hit.score,
     totalScore: hit.totalScore,
     respondedWith: hit.respondedWith,
-    detectors: hit.detections.map((d) => d.detectorId),
-    reasons: hit.detections.map((d) => d.reason),
+    detectors: hit.detections.map((d) => d.detector),
+    reasons: hit.detections.map((d) => d.summary),
   };
   if (config.logging.includeHeaders) event["headers"] = hit.headers;
   if (config.logging.includeBody && hit.body !== undefined) event["body"] = hit.body;
@@ -286,9 +288,9 @@ export async function runService(argv: string[]): Promise<void> {
   // resolver that answers nothing, so a claim reads as unverifiable rather than refuted.
   if (args.explain !== undefined) {
     const text = args.explain !== "" ? args.explain : await readStdin();
-    let facts: ReturnType<typeof parseRequestText>;
+    let facts: ReturnType<typeof parseRequest>;
     try {
-      facts = parseRequestText(text, { url: args.url, method: args.method, ip: args.ip });
+      facts = parseRequest(text, { url: args.url, method: args.method, ip: args.ip });
     } catch (err) {
       throw new ConfigError((err as Error).message);
     }
@@ -337,6 +339,8 @@ export async function runService(argv: string[]): Promise<void> {
   // feeds it — so the hit handler closes over a binding filled in just below.
   let management: ManagementServer | undefined;
   let syslogSink: SyslogSink | undefined;
+  /** Where incidents leave the process. Exists whether or not the management API does. */
+  let notify: NotificationHub | undefined;
   // Declared here, ahead of the shutdown handler that closes it.
   let dashboard: DashboardServer | undefined;
 
@@ -363,11 +367,10 @@ export async function runService(argv: string[]): Promise<void> {
     config,
     (hit) => {
       log(hitEvent(running, hit));
-      management?.publish(hit);
-      // Declared below and filled in before any listener binds — the same forward
-      // reference `management` uses, for the same reason: the store this closure needs
-      // has to exist before the thing that consumes it can be constructed.
-      syslogSink?.send(hit);
+      // One publish reaches every sink: the management feed and its counters, webhooks, and
+      // syslog. Declared below and filled in before any listener binds — the store this
+      // closure needs has to exist before the thing that consumes it can be constructed.
+      notify?.publish(hit);
     },
     // Neither a failing firewall call nor an unreachable store may break the
     // honeypot's own response, so both are reported here rather than thrown —
@@ -386,19 +389,30 @@ export async function runService(argv: string[]): Promise<void> {
   // What a shadowed detector would have done, reported on its own kind so it is easy to
   // compare against the live hits before promoting the detector.
   built.config.onShadow = (event) =>
-    log({ kind: "shadow", ip: event.ip, method: event.method, path: event.path, detectors: event.detections.map((d) => d.detectorId), alsoHit: event.alsoHit });
+    log({ kind: "shadow", ip: event.ip, method: event.method, path: event.path, detectors: event.detections.map((d) => d.detector), alsoHit: event.alsoHit });
   const server = new HoneypotServer(built.config);
+
+  // Anything the engine announces about itself: a risky setting, an allowlist entry that
+  // matches nothing, a part replaced on SIGHUP. Subscribed before anything can raise one.
+  server.engine.on("warning", (notice) => log({ kind: "warning", detail: notice.message, ...(notice.change ? { part: notice.change.part, by: notice.change.by } : {}) }));
+
+  // Built before the management server, which shares its fan-out: one publish per incident,
+  // reaching the live feed, the counters and every other sink alike.
+  notify = new NotificationHub({
+    onError: (sink, error) => log({ kind: "notify-error", sink, error: error instanceof Error ? error.message : String(error) }),
+  });
 
   // Live gauges the store cannot supply — current block count and tracked IPs.
   management = createManagementServer(config, built.store, (error) => log({ kind: "management-error", error: error.message }), async () => ({
     active_blocks: (await server.engine.blocklist.size?.()) ?? 0,
     tracked_ips: server.engine.registry.size,
-  }), () => server.engine.detectorFailures);
+  }), () => server.engine.detectorFailures, notify.broker, () => server.engine.counters());
 
   // Anomalies go to the log and to every webhook that accepts them.
   server.engine.audit?.start(config.audit.intervalSeconds * 1000, (anomaly) => {
     log({ kind: "anomaly", id: anomaly.id, severity: anomaly.severity, summary: anomaly.summary, value: anomaly.value, baseline: anomaly.baseline, ...(anomaly.details ?? {}) });
     management?.announce(anomaly);
+    notify?.announce(anomaly);
   });
 
   const crawler = config.detectors["crawler-verification"];
@@ -427,13 +441,31 @@ export async function runService(argv: string[]): Promise<void> {
   // API, so a deployment can ship to its SIEM without also exposing a REST service
   // over the captured data. `send` never throws and never returns a promise.
   syslogSink = createSyslogSink(config, (error) => log({ kind: "syslog-error", error: error.message }));
+  if (syslogSink) notify.add(syslogNotifySink(syslogSink));
+
+  // Webhooks configured at the top level are delivered by the hub, so an alert in a chat
+  // channel no longer requires exposing a REST API over the captured data.
+  if (config.webhooks.length > 0) {
+    const dispatcher = new WebhookDispatcher({
+      webhooks: config.webhooks,
+      ...(config.management.webhookGlobalMaxPerMinute ? { globalMaxPerMinute: config.management.webhookGlobalMaxPerMinute } : {}),
+      onError: (url, error) => log({ kind: "webhook-error", url, error: error.message }),
+    });
+    notify.add(webhookNotifySink(dispatcher));
+  }
+  // Silence is the worst way to find out an alert was never configured to arrive.
+  if (!config.management.enabled && config.management.webhooks.length > 0) {
+    log({
+      kind: "warning",
+      detail: "[[management.webhooks]] is configured but [management] is disabled, so nothing delivers them; move them to top-level [[webhooks]]",
+    });
+  }
 
   // SMTP, SSH, FTP and Telnet incidents are already mapped into HoneypotHit, so they
   // log and reach the management API through exactly the same path as HTTP hits.
   const onProtocolHit = (hit: HoneypotHit): void => {
     log(hitEvent(running, hit));
-    management?.publish(hit);
-    syslogSink?.send(hit);
+    notify?.publish(hit);
     // So a dashboard in this process sees the whole deployment, not only HTTP.
     server.engine.publish(hit);
   };
@@ -469,7 +501,8 @@ export async function runService(argv: string[]): Promise<void> {
       if (telnet) await telnet.close();
       if (management) await management.close();
       if (dashboard) await dashboard.close();
-      if (syslogSink) await syslogSink.close();
+      // Closes every sink it owns, syslog included.
+      if (notify) await notify.close();
       await built.close();
     } catch (err) {
       log({ kind: "shutdown-error", error: (err as Error).message });
@@ -515,14 +548,19 @@ export async function runService(argv: string[]): Promise<void> {
     }
 
     if (plan.applied.length > 0) {
-      server.engine.reconfigure({
-        detectors: buildDetectors(next, shared),
-        serviceTokens: { header: next.serviceTokens.header, tokens: next.serviceTokens.tokens },
-        responseActions: buildResponseActions(next),
-        policy: buildPolicy(next),
-        allowlist: next.allowlist,
-        shadowDetectors: next.engine.shadowDetectors,
-      });
+      // Attributed, so the notice and the change event say a reload did this rather than
+      // leaving an operator to guess what replaced their detector set at 3am.
+      server.engine.reconfigure(
+        {
+          detectors: buildDetectors(next, shared),
+          serviceTokens: { header: next.serviceTokens.header, tokens: next.serviceTokens.tokens },
+          responseActions: buildResponseActions(next),
+          policy: buildPolicy(next),
+          allowlist: next.allowlist,
+          shadowDetectors: next.engine.shadowDetectors,
+        },
+        { by: "SIGHUP" },
+      );
     }
     // Applied before anything can log: `running` carries include_headers/include_body to
     // the hit closures, `logFormat` carries the rendering choice to `log()`. Both are
@@ -569,7 +607,7 @@ export async function runService(argv: string[]): Promise<void> {
 
   const weakTokens = new ServiceTokens(config.serviceTokens).weak;
   if (weakTokens.length > 0) {
-    log({ kind: "warning", what: "service_tokens", detail: `${weakTokens.join(", ")} has a secret shorter than 16 characters, short enough to guess` });
+    server.engine.warn(`service tokens short enough to guess: ${weakTokens.join(", ")}. Use at least 16 characters from a random source.`);
   }
 
   if (config.logging.startup) {

@@ -4,7 +4,9 @@ import { SECTIONS } from "./boot.js";
 import { replace } from "./charts.js";
 import { $, all, el, maybe } from "./dom.js";
 import { fmtCompact, fmtDateTime, fmtDur, fmtInt, fmtNum, fmtTime, plural, sevClass } from "./format.js";
+import type { DashboardNotice } from "./store.js";
 import { state } from "./store.js";
+import { copyText } from "./transfer.js";
 import type { AttackSession } from "./types.js";
 
 /**
@@ -17,11 +19,18 @@ function setPill(id: string, n: number): void {
   if (pill !== null) pill.textContent = fmtCompact(n);
 }
 
+/** The count at the far end of a list panel's heading. */
+function setCount(id: string, n: number, noun: string): void {
+  const node = maybe(id);
+  if (node !== null) node.textContent = plural(n, noun);
+}
+
 // ---- sessions -------------------------------------------------------------------
 
 export function renderSessions(): void {
   const host = $("sessions-list");
   setPill("tc-sessions", state.sessions.length);
+  setCount("sessions-count", state.sessions.length, "session");
   if (state.sessions.length === 0) {
     replace(host, el("div", "empty", "No sessions yet."));
     return;
@@ -100,6 +109,7 @@ function fillSession(body: HTMLElement, session: AttackSession): void {
 export function renderActors(): void {
   const host = $("actors-list");
   setPill("tc-actors", state.actors.length);
+  setCount("actors-count", state.actors.length, "actor");
   if (state.actors.length === 0) {
     replace(host, el("div", "empty", "No fingerprinted actors yet. Fingerprints come from HTTP header order and User-Agent family, so protocol-only (SSH, SMTP) traffic does not appear here."));
     return;
@@ -157,6 +167,7 @@ export function renderIoc(): void {
   const host = $("ioc-list");
   const list = state.ioc.filter((entry) => entry.score >= state.iocMin);
   setPill("tc-ioc", state.ioc.length);
+  setCount("ioc-count", state.ioc.length, "indicator");
   if (list.length === 0) {
     replace(host, el("div", "empty", `No indicators at or above ${state.iocMin} points.`));
     return;
@@ -203,16 +214,51 @@ export function renderMetrics(): void {
   if (pre !== null) pre.textContent = state.metricsRaw === "" ? "—" : state.metricsRaw;
 }
 
-async function copyText(text: string, button: HTMLButtonElement): Promise<void> {
-  const label = button.textContent ?? "";
-  try {
-    // Absent outside a secure context (plain http to anything but localhost).
-    await navigator.clipboard.writeText(text);
-    button.textContent = "copied";
-  } catch {
-    button.textContent = "copy failed";
+/**
+ * What the engine has said about itself.
+ *
+ * The engine keeps a bounded history — startup warnings, an allowlist entry that matches
+ * nothing, a service token short enough to guess, and every `reconfigure` with its
+ * attribution — and until now nothing showed it. An operator's only way to learn that a rule
+ * was swapped at 14:02 by somebody was to have been tailing the log at 14:02.
+ *
+ * The same notice raised again is one row with a count, not another row: a setting that
+ * cannot be honoured says so repeatedly, and a hundred copies of one sentence would bury the
+ * startup warning underneath that said something different.
+ */
+export function renderNotices(): void {
+  const host = maybe("p-notices");
+  if (host === null) return;
+  const count = maybe("notice-count");
+  if (count !== null) count.textContent = state.notices.length > 0 ? `${state.notices.length} this run` : "";
+  if (state.notices.length === 0) {
+    replace(host, el("div", "empty", "Nothing to report: no startup warnings, and no runtime changes this run."));
+    return;
   }
-  setTimeout(() => {
-    button.textContent = label;
-  }, 1400);
+
+  const grouped = new Map<string, { notice: DashboardNotice; count: number }>();
+  for (const notice of [...state.notices].reverse()) {
+    const key = `${notice.change?.part ?? ""}\u0000${notice.message}`;
+    const seen = grouped.get(key);
+    if (seen === undefined) grouped.set(key, { notice, count: 1 });
+    else seen.count += 1;
+  }
+
+  const list = el("div", "stack-gap");
+  for (const { notice, count: times } of [...grouped.values()].slice(0, 40)) {
+    const row = el("div", "notice");
+    const tag = el("span", "badge", notice.change === undefined ? "warning" : "change");
+    row.append(tag);
+    const body = el("div");
+    body.append(el("div", null, notice.message));
+    const meta = [
+      fmtTime(notice.timestamp),
+      notice.change === undefined ? undefined : `${notice.change.part}${notice.change.by === undefined ? "" : ` · by ${notice.change.by}`}`,
+      times > 1 ? `${times} times` : undefined,
+    ].filter((part) => part !== undefined);
+    body.append(el("div", "faint tiny", meta.join(" · ")));
+    row.append(body);
+    list.append(row);
+  }
+  replace(host, list);
 }

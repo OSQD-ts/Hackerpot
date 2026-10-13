@@ -1,6 +1,6 @@
 import type { EvaluationResult, HoneypotEngine } from "./core.js";
 import type { RequestFacts } from "./detectors/types.js";
-import { parseQuery, pathOf } from "./http-request.js";
+import { parseQuery, pathOf } from "./internal/http.js";
 
 /**
  * One request, and why the detectors decided what they did. Adapted from bothandlerjs.
@@ -150,7 +150,7 @@ function parseCurl(input: string): Parsed {
  * headers, a bare block of `Name: value` lines, or, failing all of those, a User-Agent.
  * Throws on empty input.
  */
-export function parseRequestText(text: string, overrides: ExplainOverrides = {}): RequestFacts {
+export function parseRequest(text: string, overrides: ExplainOverrides = {}): RequestFacts {
   const input = text.trim();
   if (input === "") throw new Error("nothing to explain: pass a User-Agent, a curl command or a block of request headers");
 
@@ -210,13 +210,13 @@ export function formatExplanation(facts: RequestFacts, result: EvaluationResult)
     out.push(`${result.detections.length} detector(s) fired, score ${result.score}:`);
     for (const detection of result.detections) {
       const tags = [detection.certain ? "proof" : undefined, detection.family ? `family ${detection.family}` : undefined].filter(Boolean).join(", ");
-      out.push(`  +${String(detection.score).padEnd(3)} ${detection.detectorId.padEnd(24)} ${detection.reason}${tags ? `  [${tags}]` : ""}`);
+      out.push(`  +${String(detection.score).padEnd(3)} ${detection.detector.padEnd(24)} ${detection.summary}${tags ? `  [${tags}]` : ""}`);
     }
     out.push("", `Response  ${result.actionId || "none"}${result.downgradedFrom ? ` (the policy chose ${result.downgradedFrom}, refused without proof)` : ""}`);
   }
   if (result.shadowDetections.length > 0) {
     out.push("", "Shadowed detectors (reported only):");
-    for (const detection of result.shadowDetections) out.push(`  ${detection.detectorId.padEnd(24)} ${detection.reason}`);
+    for (const detection of result.shadowDetections) out.push(`  ${detection.detector.padEnd(24)} ${detection.summary}`);
   }
   return `${out.join("\n")}\n`;
 }
@@ -228,3 +228,6 @@ export function formatExplanation(facts: RequestFacts, result: EvaluationResult)
 export async function explainRequest(engine: HoneypotEngine, facts: RequestFacts): Promise<EvaluationResult> {
   return engine.evaluate(facts);
 }
+
+/** @deprecated Renamed {@link parseRequest}, bothandlerjs's name for the same job. */
+export const parseRequestText = parseRequest;

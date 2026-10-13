@@ -130,8 +130,8 @@ export function decoyPathDetector(decoys: DecoyPath[] = defaultDecoyPaths): Dete
       const decoy = safe.find((candidate) => matches(candidate, ctx.method, ctx.path));
       if (!decoy) return undefined;
       const detection: Detection = {
-        detectorId: "decoy-path",
-        reason: decoy.description,
+        detector: "decoy-path",
+        summary: decoy.description,
         score: decoy.score,
         metadata: { decoyId: decoy.id, payload: decoy.payload },
       };

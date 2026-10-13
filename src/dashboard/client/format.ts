@@ -63,6 +63,14 @@ export function fmtTime(iso: string): string {
   return `${d.toLocaleTimeString()}.${String(d.getMilliseconds()).padStart(3, "0")}`;
 }
 
+/** The date alone, always as DD-MM-YYYY: the feed prints it above the time. */
+export function fmtDate(msOrIso: number | string): string {
+  const d = new Date(msOrIso);
+  if (Number.isNaN(d.getTime())) return DASH;
+  const pad = (value: number): string => String(value).padStart(2, "0");
+  return `${pad(d.getDate())}-${pad(d.getMonth() + 1)}-${d.getFullYear()}`;
+}
+
 export function fmtDateTime(msOrIso: number | string): string {
   const d = new Date(msOrIso);
   return Number.isNaN(d.getTime()) ? DASH : d.toLocaleString();

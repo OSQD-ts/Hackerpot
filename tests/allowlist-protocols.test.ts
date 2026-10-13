@@ -2,9 +2,9 @@ import net from "node:net";
 import { describe, expect, it } from "vitest";
 import { IpAllowlist } from "../src/allowlist.js";
 import { MemoryStore } from "../src/stores/index.js";
-import { SmtpHoneypot } from "../src/smtp/index.js";
-import { TelnetHoneypot } from "../src/telnet/index.js";
-import { FtpHoneypot } from "../src/ftp/index.js";
+import { SmtpHoneypot } from "../src/protocols/smtp/index.js";
+import { TelnetHoneypot } from "../src/protocols/telnet/index.js";
+import { FtpHoneypot } from "../src/protocols/ftp/index.js";
 import { PortScanSentinel } from "../src/detectors/port-scan.js";
 import { computeIoc } from "../src/management/rest.js";
 
@@ -66,7 +66,7 @@ describe("the allowlist exempts a source from the protocol emulators too", () =>
     const hits = await store.list();
     expect(hits.length).toBeGreaterThan(0);
     expect(await store.scoreFor("127.0.0.1")).toBeGreaterThan(0);
-    expect(hits.map((h) => h.detections[0]!.detectorId)).toEqual(expect.arrayContaining(["smtp-user-enumeration", "telnet-auth-bruteforce"]));
+    expect(hits.map((h) => h.detections[0]!.detector)).toEqual(expect.arrayContaining(["smtp-user-enumeration", "telnet-auth-bruteforce"]));
   }, 20_000);
 
   it("omitting the predicate leaves behaviour unchanged", async () => {

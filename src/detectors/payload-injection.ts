@@ -107,8 +107,8 @@ export function payloadInjectionDetector(options: PayloadInjectionOptions = {}):
         const signature = scan(target.value);
         if (!signature) continue;
         const detection: Detection = {
-          detectorId: "payload-injection",
-          reason: `${signature.kind} payload detected in ${target.location}`,
+          detector: "payload-injection",
+          summary: `${signature.kind} payload detected in ${target.location}`,
           score,
           // An encoded traversal also trips `target-integrity`; one act, counted once.
           ...(signature.kind === "path-traversal" ? { family: "path-traversal" } : {}),

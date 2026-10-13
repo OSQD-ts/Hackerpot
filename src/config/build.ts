@@ -20,6 +20,8 @@ import {
   pathBruteforceDetector,
   payloadInjectionDetector,
   rateSpikeDetector,
+  markerDriftDetector,
+  pathNoveltyDetector,
   repeatActorDetector,
   scannerSignatureDetector,
   sensitiveFileDetector,
@@ -37,7 +39,6 @@ import {
   blockAction,
   chaosAction,
   decoyContentAction,
-  defaultResponsePolicy,
   dripFeedAction,
   fakeDataAction,
   fakeSuccessAction,
@@ -47,27 +48,34 @@ import {
   rateLimitAction,
   redirectAction,
   tarpitAction,
-} from "../responses/index.js";
-import type { ResponseAction, ResponsePolicy } from "../responses/index.js";
+} from "../actions/index.js";
+import { PRESETS, ladderPolicy, rulePolicy } from "../policy/index.js";
+import type { ResponseAction } from "../actions/index.js";
+import type { ResponsePolicy, Rule } from "../policy/index.js";
 import { ManagementServer } from "../management/index.js";
-import type { ManagementServerOptions } from "../management/index.js";
+import type { IncidentBroker } from "../management/broker.js";
+import type { EngineCounters, ManagementServerOptions } from "../management/index.js";
 import { readFileSync } from "node:fs";
 import { CompositeBlocklist, MemoryBlocklist, RedisBlocklist, type Blocklist } from "../blocklist.js";
 import { EnforcingBlocklist, commandEnforcer, webhookEnforcer, type BlockEnforcer } from "../firewall.js";
-import { SmtpHoneypot } from "../smtp/index.js";
-import type { SmtpHoneypotOptions } from "../smtp/index.js";
-import { SshHoneypot } from "../ssh/index.js";
-import type { SshHoneypotOptions } from "../ssh/index.js";
-import { FtpHoneypot } from "../ftp/index.js";
-import type { FtpHoneypotOptions } from "../ftp/index.js";
-import { TelnetHoneypot } from "../telnet/index.js";
-import type { TelnetHoneypotOptions } from "../telnet/index.js";
-import { SyslogSink } from "../syslog.js";
-import type { SyslogSinkOptions } from "../syslog.js";
-import { ConfigError } from "./reader.js";
+import { SmtpHoneypot } from "../protocols/smtp/index.js";
+import type { SmtpHoneypotOptions } from "../protocols/smtp/index.js";
+import { SshHoneypot } from "../protocols/ssh/index.js";
+import type { SshHoneypotOptions } from "../protocols/ssh/index.js";
+import { FtpHoneypot } from "../protocols/ftp/index.js";
+import type { FtpHoneypotOptions } from "../protocols/ftp/index.js";
+import { TelnetHoneypot } from "../protocols/telnet/index.js";
+import type { TelnetHoneypotOptions } from "../protocols/telnet/index.js";
+import { SyslogSink } from "../notify/syslog.js";
+import type { SyslogSinkOptions } from "../notify/syslog.js";
+import { ConfigError, toRegExp } from "./reader.js";
+import { ActorLabels } from "../labels.js";
+import { MarkerCookie } from "../marker.js";
+import type { ActorLabel } from "../labels.js";
+import { cachingResolver, nodeDnsResolver } from "../internal/dns.js";
 import { CompositeStore, ElasticStore, FileStore, MemoryStore, RedisStore } from "../stores/index.js";
 import type { HitStore, HoneypotConfig, HoneypotHit } from "../types.js";
-import type { HackerpotConfig } from "./schema.js";
+import type { ActorLabelConfig, HackerpotConfig, PolicyRuleConfig } from "./schema.js";
 
 /**
  * Turns a validated config file into the live objects the engine runs on. Kept
@@ -118,6 +126,8 @@ export function buildDetectors(config: HackerpotConfig, shared: SharedDetectorSt
   if (d["suspicious-method"].enabled) detectors.push(suspiciousMethodDetector(d["suspicious-method"].options));
   if (d["credential-bruteforce"].enabled) detectors.push(credentialBruteforceDetector(d["credential-bruteforce"].options));
   if (d["path-bruteforce"].enabled) detectors.push(pathBruteforceDetector(d["path-bruteforce"].options));
+  if (d["path-novelty"].enabled) detectors.push(pathNoveltyDetector(d["path-novelty"].options));
+  if (d["marker-drift"].enabled) detectors.push(markerDriftDetector(d["marker-drift"].options));
   if (d["scanner-signature"].enabled) detectors.push(scannerSignatureDetector(d["scanner-signature"].options));
   if (d["client-anomaly"].enabled) detectors.push(clientAnomalyDetector(d["client-anomaly"].options));
   if (d["rate-spike"].enabled) detectors.push(rateSpikeDetector(d["rate-spike"].options));
@@ -145,8 +155,100 @@ export function buildResponseActions(config: HackerpotConfig): ResponseAction[] 
   return actions;
 }
 
+/** Compiles one configured rule. Patterns are compiled here; the file keeps their source text. */
+function toRule(configured: PolicyRuleConfig): Rule {
+  const m = configured.match;
+  const paths: Array<string | RegExp> = [
+    ...(m.pathPrefix ?? []),
+    ...(m.pathPattern ?? []).map((pattern) =>
+      toRegExp(pattern, (message) => {
+        throw new ConfigError(`[policy.rules] rule "${configured.id}" path_pattern ${message}`);
+      }),
+    ),
+  ];
+  return {
+    id: configured.id,
+    respondWith: configured.respondWith,
+    ...(configured.fallbackAction !== undefined ? { fallbackAction: configured.fallbackAction } : {}),
+    ...(configured.reason !== undefined ? { reason: configured.reason } : {}),
+    match: {
+      ...(m.detector !== undefined ? { detector: m.detector } : {}),
+      ...(m.certain !== undefined ? { certain: m.certain } : {}),
+      ...(m.minScore !== undefined ? { minScore: m.minScore } : {}),
+      ...(m.maxScore !== undefined ? { maxScore: m.maxScore } : {}),
+      ...(m.minConfidence !== undefined ? { minConfidence: m.minConfidence } : {}),
+      ...(m.maxConfidence !== undefined ? { maxConfidence: m.maxConfidence } : {}),
+      ...(m.minTotalScore !== undefined ? { minTotalScore: m.minTotalScore } : {}),
+      ...(m.maxTotalScore !== undefined ? { maxTotalScore: m.maxTotalScore } : {}),
+      ...(paths.length > 0 ? { path: paths } : {}),
+      ...(m.method !== undefined ? { method: m.method } : {}),
+      ...(m.ip !== undefined ? { ip: m.ip } : {}),
+    },
+  };
+}
+
+/** A `/pattern/flags` literal compiles to a regex; anything else matches as plain text. */
+const ACTOR_REGEX_LITERAL = /^\/(.*)\/([a-z]*)$/s;
+
+function patternOrText(value: string | undefined, name: string, key: string): string | RegExp | undefined {
+  if (value === undefined || !ACTOR_REGEX_LITERAL.test(value)) return value;
+  return toRegExp(value, (message) => {
+    throw new ConfigError(`[[actors]] "${name}" ${key} ${message}`);
+  });
+}
+
+function toActorLabel(configured: ActorLabelConfig): ActorLabel {
+  const org = patternOrText(configured.org, configured.name, "org");
+  const userAgent = patternOrText(configured.userAgent, configured.name, "user_agent");
+  const hostname = patternOrText(configured.hostname, configured.name, "hostname");
+  return {
+    name: configured.name,
+    ...(configured.note !== undefined ? { note: configured.note } : {}),
+    ...(configured.hideFromFeed !== undefined ? { hideFromFeed: configured.hideFromFeed } : {}),
+    match: {
+      ...(configured.ip !== undefined ? { ip: configured.ip } : {}),
+      ...(configured.asn !== undefined ? { asn: configured.asn } : {}),
+      ...(org !== undefined ? { org } : {}),
+      ...(userAgent !== undefined ? { userAgent } : {}),
+      ...(hostname !== undefined ? { hostname } : {}),
+    },
+  };
+}
+
+/**
+ * Names for known sources, or undefined when none are configured.
+ *
+ * A resolver is attached only when some label matches on a hostname, so a configuration that
+ * names nobody by DNS never resolves anything. Even then it is never on the request path —
+ * see `ActorLabels.labelFor`.
+ */
+export function buildActorLabels(config: HackerpotConfig, onError?: (error: unknown) => void): ActorLabels | undefined {
+  if (config.actors.length === 0) return undefined;
+  const needsDns = config.actors.some((actor) => actor.hostname !== undefined);
+  return new ActorLabels({
+    labels: config.actors.map(toActorLabel),
+    ...(needsDns ? { resolver: cachingResolver(nodeDnsResolver()) } : {}),
+    ...(onError !== undefined ? { onError } : {}),
+  });
+}
+
+/** The marker `[markers]` describes, or undefined when it is off. */
+export function buildMarkerCookie(config: HackerpotConfig): MarkerCookie | undefined {
+  const m = config.markers;
+  if (!m.enabled) return undefined;
+  return new MarkerCookie({ secret: m.secret, name: m.name, maxAgeSeconds: m.maxAgeSeconds, secure: m.secure, sameSite: m.sameSite });
+}
+
 export function buildPolicy(config: HackerpotConfig): ResponsePolicy {
-  return defaultResponsePolicy(config.policy.blockThreshold, config.policy.tarpitThreshold);
+  const ladder = ladderPolicy(config.policy.blockThreshold, config.policy.tarpitThreshold);
+  const own = config.policy.rules.map(toRule);
+  // The operator's own rules come first, and a rule sharing an id with one of the preset's
+  // replaces it rather than colliding with it: a preset is a starting point you can override
+  // one rule at a time. Anything neither covers falls through to the shipped ladder.
+  const ownIds = new Set(own.map((rule) => rule.id));
+  const fromPreset = config.policy.preset ? PRESETS[config.policy.preset]().filter((rule) => !ownIds.has(rule.id)) : [];
+  const rules = [...own, ...fromPreset];
+  return rules.length === 0 ? ladder : rulePolicy(rules, { fallback: ladder });
 }
 
 export interface BuiltStore {
@@ -491,6 +593,8 @@ export function createSyslogSink(config: HackerpotConfig, onError?: (error: Erro
     minScore: settings.minScore,
     maxBytes: settings.maxBytes,
     includeBody: settings.includeBody,
+    redact: settings.redact,
+    maskIp: settings.maskIp,
   };
   if (onError) options.onError = onError;
   return new SyslogSink(options);
@@ -507,6 +611,10 @@ export function createManagementServer(
   onError?: (error: Error) => void,
   metrics?: () => Record<string, number> | Promise<Record<string, number>>,
   detectorFailures?: () => Map<string, number> | Record<string, number>,
+  /** Fan-out to share, so one publish feeds the live feed, the counters and every other sink. */
+  broker?: IncidentBroker,
+  /** What the engine counts that no incident carries: exemptions and evaluation time. */
+  engineCounters?: () => EngineCounters,
 ): ManagementServer | undefined {
   const settings = config.management;
   if (!settings.enabled) return undefined;
@@ -522,6 +630,8 @@ export function createManagementServer(
   if (onError) options.onError = onError;
   if (metrics) options.metrics = metrics;
   if (detectorFailures) options.detectorFailures = detectorFailures;
+  if (broker) options.broker = broker;
+  if (engineCounters) options.engineCounters = engineCounters;
   return new ManagementServer(options);
 }
 
@@ -574,6 +684,12 @@ export function buildHoneypotConfig(
   };
   if (Object.keys(config.serviceTokens.tokens).length > 0) honeypot.serviceTokens = { header: config.serviceTokens.header, tokens: config.serviceTokens.tokens };
   if (config.audit.enabled) honeypot.audit = buildAudit(config);
+  // Names for known sources. Only ever additive: a label changes what an incident is called,
+  // never whether it is one.
+  const labels = buildActorLabels(config);
+  if (labels) honeypot.labels = labels;
+  const markers = buildMarkerCookie(config);
+  if (markers) honeypot.markers = markers;
   if (onHit) honeypot.onHit = onHit;
   const result: BuiltEngineConfig = { ...built, config: honeypot, blocklistDescribe };
   if (ingestTarget) result.ingestTarget = ingestTarget;

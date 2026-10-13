@@ -20,10 +20,59 @@ const SECRET_FIELD_SHAPE = /pass(word|wd)?|secret|token|api[-_]?key|credential/i
 /** Values shorter than this are not scrubbed out of free text: they would match too much. */
 const MIN_SCRUB_LENGTH = 4;
 
-/** Whether a header should be hidden before an incident leaves the process. */
-export function isSecretHeader(name: string): boolean {
+/** What a sink is allowed to see. Every field errs towards showing less. */
+export interface RedactionOptions {
+  /**
+   * Replace credential headers and secret-named body fields with `[redacted]`. Default true.
+   */
+  credentials?: boolean;
+  /**
+   * Replace the source address with its network (`/24`, `/48`). Default false.
+   *
+   * Worth turning on for a sink somebody else operates — a chat channel, a third-party
+   * aggregator — where an address is personal data in most of the world. The network is
+   * enough to recognise a pattern and correlate repeat offenders, which is what an alert is
+   * for; the exact address matters when you are ready to act on one, and that belongs in your
+   * own store. Off by default because a deployment may be feeding its own automation from
+   * these events, and silently coarsening an address it blocks on would break it.
+   */
+  maskIp?: boolean;
+  /** Header names this deployment knows hold a secret, beyond the built-in list. */
+  secretHeaders?: readonly string[];
+  /** Also hide a header whose *name* reads as a secret. Default true. */
+  guessSecretHeaders?: boolean;
+}
+
+const NO_EXTRA_HEADERS: ReadonlySet<string> = new Set();
+
+/**
+ * Whether a header should be hidden before an incident leaves the process.
+ *
+ * `extra` is what a deployment named, and the shape check catches the secret it keeps in a
+ * header nobody here has heard of. Erring towards hiding is deliberate: a value withheld from
+ * somebody who wanted it gets noticed and asked about, and a credential in a webhook payload
+ * does not.
+ */
+export function isSecretHeader(name: string, extra: ReadonlySet<string> = NO_EXTRA_HEADERS, guess = true): boolean {
   const lower = name.toLowerCase();
-  return CREDENTIAL_HEADERS.includes(lower) || SECRET_HEADER_SHAPE.test(lower);
+  return CREDENTIAL_HEADERS.includes(lower) || extra.has(lower) || (guess && SECRET_HEADER_SHAPE.test(lower));
+}
+
+/**
+ * The address, coarsened to its network: `/24` for IPv4, `/48` for IPv6.
+ *
+ * Enough to see a network, not enough to name a household. One implementation, because the
+ * dashboard and the notification sinks must not disagree about what "masked" means.
+ */
+export function maskIp(ip: string): string {
+  const v4 = /^(?:::ffff:)?(\d+)\.(\d+)\.(\d+)\.\d+$/i.exec(ip);
+  if (v4) return `${v4[1]}.${v4[2]}.${v4[3]}.0/24`;
+  if (ip.includes(":")) {
+    const groups = ip.split("::")[0]!.split(":").filter(Boolean).slice(0, 3);
+    while (groups.length < 3) groups.push("0");
+    return `${groups.join(":")}::/48`;
+  }
+  return ip;
 }
 
 /**
@@ -36,11 +85,14 @@ export function isSecretHeader(name: string): boolean {
  * metadata, because detectors quote what they saw. A body that is neither form-encoded
  * nor valid JSON is sent unchanged. Adapted from bothandlerjs.
  */
-export function redactIncident(incident: Incident): Incident {
+export function redactIncident(incident: Incident, options: RedactionOptions = {}): Incident {
+  const credentials = options.credentials !== false;
+  const extra = new Set((options.secretHeaders ?? []).map((name) => name.toLowerCase()));
+  const guess = options.guessSecretHeaders !== false;
   const removed: string[] = [];
   const headers: Incident["headers"] = {};
   for (const [name, value] of Object.entries(incident.headers)) {
-    if (value === undefined || !isSecretHeader(name)) {
+    if (value === undefined || !credentials || !isSecretHeader(name, extra, guess)) {
       headers[name] = value;
       continue;
     }
@@ -48,11 +100,12 @@ export function redactIncident(incident: Incident): Incident {
     headers[name] = REDACTED;
   }
 
-  const body = incident.body === undefined ? undefined : redactBody(incident.body, removed);
+  const body = incident.body === undefined || !credentials ? incident.body : redactBody(incident.body, removed);
   const detections = removed.length === 0 ? incident.detections : incident.detections.map((detection) => scrubDetection(detection, removed));
 
   const redacted: Incident = { ...incident, headers, detections };
-  if (body !== undefined) redacted.body = scrubText(body, removed);
+  if (body !== undefined) redacted.body = credentials ? scrubText(body, removed) : body;
+  if (options.maskIp === true) redacted.ip = maskIp(incident.ip);
   return redacted;
 }
 
@@ -61,7 +114,11 @@ function redactBody(body: string, removed: string[]): string {
   if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
     try {
       const parsed: unknown = JSON.parse(trimmed);
-      return JSON.stringify(redactJson(parsed, removed, 0));
+      const before = removed.length;
+      const redacted = redactJson(parsed, removed, 0);
+      // Nothing secret in it: the body as it arrived, byte for byte, because it is evidence and a
+      // re-serialised copy is not what the attacker sent.
+      return removed.length === before ? body : JSON.stringify(redacted);
     } catch {
       return body;
     }
@@ -82,7 +139,10 @@ function redactBody(body: string, removed: string[]): string {
 function redactJson(node: unknown, removed: string[], depth: number): unknown {
   if (depth > 32 || node === null || typeof node !== "object") return node;
   if (Array.isArray(node)) return node.map((item) => redactJson(item, removed, depth + 1));
-  const out: Record<string, unknown> = {};
+  // Null-prototype, so a `__proto__` key is copied as a key. On a plain object the assignment
+  // sets the prototype instead and the key vanishes — which erased the payload of every
+  // prototype-pollution probe from the copy an operator reads.
+  const out: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
   for (const [key, value] of Object.entries(node)) {
     if (typeof value === "string" && value !== "" && SECRET_FIELD_SHAPE.test(key)) {
       removed.push(value);
@@ -103,7 +163,7 @@ function decodeFormPart(part: string): string {
 }
 
 function scrubDetection(detection: Detection, removed: readonly string[]): Detection {
-  const scrubbed: Detection = { ...detection, reason: scrubText(detection.reason, removed) };
+  const scrubbed: Detection = { ...detection, summary: scrubText(detection.summary, removed) };
   if (detection.metadata !== undefined) {
     const metadata: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(detection.metadata)) metadata[key] = typeof value === "string" ? scrubText(value, removed) : value;

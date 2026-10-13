@@ -3,8 +3,23 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { hostname } from "node:os";
 import type { Socket } from "node:net";
 import { IpAllowlist } from "../allowlist.js";
-import { hardenHttpServer } from "../http-hardening.js";
-import { redactIncident } from "../management/redact.js";
+import { systemClock, type Clock } from "../internal/clock.js";
+import { TtlLru } from "../internal/lru.js";
+import { hardenHttpServer } from "../internal/http-hardening.js";
+import { maskIp, redactIncident } from "../management/redact.js";
+import type { DashboardControls } from "./types.js";
+import type { RequestFacts } from "../detectors/types.js";
+import { readBody } from "../internal/http.js";
+import { parseRequest } from "../explain.js";
+import { candidatePolicy, parseRules, previewPolicy } from "./preview.js";
+import { FeedCounts } from "./counts.js";
+import { cleanSavedFilter, SavedFilterStore } from "./saved-filters.js";
+
+/** The chips this dashboard draws, and so the ones a filter may be saved with: the response classes. */
+const FILTER_CHIPS: ReadonlySet<string> = new Set(["all", "decoy", "time cost", "block", "protocol capture", "silent 404"]);
+
+// Re-exported where it has always lived, so callers and tests keep their import.
+export { maskIp };
 import type { Incident } from "../management/types.js";
 import { VERSION } from "../version.js";
 import { renderDashboardPage } from "./page.js";
@@ -60,6 +75,11 @@ const LAG_LIMIT_MS = 20_000;
 const LAG_DROP_LIMIT = 5_000;
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "::1", "localhost", "[::1]"]);
 const MOUNTED = "a server of your own";
+const PREVIEW_INCIDENTS = 1000;
+
+/** The only paths that accept a POST, and then only when their control is granted. */
+const CONTROL_PATHS = new Set(["/api/test", "/api/policy/preview", "/api/policy/apply"]);
+
 const UNSAFE_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 /** Most incidents one listing may return. The page asks for its analytics window, never the whole store. */
 const MAX_LIST_LIMIT = 5_000;
@@ -94,18 +114,22 @@ interface Dashboard {
 
 function buildDashboard(sourceLike: DashboardSourceLike, options: DashboardOptions, host: string | undefined): Dashboard {
   const mounted = host === undefined;
+  const clock = options.clock ?? systemClock;
   const source: DashboardSource = toDashboardSource(sourceLike);
   const basePath = normalizeBase(options.basePath ?? "/");
   const auth = validateAuth(options.auth, host ?? MOUNTED);
   const refusal = validateRefusal(options.refusal ?? "unauthorized", auth);
   const allowedHosts = mounted ? resolveMountedHosts(options.allowedHosts) : resolveAllowedHosts(host, options.allowedHosts);
   const allowedClients = validateClients(options.allowedClients);
-  const throttle = createAuthThrottle(options.authThrottle);
+  const throttle = createAuthThrottle(options.authThrottle, options.clock ?? systemClock);
   const sections = resolveSections(options.sections);
+  const controls = resolveControls(options.controls, auth);
   const redaction: Required<DashboardRedaction> = { credentials: options.redact?.credentials !== false, maskIp: options.redact?.maskIp === true };
   const maxClients = Math.max(1, options.maxClients ?? 16);
   const maxEventsPerSecond = Math.max(0, options.maxEventsPerSecond ?? DEFAULT_EVENTS_PER_SECOND);
+  const showHiddenActors = options.showHiddenActors === true;
   const onError = options.onError ?? (() => undefined);
+  const saved = new SavedFilterStore(options.savedFilters?.file, (message) => onError(new Error(message)), FILTER_CHIPS);
 
   const bootstrap: DashboardBootstrap = {
     base: basePath === "/" ? "" : basePath,
@@ -113,6 +137,7 @@ function buildDashboard(sourceLike: DashboardSourceLike, options: DashboardOptio
     instance: options.instance ?? hostname(),
     version: VERSION,
     sections,
+    controls,
     links: (options.links ?? []).map((link) => ({ label: String(link.label), href: String(link.href) })),
     source: source.description,
     redaction,
@@ -135,6 +160,13 @@ function buildDashboard(sourceLike: DashboardSourceLike, options: DashboardOptio
     return shaped;
   };
 
+  // Counted apart from the incidents themselves: the list the page holds is bounded by
+  // retention, by its page size and by what the live feed has dropped, so its length answers
+  // "how many rows are here" and never "how many happened".
+  const counts = new FeedCounts({ clock });
+
+  const anyControl = controls.testRequest || controls.previewPolicy || controls.editPolicy;
+
   const streams = new Set<Stream>();
   let nextId = 0;
   let unsubscribe: (() => void) | undefined;
@@ -147,7 +179,7 @@ function buildDashboard(sourceLike: DashboardSourceLike, options: DashboardOptio
     }
     if (stream.response.write(frame) || stream.lagging) return;
     stream.lagging = true;
-    stream.laggingSince = Date.now();
+    stream.laggingSince = clock.now();
     stream.response.once("drain", () => {
       stream.lagging = false;
       if (stream.dropped === 0) return;
@@ -161,8 +193,17 @@ function buildDashboard(sourceLike: DashboardSourceLike, options: DashboardOptio
   function ensureSubscribed(): void {
     if (unsubscribe !== undefined) return;
     unsubscribe = source.subscribe((incident) => {
+      // Counted before the mute below, because a muted actor still happened: hiding a known
+      // constant source from the pane must not also delete it from the tally somebody reads
+      // to decide whether the pane is quiet.
+      const at = Date.parse(incident.timestamp);
+      counts.record(Number.isNaN(at) ? clock.now() : at);
+      // A labelled actor marked `hideFromFeed` is muted here and only here. It is still
+      // detected, scored, recorded, counted and listed — this is the pane somebody watches,
+      // and a known constant source scrolling through it hides the requests that matter.
+      if (incident.actor?.hidden === true && !showHiddenActors) return;
       const frame = frameFor("incident", shape(incident), ++nextId);
-      const now = Date.now();
+      const now = clock.now();
       for (const stream of streams) {
         if (stream.lagging && (now - stream.laggingSince > LAG_LIMIT_MS || stream.dropped > LAG_DROP_LIMIT)) {
           stream.response.end();
@@ -205,7 +246,7 @@ function buildDashboard(sourceLike: DashboardSourceLike, options: DashboardOptio
       return;
     }
     response.writeHead(200, { ...SECURITY_HEADERS, "content-type": "text/event-stream; charset=utf-8", connection: "keep-alive", "x-accel-buffering": "no" });
-    const stream: Stream = { response, lagging: false, laggingSince: 0, dropped: 0, windowStart: Date.now(), windowCount: 0, skipped: 0 };
+    const stream: Stream = { response, lagging: false, laggingSince: 0, dropped: 0, windowStart: clock.now(), windowCount: 0, skipped: 0 };
     streams.add(stream);
     ensureSubscribed();
     response.write(`retry: 3000\n\n${frameFor("hello", { version: VERSION, source: source.description })}`);
@@ -265,8 +306,106 @@ function buildDashboard(sourceLike: DashboardSourceLike, options: DashboardOptio
       sendText(response, 404, "404 not found\n");
       return;
     }
+    // The controls: each a POST, each refused unless the deployment granted it. Every unsafe
+    // method already required a same-origin request above, so a page on another origin cannot
+    // reach these even while carrying a viewer's credentials.
+    // Saved filters: part of the Incidents screen, so they go with it. Not behind a control: a
+    // saved filter changes what one screen shows and nothing about what happens to any request,
+    // and the unsafe-method check above already keeps other pages out.
+    if (path === "/api/filters") {
+      if (!sections.incidents) return sectionOff(response, "incidents");
+      if (request.method === "GET" || request.method === "HEAD") return sendJson(response, 200, { filters: saved.list() });
+      if (request.method !== "POST") return sendJson(response, 405, { error: "use GET or POST" });
+      let payload: { action?: unknown; name?: unknown } | null;
+      try {
+        payload = JSON.parse((await readBody(request)) ?? "") as typeof payload;
+      } catch {
+        return sendJson(response, 400, { error: "this endpoint takes a JSON object" });
+      }
+      if (payload?.action === "delete") {
+        if (typeof payload.name !== "string") return sendJson(response, 400, { error: "expected a name naming the filter to delete" });
+        saved.delete(payload.name);
+      } else {
+        const entry = cleanSavedFilter(payload, FILTER_CHIPS);
+        if (entry === undefined) return sendJson(response, 400, { error: "expected { name, query, filter }" });
+        saved.save(entry);
+      }
+      return sendJson(response, 200, { filters: saved.list() });
+    }
+
+    if (request.method === "POST" && CONTROL_PATHS.has(path)) {
+      const raw = await readBody(request);
+      let payload: Record<string, unknown>;
+      try {
+        const parsed: unknown = JSON.parse(raw ?? "");
+        if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) throw new Error("not an object");
+        payload = parsed as Record<string, unknown>;
+      } catch {
+        sendJson(response, 400, { error: "this endpoint takes a JSON object" });
+        return;
+      }
+
+      if (path === "/api/test") {
+        if (!controls.testRequest) return controlOff(response, "testRequest");
+        if (source.evaluate === undefined) {
+          sendJson(response, 404, { error: "this dashboard reads recorded incidents from another process, so there is no engine here to try a request against" });
+          return;
+        }
+        let facts: RequestFacts;
+        try {
+          facts = parseRequest(typeof payload["text"] === "string" ? payload["text"] : "");
+        } catch (error) {
+          sendJson(response, 400, { error: (error as Error).message });
+          return;
+        }
+        const tried = await source.evaluate(facts);
+        sendJson(response, 200, {
+          request: { method: facts.method, path: facts.path, ip: facts.ip },
+          detections: tried.detections,
+          shadowDetections: tried.shadowDetections,
+          score: tried.score,
+          confidence: tried.confidence,
+          actionId: tried.actionId,
+          rule: tried.rule,
+          reason: tried.reason,
+          downgradedFrom: tried.downgradedFrom,
+        });
+        return;
+      }
+
+      if (path === "/api/policy/preview" || path === "/api/policy/apply") {
+        const applying = path.endsWith("/apply");
+        if (applying ? !controls.editPolicy : !controls.previewPolicy) return controlOff(response, applying ? "editPolicy" : "previewPolicy");
+        let rules: ReturnType<typeof parseRules>;
+        try {
+          rules = parseRules(payload["rules"]);
+        } catch (error) {
+          sendJson(response, 400, { error: (error as Error).message });
+          return;
+        }
+        if (!applying) {
+          // Replayed over what this dashboard can already see. Reads only: no score moves, no
+          // incident is recorded, and the running policy is untouched until somebody applies it.
+          const incidents = await source.listIncidents(new URLSearchParams({ limit: String(PREVIEW_INCIDENTS) }));
+          sendJson(response, 200, previewPolicy(incidents.map(shape), candidatePolicy(rules)));
+          return;
+        }
+        if (source.applyPolicy === undefined) {
+          sendJson(response, 404, { error: "this dashboard reads recorded incidents from another process, so there is no engine here whose policy could be replaced" });
+          return;
+        }
+        const by = typeof viewer === "string" && viewer !== "" ? viewer : "dashboard";
+        source.applyPolicy(candidatePolicy(rules), by);
+        sendJson(response, 200, { applied: rules.length, by });
+        return;
+      }
+    }
     if (request.method !== "GET" && request.method !== "HEAD") {
-      sendJson(response, 405, { error: "the dashboard is read-only" });
+      sendJson(response, 405, {
+        error: anyControl
+          ? "no endpoint here takes that method"
+          : "this dashboard is read-only: every control that would accept a POST is switched off",
+      });
       return;
     }
 
@@ -289,6 +428,22 @@ function buildDashboard(sourceLike: DashboardSourceLike, options: DashboardOptio
     // Reads. A source that cannot answer (a remote management API that is down) is a 502
     // with the reason, so the page can say what is wrong rather than show an empty store.
     try {
+      if (path === "/api/counts") {
+        // Gated with the incidents listing: a count of incidents is a fact about incidents.
+        if (!sections.incidents && !sections.overview && !sections.statistics) return sectionOff(response, "incidents");
+        return sendJson(response, 200, counts.snapshot());
+      }
+
+      if (path === "/api/notices") {
+        // On the Overview screen, so it follows that section.
+        if (!sections.overview) return sectionOff(response, "overview");
+        if (source.notices === undefined) {
+          sendJson(response, 404, { error: "this dashboard reads recorded incidents from another process, so there is no engine here whose notices it could show" });
+          return;
+        }
+        return sendJson(response, 200, { notices: source.notices() });
+      }
+
       if (path === "/api/incidents") {
         if (!sections.incidents && !sections.overview && !sections.statistics) return sectionOff(response, "incidents");
         const query = new URLSearchParams(url.searchParams);
@@ -462,24 +617,22 @@ function sectionOff(response: ServerResponse, section: string): void {
   sendJson(response, 404, { error: `the ${section} section is switched off on this dashboard` });
 }
 
+/**
+ * A control this deployment did not grant.
+ *
+ * 404 rather than 403: the endpoint does not exist on this dashboard, and saying "forbidden"
+ * would tell a caller there is something here to be let into.
+ */
+function controlOff(response: ServerResponse, control: string): void {
+  sendJson(response, 404, { error: `the ${control} control is switched off on this dashboard` });
+}
+
 function decodeSegment(segment: string): string | undefined {
   try {
     return decodeURIComponent(segment);
   } catch {
     return undefined;
   }
-}
-
-/** `/24` for IPv4, `/48` for IPv6: enough to see a network, not enough to name a household. */
-export function maskIp(ip: string): string {
-  const v4 = /^(?:::ffff:)?(\d+)\.(\d+)\.(\d+)\.\d+$/i.exec(ip);
-  if (v4) return `${v4[1]}.${v4[2]}.${v4[3]}.0/24`;
-  if (ip.includes(":")) {
-    const groups = ip.split("::")[0]!.split(":").filter(Boolean).slice(0, 3);
-    while (groups.length < 3) groups.push("0");
-    return `${groups.join(":")}::/48`;
-  }
-  return ip;
 }
 
 export function normalizeBase(basePath: string): string {
@@ -653,37 +806,59 @@ interface AuthThrottle {
   succeeded(address: string): void;
 }
 
-/** Most addresses remembered; the oldest are forgotten first, so an address pool cannot grow this. */
+/** Most addresses remembered; past it the least recently seen is forgotten, so a pool cannot grow this. */
 const MAX_THROTTLED = 10_000;
 
-function createAuthThrottle(options: DashboardOptions["authThrottle"]): AuthThrottle {
+function createAuthThrottle(options: DashboardOptions["authThrottle"], clock: Clock): AuthThrottle {
   if (options === false) return { check: () => undefined, failed: () => undefined, succeeded: () => undefined };
   const maxAttempts = Math.max(1, options?.maxAttempts ?? 5);
   const lockoutMs = Math.max(100, options?.lockoutMs ?? 1_000);
   const maxLockoutMs = Math.max(lockoutMs, options?.maxLockoutMs ?? 5 * 60_000);
-  const attempts = new Map<string, { failures: number; until: number; seen: number }>();
+  // A record older than the longest lockout says nothing, so the cache's lifetime is the
+  // forgetting rule and the counter below no longer has to implement one.
+  const attempts = new TtlLru<{ failures: number; until: number }>(MAX_THROTTLED, maxLockoutMs * 2, clock);
   return {
     check(address) {
-      const record = attempts.get(address);
-      const now = Date.now();
+      const record = attempts.peek(address);
+      const now = clock.now();
       return record !== undefined && record.until > now ? record.until - now : undefined;
     },
     failed(address) {
-      const now = Date.now();
-      const record = attempts.get(address) ?? { failures: 0, until: 0, seen: now };
-      // A record untouched for longer than the longest lockout starts over.
-      if (now - record.seen > maxLockoutMs * 2) record.failures = 0;
+      const now = clock.now();
+      const record = attempts.get(address) ?? { failures: 0, until: 0 };
       record.failures += 1;
-      record.seen = now;
       if (record.failures >= maxAttempts) record.until = now + Math.min(maxLockoutMs, lockoutMs * 2 ** (record.failures - maxAttempts));
-      attempts.delete(address);
       attempts.set(address, record);
-      if (attempts.size > MAX_THROTTLED) attempts.delete(attempts.keys().next().value!);
     },
     succeeded(address) {
       attempts.delete(address);
     },
   };
+}
+
+/**
+ * What this dashboard's viewers may do.
+ *
+ * The inverse default of `resolveSections`, and deliberately so: a section reveals something
+ * the dashboard already holds, so it is on unless withheld; a control reaches back into the
+ * engine, so it is off unless granted. Silence has to mean no for one and yes for the other.
+ */
+function resolveControls(controls: DashboardControls | undefined, auth: NonNullable<DashboardOptions["auth"]>): Required<DashboardControls> {
+  const on = (value: boolean | undefined): boolean => value === true;
+  const resolved: Required<DashboardControls> = {
+    testRequest: on(controls?.testRequest),
+    previewPolicy: on(controls?.previewPolicy),
+    editPolicy: on(controls?.editPolicy),
+  };
+  // Reading captured data behind no authentication is a decision a deployment can make on
+  // loopback. Deciding what the honeypot does to every later request is a larger power, and
+  // "anything that can open this page" is the wrong set of people to hand it to.
+  if (resolved.editPolicy && auth === false) {
+    throw new DashboardConfigError(
+      "`controls.editPolicy` needs authentication: it replaces the policy the honeypot runs, so it cannot be granted to whoever can reach an unauthenticated page. Configure `auth`, or leave `editPolicy` off and edit the policy in the configuration file.",
+    );
+  }
+  return resolved;
 }
 
 function resolveSections(sections: DashboardSections | undefined): Required<DashboardSections> {

@@ -78,8 +78,8 @@ export function honeytokenDetector(options: HoneytokenOptions): Detector {
         const found = haystacks.find((h) => h.value.includes(token.value));
         if (!found) continue;
         const detection: Detection = {
-          detectorId: "honeytoken",
-          reason: `Honeytoken "${token.label}" replayed in ${found.location}`,
+          detector: "honeytoken",
+          summary: `Honeytoken "${token.label}" replayed in ${found.location}`,
           score,
           // No legitimate client has ever been given this value.
           certain: true,

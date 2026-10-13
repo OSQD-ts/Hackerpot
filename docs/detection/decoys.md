@@ -16,7 +16,7 @@ often a convincing fake, so the probe appears to have worked and the attacker ke
 ```ts
 interface DecoyPath {
   id: string;
-  description: string;                 // becomes the detection's reason
+  description: string;                 // becomes the detection's summary
   path: string | RegExp;               // an exact path, or a pattern
   match?: "exact" | "prefix";          // for a string path; default "exact"
   method?: string;                     // only this method

@@ -45,7 +45,7 @@ the username keystroke by keystroke and **withhold the password**, like a real l
 ## Nothing executes
 
 The fake shell is a scripted stream shared with the [SSH honeypot](ssh.md#interactive-mode)
-(`fakeShellOutput` in `src/shell.ts`). The same botnets run the same recon down either pipe,
+(`fakeShellOutput` in `src/protocols/shell.ts`). The same botnets run the same recon down either pipe,
 so one implementation means one place to make the illusion better. It answers the BusyBox
 applet probe (`/bin/busybox <APPLET>` → `applet not found`) that IoT droppers use to
 fingerprint a live device, and it fetches nothing for a `wget` or `curl`: the URL has already
@@ -63,7 +63,7 @@ const telnet = new TelnetHoneypot({
   hostname: "srv01",
   interactive: true,
   store,
-  onHit: (hit) => console.warn("[telnet]", hit.detections[0]?.detectorId, hit.body),
+  onHit: (hit) => console.warn("[telnet]", hit.detections[0]?.detector, hit.body),
 });
 await telnet.listen();
 ```
@@ -103,7 +103,7 @@ Captured commands are attacker-controlled text landing in your logs, store and w
 is capped, and the text log escapes control characters so a captured command cannot forge log
 lines.
 
-To try it: `npm run demo` starts it on `:2323`, and `npm run simulate:telnet` replays a
+To try it: `npm run demo` starts it on `:2323`, and `npm run simulate telnet` replays a
 Mirai-style default-credential sweep followed by the BusyBox fingerprint and a payload fetch.
 
 ## Related
