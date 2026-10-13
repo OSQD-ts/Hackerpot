@@ -15,7 +15,8 @@ data
 # Not COPYed into any stage — excluded so they stay out of the build context too.
 tests
 scripts
-# Except the one script the build runs: it bundles the dashboard client.
+# Except the scripts the build runs: one bundles the dashboard client, one trims the sourcemaps.
 !scripts/build-client.mjs
+!scripts/strip-sources-content.mjs
 examples
 .github
