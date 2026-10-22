@@ -41,7 +41,7 @@ jobs:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
         with:
-          node-version: 22
+          node-version: 26
           cache: npm
       - run: npm ci
       - name: Lint
@@ -73,7 +73,7 @@ jobs:
           fetch-depth: 0
       - uses: actions/setup-node@v5
         with:
-          node-version: 22
+          node-version: 26
           cache: npm
           registry-url: https://registry.npmjs.org
       - run: npm ci
@@ -206,7 +206,7 @@ jobs:
           ref: v${{ needs.publish.outputs.version }}
       - uses: actions/setup-node@v5
         with:
-          node-version: 22
+          node-version: 26
       # A tagged release is not committed back, so its tree can carry an older version.
       - name: Set the version
         run: node scripts/set-version.mjs "${{ needs.publish.outputs.version }}"

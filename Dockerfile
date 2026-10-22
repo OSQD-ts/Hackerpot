@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 
 # --- build stage: compile TypeScript to dist/ -------------------------------
-FROM node:22-alpine AS builder
+FROM node:26.12.1-alpine AS builder
 WORKDIR /app
 
 # Install all deps (including dev) for the build.
@@ -18,7 +18,7 @@ COPY src ./src
 RUN npm run build
 
 # --- runtime stage: production deps + compiled output only ------------------
-FROM node:22-alpine AS runtime
+FROM node:26.12.1-alpine AS runtime
 WORKDIR /app
 ENV NODE_ENV=production \
     PORT=4004 \
