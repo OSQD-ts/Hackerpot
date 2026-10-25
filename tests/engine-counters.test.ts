@@ -47,7 +47,7 @@ describe("exemptions", () => {
     expect(engine.exempt("203.0.113.1", { [DEFAULT_SERVICE_TOKEN_HEADER]: TOKEN })).toBe("service-token");
     expect(engine.exempt("203.0.113.1", {})).toBeUndefined();
 
-    expect(Object.fromEntries(engine.bypassed)).toEqual({ allowlist: 1, "service-token": 1 });
+    expect(Object.fromEntries(engine.bypassed)).toEqual({ allowlist: 1, "service-token": 1, "ignored-path": 0 });
   });
 
   it("leaves the pure predicates pure, because they are asked more than once per request", () => {
@@ -56,8 +56,8 @@ describe("exemptions", () => {
     expect(engine.bypassed.get("allowlist")).toBe(0);
   });
 
-  it("starts both reasons at zero, so a scrape has a series to watch from the first request", () => {
-    expect(Object.fromEntries(new HoneypotEngine({ enricher: null }).bypassed)).toEqual({ allowlist: 0, "service-token": 0 });
+  it("starts every reason at zero, so a scrape has a series to watch from the first request", () => {
+    expect(Object.fromEntries(new HoneypotEngine({ enricher: null }).bypassed)).toEqual({ allowlist: 0, "service-token": 0, "ignored-path": 0 });
   });
 
   it("counts an exemption reached by evaluating directly, but not in a dry run", async () => {

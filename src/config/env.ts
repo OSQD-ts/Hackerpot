@@ -48,6 +48,14 @@ export function applyEnvOverrides(config: HackerpotConfig, env: NodeJS.ProcessEn
 
   const trustProxy = read(env, "TRUST_PROXY");
   if (trustProxy !== undefined) config.server.trustProxy = asBoolean("TRUST_PROXY", trustProxy);
+  const trustedProxies = read(env, "TRUSTED_PROXIES");
+  if (trustedProxies !== undefined) config.server.trustedProxies = asList(trustedProxies);
+  const proxyHops = read(env, "PROXY_HOPS");
+  if (proxyHops !== undefined) config.server.proxyHops = asInteger("PROXY_HOPS", proxyHops);
+  if (!config.server.trustProxy && (trustedProxies !== undefined || proxyHops !== undefined)) {
+    throw new ConfigError(`${trustedProxies !== undefined ? "TRUSTED_PROXIES" : "PROXY_HOPS"} is set but trust_proxy is false, so the forwarded header is never read; set TRUST_PROXY=true or remove it`);
+  }
+  if (config.server.proxyHops !== undefined && config.server.proxyHops < 1) throw new ConfigError("PROXY_HOPS must be at least 1");
 
   const logFormat = read(env, "LOG_FORMAT");
   if (logFormat !== undefined) {

@@ -81,7 +81,13 @@ detector quietly switched off.
 | --- | --- | --- |
 | `host` | `"0.0.0.0"` | |
 | `port` | `4004` | |
-| `trust_proxy` | `false` | take the client address from `X-Forwarded-For`. **Only** behind a proxy you control that overwrites the header; otherwise a client picks its own address, escapes its score, impersonates an allowlisted source and gets victims blocked. See [the client IP](../integration/client-ip.md) |
+| `trust_proxy` | `false` | read the client address from the forwarded header. **Only** behind proxies you control; otherwise a client picks its own address, escapes its score, impersonates an allowlisted source and gets victims blocked. See [the client IP](../integration/client-ip.md) |
+| `trusted_proxies` | — | addresses and CIDRs of your proxies. The header is read only from these peers, walked from the right past them. Recommended. An empty list or an entry that cannot match is a startup error |
+| `proxy_hops` | `1` | without `trusted_proxies`: the Nth address from the right is the client. At least 1 |
+| `forwarded_header` | `"x-forwarded-for"` | the header carrying the chain |
+
+Setting `trusted_proxies`, `proxy_hops` or `forwarded_header` with `trust_proxy = false` is a startup error:
+the header would never be read.
 
 ## `[logging]`
 
@@ -99,6 +105,8 @@ detector quietly switched off.
 | `activity_window_ms` | `60000` | the sliding window the stateful detectors read; must be at least their largest window |
 | `detector_timeout_ms` | `2000` | an async detector past this is skipped for that request and reported; `0` disables |
 | `shadow_detectors` | `[]` | detector ids that run and report but never act; see [shadow mode](../detection/shadow-mode.md) |
+| `ignore_paths` | `[]` | paths the honeypot skips entirely: no detection, no block check, no record. An entry ending in `/` is a prefix (`"/assets/"`), any other is the exact path (`"/healthz"`). Matched on the normalised path. Must start with `/` |
+| `ignore_path_patterns` | `[]` | regular expressions for paths skipped the same way (`"\\.png$"`) |
 | `fingerprint_window_ms` | `3600000` | how long the actor registry remembers a fingerprint's addresses; bounds `repeat-actor` and its memory |
 
 ## `[audit]`

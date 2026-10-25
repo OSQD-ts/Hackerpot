@@ -128,7 +128,8 @@ see the original encoding.
 > and the dashboard still fills up, but every attacker shares one score, `/ioc.txt` exports the proxy's
 > address, and once that score crosses the block threshold the honeypot blocks nginx: a 403 for every
 > diverted request from everyone. Enable it *only* with this proxy in front, and make sure the honeypot
-> is not reachable around it. See [the client IP](client-ip.md).
+> is not reachable around it, or better, list nginx in `trusted_proxies` so the header is only read from
+> it. See [the client IP](client-ip.md).
 
 Two details, both handled in the generated file. nginx rejects `TRACE` and `CONNECT` itself while parsing
 the request line, before any config runs, so `405` is routed to `@hackerpot` beside the marker code;

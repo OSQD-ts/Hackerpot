@@ -45,6 +45,7 @@ import {
   gzipBombAction,
   largePayloadAction,
   notFoundAction,
+  passAction,
   rateLimitAction,
   redirectAction,
   tarpitAction,
@@ -140,6 +141,7 @@ export function buildDetectors(config: HackerpotConfig, shared: SharedDetectorSt
 export function buildResponseActions(config: HackerpotConfig): ResponseAction[] {
   const r = config.responses;
   const actions: ResponseAction[] = [];
+  if (r.pass.enabled) actions.push(passAction());
   if (r["decoy-content"].enabled) actions.push(decoyContentAction());
   if (r["not-found"].enabled) actions.push(notFoundAction());
   if (r.redirect.enabled) actions.push(redirectAction());
@@ -680,7 +682,20 @@ export function buildHoneypotConfig(
     fingerprintWindowMs: config.engine.fingerprintWindowMs,
     detectorTimeoutMs: config.engine.detectorTimeoutMs,
     shadowDetectors: config.engine.shadowDetectors,
-    trustProxy: config.server.trustProxy,
+    proxy: {
+      trustProxy: config.server.trustProxy,
+      ...(config.server.trustedProxies !== undefined ? { trustedProxies: config.server.trustedProxies } : {}),
+      ...(config.server.proxyHops !== undefined ? { hops: config.server.proxyHops } : {}),
+      ...(config.server.forwardedHeader !== undefined ? { header: config.server.forwardedHeader } : {}),
+    },
+    ignorePaths: [
+      ...config.engine.ignorePaths,
+      ...config.engine.ignorePathPatterns.map((pattern) =>
+        toRegExp(pattern, (message) => {
+          throw new ConfigError(`[engine] ignore_path_patterns ${message}`);
+        }),
+      ),
+    ],
   };
   if (Object.keys(config.serviceTokens.tokens).length > 0) honeypot.serviceTokens = { header: config.serviceTokens.header, tokens: config.serviceTokens.tokens };
   if (config.audit.enabled) honeypot.audit = buildAudit(config);

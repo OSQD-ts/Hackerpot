@@ -97,6 +97,48 @@ export interface HitStore {
   query?(query: HitQuery): HoneypotHit[] | Promise<HoneypotHit[]>;
 }
 
+/**
+ * How the client address is recovered from behind a proxy. Adapted from bothandlerjs.
+ *
+ * This is the highest-consequence configuration in the library and the easiest to get
+ * wrong, so it has no convenient default: `trustProxy` is off, and with it off the
+ * socket address is used and `X-Forwarded-For` is ignored entirely.
+ *
+ * The reason is that `X-Forwarded-For` is a *client-supplied header*. Trust it without
+ * knowing which proxies actually sit in front of you, and anyone can write a fake hop
+ * and choose the address the allowlist exempts, the blocklist blocks and the firewall
+ * enforcer acts on — spoof an allowlisted source to skip detection entirely, or get an
+ * arbitrary victim firewalled. The failure is silent. Configure `trustedProxies` if you
+ * can: it is the only variant that does not depend on getting a number right.
+ */
+export interface ProxyConfig {
+  /** Read the forwarded header at all. Default false. */
+  trustProxy?: boolean;
+  /**
+   * Addresses and CIDRs of the proxies you operate. The header is walked from the right,
+   * discarding addresses inside these ranges, and the first address outside them is the
+   * client. Robust against an extra hop appearing, and the recommended setting.
+   *
+   * The connecting peer counts as the first hop and is checked the same way. A request
+   * that arrives from outside these ranges did not come through your proxies, so its
+   * forwarded header is not evidence of anything and the socket address is used instead —
+   * which is what makes this safe on a server reachable both through the load balancer
+   * and directly. An entry that is not an address or CIDR throws at construction.
+   */
+  trustedProxies?: readonly string[];
+  /**
+   * How many proxies sit in front of this process, when you cannot enumerate them. The
+   * Nth address from the right is taken. Default 1. Ignored when `trustedProxies` is set.
+   *
+   * If the chain is shorter than this, the socket address is used instead: a short chain
+   * means the request did not come through the expected topology, and every entry in it
+   * is then client-controlled. Prefer `trustedProxies`, which does not depend on a count.
+   */
+  hops?: number;
+  /** Header carrying the chain. Default `"x-forwarded-for"`. */
+  header?: string;
+}
+
 export interface HoneypotConfig {
   /** Detectors to run, in order. Defaults to the full built-in set. */
   detectors?: Detector[];
@@ -134,8 +176,24 @@ export interface HoneypotConfig {
    * `null` to disable enrichment entirely.
    */
   enricher?: IpEnricher | null;
-  /** Resolve client IP from X-Forwarded-For when behind a proxy/load balancer. Default false. */
+  /**
+   * Shorthand for `proxy: { trustProxy }`. Default false. Kept for configurations written before
+   * `proxy` existed; when both are given, `proxy` wins. See `ProxyConfig` before turning it on.
+   */
   trustProxy?: boolean;
+  /** How the client address is recovered from behind a proxy. See `ProxyConfig`. */
+  proxy?: ProxyConfig;
+  /**
+   * Paths the honeypot skips entirely: no detection, no block check, no record, no count.
+   * For health checks, your own polling endpoints and static assets — anything a real
+   * client requests so often that watching it only costs time. Adapted from bothandlerjs,
+   * with the same matching: a string ending in `/` is a prefix (`"/assets/"`), any other
+   * string is the exact path (`"/healthz"`), a RegExp is tested as written. Matched against
+   * the normalised path (decoded, dot-segments resolved), so `/assets/../.env` is not
+   * under `/assets/`. A string that does not start with `/` can never match a path, so it
+   * throws at construction rather than exempting nothing.
+   */
+  ignorePaths?: readonly (string | RegExp)[];
   /**
    * IPs and CIDR ranges (IPv4/IPv6) that are exempt from all detection — known-good
    * sources like uptime monitors, health checkers, and office/VPC ranges. They never

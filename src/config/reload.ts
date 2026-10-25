@@ -23,6 +23,7 @@ const RESTART_REQUIRED: Array<{ key: string; select: (c: HackerpotConfig) => unk
   { key: "engine.activity_window_ms", select: (c) => c.engine.activityWindowMs, why: "the sliding windows hold live per-IP history" },
   { key: "engine.fingerprint_window_ms", select: (c) => c.engine.fingerprintWindowMs, why: "the actor registry holds live fingerprint→IP history" },
   { key: "engine.detector_timeout_ms", select: (c) => c.engine.detectorTimeoutMs, why: "the engine reads it once when it is built" },
+  { key: "engine.ignore_paths", select: (c) => [c.engine.ignorePaths, c.engine.ignorePathPatterns], why: "the engine reads it once when it is built" },
   { key: "port-scan", select: (c) => c.portScan, why: "the sentinel ports are already bound" },
   { key: "smtp", select: (c) => c.smtp, why: "the SMTP listener is already bound" },
   { key: "ssh", select: (c) => c.ssh, why: "the SSH listener is already bound" },

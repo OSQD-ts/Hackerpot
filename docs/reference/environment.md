@@ -22,6 +22,8 @@ exactly as a bad key in the file would be.
 | `PORT` | `[server] port` | 0–65535 |
 | `HOST` | `[server] host` | |
 | `TRUST_PROXY` | `[server] trust_proxy` | read [the client IP](../integration/client-ip.md) first |
+| `TRUSTED_PROXIES` | `[server] trusted_proxies` | comma-separated addresses and CIDRs; requires `TRUST_PROXY=true` |
+| `PROXY_HOPS` | `[server] proxy_hops` | at least 1; requires `TRUST_PROXY=true` |
 | `LOG_FORMAT` | `[logging] format` | `json` or `text` |
 
 ## Stores and detection

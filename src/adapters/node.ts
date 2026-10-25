@@ -3,6 +3,7 @@ import type { EvaluateOptions, HoneypotEngine } from "../core.js";
 import type { RequestFacts } from "../detectors/types.js";
 import { mayHaveBody, parseQuery, pathOf, readBody } from "../internal/http.js";
 import type { ResponseContext } from "../actions/types.js";
+import { PASS_ACTION } from "../actions/pass.js";
 
 export type NextFn = (err?: unknown) => void;
 export type HoneypotMiddleware = (req: IncomingMessage, res: ServerResponse, next: NextFn) => Promise<void>;
@@ -126,6 +127,14 @@ async function handle(
   const method = req.method ?? "GET";
   const url = req.url ?? "/";
   const path = pathOf(url);
+
+  // `ignorePaths` first, before anything that costs a lookup: a health check polled every
+  // second should cost the honeypot nothing at all.
+  if (engine.ignores(path)) {
+    next();
+    return;
+  }
+
   const ip = engine.resolveIp(req.socket.remoteAddress, req.headers);
 
   // Allowlisted known-good sources bypass everything, including the block check. So does a
@@ -151,7 +160,12 @@ async function handle(
   const activityStatus = countOnlyMissedPaths ? "passed" : "seen";
   let result = await engine.evaluate(baseFacts, bodyPhase ? { recordHit: false, activityStatus, ...guard } : { activityStatus, ...guard });
 
-  if (bodyPhase && result.detections.length > 0) {
+  if (bodyPhase && result.detections.length > 0 && result.actionId === PASS_ACTION) {
+    // Flagged, but the policy hands it to the application. Its body is the application's,
+    // so it is not read: the deferred first pass is committed as it stands. The cost is
+    // that body-inspecting detectors never see a request the policy passes on its headers.
+    result = await engine.evaluate(baseFacts, { trackActivity: false, ...guard });
+  } else if (bodyPhase && result.detections.length > 0) {
     // Something fired, so this request is ours to handle — reading the body can no
     // longer disturb a downstream route. Re-evaluate with it, and commit exactly once:
     // the activity window already counted this request on the first pass.
@@ -166,10 +180,13 @@ async function handle(
     result = await engine.evaluate(facts, { trackActivity: false, ...guard });
   }
 
-  if (result.detections.length === 0) {
+  // Nothing fired, or the policy passed it: the application answers. A passed request was
+  // recorded like any other incident, but it gets no marker and is reported as the
+  // application answered it, never as a miss the honeypot served.
+  if (result.detections.length === 0 || result.actionId === PASS_ACTION) {
     // A deferred first pass reports nothing, and with no live detection no second pass
     // follows to report shadowed findings, so they are reported here.
-    if (bodyPhase && result.shadowDetections.length > 0) engine.reportShadow({ ip, method, path: result.path }, result.shadowDetections, false);
+    if (bodyPhase && result.detections.length === 0 && result.shadowDetections.length > 0) engine.reportShadow({ ip, method, path: result.path }, result.shadowDetections, false);
     // Registered before next(), because the app may answer synchronously.
     const { tracker, path: tracked } = result;
     res.once("finish", () => {
@@ -263,7 +280,7 @@ export function trapFormGuard(engine: HoneypotEngine, options: Pick<MiddlewareOp
       const url = req.url ?? "/";
       const ip = engine.resolveIp(req.socket.remoteAddress, req.headers);
       // The pure predicates, not `exempt()`: the middleware in front already counted this request.
-      if (engine.isAllowlisted(ip) || engine.serviceTokenFor(req.headers) !== undefined) {
+      if (engine.isIgnoredPath(pathOf(url)) || engine.isAllowlisted(ip) || engine.serviceTokenFor(req.headers) !== undefined) {
         continued = true;
         next();
         return;
@@ -287,6 +304,11 @@ export function trapFormGuard(engine: HoneypotEngine, options: Pick<MiddlewareOp
         return;
       }
       const committed = await engine.evaluate(facts, { trackActivity: false, audit: false, ...guard });
+      if (committed.actionId === PASS_ACTION) {
+        continued = true;
+        next();
+        return;
+      }
       await dispatch(engine, res, committed, ip, committed.path);
     } catch (err) {
       engine.reportError(err, { source: "trap-form-guard" });

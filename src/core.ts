@@ -20,6 +20,8 @@ import { confidenceOf } from "./evidence.js";
 import { DURATION_BUCKETS_MS, Histogram } from "./internal/histogram.js";
 import type { HistogramSnapshot } from "./internal/histogram.js";
 import { MAX_RAW_PATH_CHARS, boundedQuery, normalizePath } from "./internal/http.js";
+import { normalizeAddress, stripPort } from "./internal/ip.js";
+import { pathMatches, statelessPattern } from "./internal/pattern.js";
 import { withDeadline } from "./internal/async.js";
 import { systemClock, type Clock } from "./internal/clock.js";
 import { Emitter } from "./internal/emitter.js";
@@ -28,7 +30,7 @@ import { ActivityRegistry, FingerprintRegistry, IpTracker } from "./state.js";
 import { MemoryStore } from "./stores/index.js";
 import { ServiceTokens, type ServiceTokenOptions } from "./service-tokens.js";
 import type { TrafficAudit } from "./audit.js";
-import type { HitStore, HoneypotConfig, HoneypotHit, ShadowEvent } from "./types.js";
+import type { HitStore, HoneypotConfig, HoneypotHit, ProxyConfig, ShadowEvent } from "./types.js";
 
 /**
  * Which of `evaluate()`'s once-per-request side effects to perform.
@@ -138,7 +140,7 @@ function combinedScore(detections: Detection[]): number {
 }
 
 /** Why a request was exempted from detection. */
-export type BypassReason = "allowlist" | "service-token";
+export type BypassReason = "allowlist" | "service-token" | "ignored-path";
 
 /** Who made a runtime change, carried into the event and the notice it raises. */
 export interface ChangeContext {
@@ -207,7 +209,12 @@ export class HoneypotEngine {
   private readonly enricher: IpEnricher | undefined;
   private readonly onHit: ((hit: HoneypotHit) => void | Promise<void>) | undefined;
   private readonly onError: ((error: unknown, context: { source: string }) => void) | undefined;
-  private readonly trustProxy: boolean;
+  /** The proxy settings, resolved and validated once. See `ProxyConfig` and `resolveIp`. */
+  private readonly proxy: ResolvedProxy;
+  /** `ignorePaths` strings without a trailing slash: exact paths, looked up in one step. */
+  private readonly ignoreExact: Set<string>;
+  /** `ignorePaths` prefixes (strings ending in `/`) and regexes, tested in order. */
+  private readonly ignorePatterns: readonly (string | RegExp)[];
   private readonly detectorTimeoutMs: number;
   private readonly onShadow: ((event: ShadowEvent) => void) | undefined;
   /** Accepted service tokens. Replaced by `reconfigure`. See `HoneypotConfig.serviceTokens`. */
@@ -243,7 +250,7 @@ export class HoneypotEngine {
    * Requests exempted from detection, by reason. Both reasons start at zero, so a scrape has a
    * series for each from the first request rather than only after the first exemption.
    */
-  readonly bypassed = new Map<string, number>([["allowlist", 0], ["service-token", 0]]);
+  readonly bypassed = new Map<string, number>([["allowlist", 0], ["service-token", 0], ["ignored-path", 0]]);
   /**
    * Time spent evaluating a request. Measured with a monotonic high-resolution timer rather than
    * `clock`: that clock models wall time for the activity windows at millisecond resolution,
@@ -279,7 +286,15 @@ export class HoneypotEngine {
     this.enricher = config.enricher === null ? undefined : config.enricher ?? defaultIpEnricher();
     this.onHit = config.onHit;
     this.onError = config.onError;
-    this.trustProxy = config.trustProxy ?? false;
+    this.proxy = resolveProxy(config.proxy ?? (config.trustProxy !== undefined ? { trustProxy: config.trustProxy } : {}));
+    const ignorePaths = (config.ignorePaths ?? []).map(statelessPattern);
+    for (const entry of ignorePaths) {
+      if (typeof entry === "string" && !entry.startsWith("/")) {
+        throw new Error(`ignorePaths entry "${entry}" does not start with "/", so it can never match a path and would exempt nothing`);
+      }
+    }
+    this.ignoreExact = new Set(ignorePaths.filter((entry): entry is string => typeof entry === "string" && !entry.endsWith("/")));
+    this.ignorePatterns = ignorePaths.filter((entry) => typeof entry !== "string" || entry.endsWith("/"));
     this.detectorTimeoutMs = config.detectorTimeoutMs ?? 2000;
     this.shadowed = new Set(config.shadowDetectors ?? []);
     this.onShadow = config.onShadow;
@@ -425,30 +440,76 @@ export class HoneypotEngine {
   }
 
   /**
-   * Resolves the client IP, honoring `X-Forwarded-For` only when `trustProxy` is on.
+   * Resolves the client IP. Adapted from bothandlerjs (`resolveClientIp`); see `ProxyConfig`.
    *
-   * The forwarded value is **validated as a real IP** before it is trusted. Without
-   * that check any header value at all became this request's "IP", and that string is
-   * what the allowlist, the blocklist, the per-IP registry, the store, and the firewall
-   * enforcer all key on — so an attacker could mint unbounded distinct "IPs" (memory
-   * growth in every keyed map) or hand us a non-address like `unknown` that collides
-   * every source into one bucket. `net.isIP` is the same rail the firewall enforcer
-   * already applies; applying it here means no downstream consumer ever sees a non-IP.
+   * With `trustProxy` off (the default) this is the socket address and the forwarded header
+   * is never read. With it on, the header is believed only on behalf of a peer that put it
+   * there: with `trustedProxies`, the connecting peer must itself be one of them and the
+   * chain is walked from the right past them; without, the `hops`-th address from the right
+   * is taken, and a chain shorter than that falls back to the socket address.
    *
-   * ⚠️ This still takes the LEFTMOST entry, which is client-supplied: a proxy that
-   * *appends* rather than replaces leaves it attacker-controlled. Enable `trustProxy`
-   * only behind a proxy that overwrites the header.
+   * Every entry is validated as a real IP before it can be chosen. That string is what the
+   * allowlist, the blocklist, the per-IP registry, the store and the firewall enforcer all
+   * key on, so a non-address would let an attacker mint unbounded distinct "IPs" or collide
+   * every source into one bucket. An earlier version took the LEFTMOST entry, which the
+   * client writes; the rightmost entries are the ones your own proxies append.
    */
   resolveIp(remoteAddress: string | undefined, headers: IncomingHttpHeaders): string {
-    if (this.trustProxy) {
-      const forwarded = headers["x-forwarded-for"];
-      const value = Array.isArray(forwarded) ? forwarded[0] : forwarded;
-      const first = value?.split(",")[0]?.trim();
-      // A bracketed IPv6 literal ("[::1]") is still an address; strip before validating.
-      const candidate = first && first.startsWith("[") && first.endsWith("]") ? first.slice(1, -1) : first;
-      if (candidate && net.isIP(candidate) !== 0) return candidate;
+    const direct = remoteAddress === undefined ? "unknown" : canonicalAddress(remoteAddress) ?? remoteAddress;
+    const proxy = this.proxy;
+    if (!proxy.trustProxy) return direct;
+
+    const raw = headers[proxy.header];
+    const header = Array.isArray(raw) ? raw.join(",") : raw;
+    if (header === undefined) return direct;
+
+    // Bounded: the chain is client-supplied and would otherwise be an unbounded split.
+    const chain: string[] = [];
+    for (const entry of header.slice(0, 2048).split(",")) {
+      const address = canonicalAddress(entry);
+      if (address !== undefined) chain.push(address);
     }
-    return remoteAddress ?? "unknown";
+    if (chain.length === 0) return direct;
+
+    if (proxy.trustedProxies) {
+      // The peer we are actually talking to is the first hop, and it is checked like any
+      // other. Without this a request that reached this server WITHOUT passing through the
+      // configured proxies — a leaked origin address, a port reachable inside the network —
+      // is believed when it claims to come from somewhere else.
+      if (remoteAddress !== undefined && !proxy.trustedProxies.allows(direct)) return direct;
+      // Walk right to left past our own infrastructure. The first address that is not ours
+      // is the closest one we did not put there — the furthest we can trust.
+      for (let i = chain.length - 1; i >= 0; i--) {
+        const candidate = chain[i]!;
+        if (!proxy.trustedProxies.allows(candidate)) return candidate;
+      }
+      // Everything in the chain is our own proxies; the socket address is the truth.
+      return direct;
+    }
+
+    // A chain shorter than the number of proxies we expect did not traverse the topology
+    // this server was configured for, and every entry in it is client-controlled.
+    const index = chain.length - proxy.hops;
+    if (index < 0) return direct;
+    return chain[index] ?? direct;
+  }
+
+  /**
+   * Whether a path is one of `ignorePaths` — counted, like `exempt`. The front ends ask this
+   * first, before the allowlist and the block check: an ignored path costs nothing, which is
+   * the point of ignoring a health check. Matched on the normalised path.
+   */
+  ignores(path: string): boolean {
+    const ignored = this.isIgnoredPath(path);
+    if (ignored) this.countBypass("ignored-path");
+    return ignored;
+  }
+
+  /** Whether a path is one of `ignorePaths`, uncounted — for a second look at the same request. */
+  isIgnoredPath(path: string): boolean {
+    if (this.ignoreExact.size === 0 && this.ignorePatterns.length === 0) return false;
+    const normalised = normalizePath(path);
+    return this.ignoreExact.has(normalised) || pathMatches(this.ignorePatterns, normalised);
   }
 
   trackerFor(ip: string): IpTracker {
@@ -740,4 +801,42 @@ export class HoneypotEngine {
   async scoreFor(ip: string): Promise<number> {
     return this.store.scoreFor(ip);
   }
+}
+
+/** `ProxyConfig` with its defaults applied and its ranges compiled. */
+interface ResolvedProxy {
+  trustProxy: boolean;
+  trustedProxies: IpAllowlist | undefined;
+  hops: number;
+  header: string;
+}
+
+/**
+ * Applies defaults and validates. Adapted from bothandlerjs. Throws where bothandlerjs throws
+ * (an entry that is not an address or CIDR) and also on a hop count that is not a positive
+ * integer and an empty header name: each would leave the forwarded header read wrongly or not
+ * at all while the configuration looked right.
+ */
+function resolveProxy(config: ProxyConfig): ResolvedProxy {
+  let trustedProxies: IpAllowlist | undefined;
+  if (config.trustedProxies !== undefined) {
+    trustedProxies = new IpAllowlist([...config.trustedProxies]);
+    if (trustedProxies.invalid.length > 0) {
+      throw new Error(`proxy.trustedProxies contains entries that are not valid addresses or CIDRs: ${trustedProxies.invalid.join(", ")}`);
+    }
+    if (trustedProxies.size === 0) {
+      throw new Error("proxy.trustedProxies is empty, so no peer could ever be trusted and the forwarded header would never be read; leave it unset or list your proxies");
+    }
+  }
+  const hops = config.hops ?? 1;
+  if (!Number.isInteger(hops) || hops < 1) throw new Error(`proxy.hops must be a positive integer, got ${String(config.hops)}`);
+  const header = (config.header ?? "x-forwarded-for").trim().toLowerCase();
+  if (header === "") throw new Error("proxy.header is empty, so the forwarded header could never be found");
+  return { trustProxy: config.trustProxy === true, trustedProxies, hops, header };
+}
+
+/** One canonical spelling of an address (port, brackets, IPv4-mapped prefix removed), or undefined. */
+function canonicalAddress(value: string): string | undefined {
+  const address = normalizeAddress(stripPort(value));
+  return net.isIP(address) !== 0 ? address : undefined;
 }

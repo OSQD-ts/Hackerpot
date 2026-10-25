@@ -33,7 +33,7 @@ detection behaves, which is exactly what someone tuning a scanner would like to 
 | `hackerpot_proven_total` | counter | incidents resting on at least one detection that is [proof](../concepts/the-guard.md) |
 | `hackerpot_shadow_firings_total{detector}` | counter | findings from [shadowed](../detection/shadow-mode.md) detectors — present only when something is shadowed, and counted apart from `incidents_by_detector` because a shadowed finding decided nothing |
 | `hackerpot_score` | histogram | the address's cumulative score when each incident was recorded, bucketed at 5, 10, 15, 20, 30, 40, 60 and 100 — around the tarpit and block lines, where "how close does traffic run to a block?" is answered |
-| `hackerpot_bypassed_total{reason}` | counter | requests exempted from detection — `allowlist` or `service-token` — counted once, at the front end that decided it. Both reasons are present from the first scrape |
+| `hackerpot_bypassed_total{reason}` | counter | requests exempted from detection — `allowlist`, `service-token` or `ignored-path` (`ignorePaths`) — counted once, at the front end that decided it. Every reason is present from the first scrape |
 | `hackerpot_evaluation_duration_ms` | histogram | time spent evaluating a request, per evaluation (a request whose body is inspected is evaluated twice), bucketed at bothandlerjs's own bounds from 0.05 to 100 ms |
 | `hackerpot_stream_dropped_total` | counter | live-feed incidents dropped for viewers that stopped reading |
 | `hackerpot_active_blocks` | gauge | standalone: current blocklist size |

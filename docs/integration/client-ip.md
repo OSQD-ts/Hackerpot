@@ -1,6 +1,6 @@
 # The client IP
 
-`trust_proxy` and `X-Forwarded-For`: the highest-consequence setting, and the easiest to get wrong.
+`trust_proxy`, `trusted_proxies` and `X-Forwarded-For`: the highest-consequence setting, and the easiest to get wrong.
 
 ← [Documentation](../index.md) · [Integration](index.md)
 
@@ -23,17 +23,25 @@ visitor shares one. Neither failure errors, and neither logs.
 
 ```toml
 [server]
-trust_proxy = false      # the default
+trust_proxy = false                         # the default
+# trust_proxy = true
+# trusted_proxies = ["10.0.0.0/8"]          # the proxies you run: recommended
+# proxy_hops = 1                            # or: how many there are, when you cannot list them
+# forwarded_header = "x-forwarded-for"
 ```
 
 ```ts
-new HoneypotEngine({ trustProxy: false });
+new HoneypotEngine({ proxy: { trustProxy: true, trustedProxies: ["10.0.0.0/8"] } });
+// `trustProxy: true` on its own is still accepted, as `proxy: { trustProxy: true }`.
 ```
 
-| `trust_proxy` | The address is |
+| Setting | The address is |
 | --- | --- |
-| `false` (default) | the socket's remote address. `X-Forwarded-For` is ignored entirely |
-| `true` | the **leftmost** entry of `X-Forwarded-For`, if it parses as an IP address; otherwise the socket address |
+| `trust_proxy = false` (default) | the socket's remote address. The forwarded header is ignored entirely |
+| `trust_proxy = true` + `trusted_proxies` | only when the **connecting peer is one of `trusted_proxies`**: the chain is walked **from the right**, skipping your own proxies, and the first address that is not one of them is the client. From any other peer the header is ignored and the socket address is used |
+| `trust_proxy = true` without `trusted_proxies` | the `proxy_hops`-th entry **from the right** (default 1: the address your proxy appended). A chain shorter than that uses the socket address |
+
+The model is adapted from bothandlerjs, so the two libraries resolve the same request to the same address.
 
 ## Wrongly on: attackers pick their address
 
@@ -60,29 +68,31 @@ address. Nothing looks broken: hits are recorded and the dashboard fills up. But
 
 ## Getting it right
 
-Enable `trust_proxy` **only** when every request reaches the listener through a proxy you control, and
-that proxy **overwrites** `X-Forwarded-For` rather than appending to it.
+Enable `trust_proxy` **only** when requests reach the listener through proxies you control, and list them
+in `trusted_proxies`. That is the variant that cannot be talked round:
 
-hackerpot reads the **leftmost** entry. A proxy that appends leaves the leftmost entry exactly as the
-client wrote it, so it is attacker-controlled. Configure the proxy to replace the header:
+- a request from a peer that is **not** in `trusted_proxies` never has its header read, so the port being
+  reachable around the proxy (published directly, reachable inside the network) no longer lets anyone
+  choose their own address;
+- the chain is read **from the right**, where your proxies append, so a client that prepends entries
+  (`X-Forwarded-For: 10.0.0.5` to impersonate an allowlisted source) only adds entries nobody reads;
+- an extra hop appearing later (a CDN in front of nginx) is skipped as long as its addresses are listed.
 
-```nginx
-proxy_set_header X-Forwarded-For $remote_addr;    # overwrite: the leftmost entry is the real client
-# NOT: proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;   # appends
-```
+Without `trusted_proxies`, `proxy_hops` must match the topology exactly: the Nth address from the right is
+taken, so one proxy fewer than configured hands the choice to the client, and the header is still read
+from any peer. Prefer listing the proxies.
 
-And make sure the listener is not reachable **around** the proxy. If the honeypot's port is published
-directly as well, anyone who finds it sends their own header. The compose file sets
-`TRUST_PROXY=false` for exactly this reason: it publishes `4004` straight to the host.
+Either way nginx may append (`$proxy_add_x_forwarded_for`) or overwrite (`$remote_addr`): the rightmost
+entry is the one it wrote.
 
-Behind several proxies (a CDN in front of nginx), the proxy nearest the honeypot must write the address
-it received from the one before, which is usually a CDN-specific header (`CF-Connecting-IP`,
-`True-Client-IP`) mapped into `X-Forwarded-For`.
+An earlier version took the **leftmost** entry and read the header from any peer. The leftmost entry is
+the one the client writes, so that configuration was only safe behind a proxy that overwrote the header
+on a listener nobody could reach directly.
 
 ## Validation
 
-A forwarded value must parse as an IPv4 or IPv6 address (`net.isIP`). A bracketed IPv6 literal
-(`[2001:db8::1]`) is unwrapped first. Anything else (`unknown`, a hostname, garbage) is ignored and the
+Every entry in the chain must parse as an IPv4 or IPv6 address (`net.isIP`). A port is removed first
+(`203.0.113.9:51234`, `[2001:db8::1]:443`), and a bracketed IPv6 literal is unwrapped. Anything else (`unknown`, a hostname, garbage) is ignored and the
 socket address is used. Without this, any header value became the "address", which let an attacker mint
 unlimited distinct keys for every per-address map, or collide every source into one bucket.
 

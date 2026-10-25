@@ -9,6 +9,21 @@ All notable changes to this project are documented here. The format follows
 
 ### Changed
 
+- **`observe` and `protect-app` now pass weakly flagged requests to your application.** Both presets
+  promised that a visitor would notice nothing ("answered as though nothing is here", "answered
+  normally"), but in middleware mode every flagged request was answered by the honeypot, so a real
+  page with one odd header came back as a 404. Their catch-all rules now respond with the new `pass`
+  action: the incident is recorded, scored and alerted on exactly as before, and the request continues
+  to your routes. Decoys, proof and exploitation attempts are handled as they were. **Migration:** to
+  keep the old 404, use a rule that responds with `not-found` (`{ id: "observe-everything", match: {},
+  respondWith: "not-found" }`), or the same in `[[policy.rules]]`. Standalone, `pass` is still a 404.
+- **`trustProxy` reads the forwarded chain from the right.** It took the leftmost `X-Forwarded-For`
+  entry, which is the one the client writes, and believed the header from any peer. It now takes the
+  entry your proxy appended (the `hops`-th from the right, default 1). Set `proxy.trustedProxies`
+  (`[server] trusted_proxies`) to have the header read only from your own proxies. Adapted from
+  bothandlerjs, so both libraries resolve one request to one address. **Migration:** behind one proxy
+  that overwrites the header nothing changes; behind several, list them in `trusted_proxies`.
+
 - **The dashboard is built from the OSQD UI kit (`@osqd/ui`), as bothandlerjs's is.** The kit's
   stylesheet is read at build time (a devDependency, like `@osqd/jql`) and stamped ahead of the
   page's own rules in the same nonced `<style>` and the same adopted sheet, so the CSP, the
@@ -32,6 +47,20 @@ All notable changes to this project are documented here. The format follows
   release.
 
 ### Added
+
+- **`pass` response action** (`respondWith: "pass"`, `[responses.pass]`): record, score and alert,
+  then let the request continue to the application with `next()`, in every middleware adapter. A passed
+  request is never body-read, gets no probe marker, and teaches the site baseline from the
+  application's own answer. Standalone it answers a plain 404.
+- **`ignorePaths`** (`[engine] ignore_paths`, `ignore_path_patterns`): paths skipped before anything
+  else, with no detection, block check or record. A string ending in `/` is a prefix, any other string
+  the exact path, a RegExp tested as written, on the normalised path. Counted as a bypass with reason
+  `ignored-path`. The corpus and testing docs already pointed WordPress sites at this option; it now
+  exists. Adapted from bothandlerjs.
+- **`proxy: { trustProxy, trustedProxies, hops, header }`** (`[server] trusted_proxies`, `proxy_hops`,
+  `forwarded_header`; `TRUSTED_PROXIES`, `PROXY_HOPS`). An entry that is not an address or CIDR, an
+  empty list, a hop count below 1, and proxy settings left behind with `trust_proxy` off are refused at
+  startup.
 
 - **The dashboard is tested in a real browser.** `npm run test:browser` drives the page with
   Playwright under every engine in CI — the feed opens with a keyboard, filters and groups and

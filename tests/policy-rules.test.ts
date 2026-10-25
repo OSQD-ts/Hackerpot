@@ -133,11 +133,16 @@ describe("rule policies", () => {
 });
 
 describe("presets", () => {
-  it("observes without doing anything a visitor could notice", () => {
+  it("observes without doing anything a visitor could notice: every flagged request is passed to the app", () => {
     const policy = rulePolicy(observe());
     for (const totalScore of [0, 35, 400]) {
-      expect(policy(context({ totalScore }))).toMatchObject({ actionId: "not-found" });
+      expect(policy(context({ totalScore }))).toMatchObject({ actionId: "pass" });
     }
+  });
+
+  it("answers protect-app's weakest signal the way the application would, by passing it", () => {
+    const policy = rulePolicy(protectApp());
+    expect(policy(context({ totalScore: 3, detection: detection("header-anomaly"), detections: [detection("header-anomaly")] }))).toMatchObject({ actionId: "pass", rule: "everything-else" });
   });
 
   it("protects an application without ever refusing on a score alone", () => {
@@ -175,7 +180,7 @@ describe("rules in a config file", () => {
     });
     expect(policy(context({ ip: "198.51.100.9" }))).toMatchObject({ actionId: "tarpit", rule: "partner" });
     // Everything else is the preset's, not the ladder's.
-    expect(policy(context({ ip: "203.0.113.7", totalScore: 900 }))).toMatchObject({ actionId: "not-found", rule: "observe-everything" });
+    expect(policy(context({ ip: "203.0.113.7", totalScore: 900 }))).toMatchObject({ actionId: "pass", rule: "observe-everything" });
   });
 
   it("lets a rule replace the preset's rule of the same name", () => {

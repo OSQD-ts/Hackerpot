@@ -32,7 +32,7 @@ const EXPORTS = [
   "hostHeaderInjectionDetector", "injectionSignatures", "insecureDeserializationDetector", "isAuthorized",
   "isSecretHeader", "jwtWeaknessDetector", "koaHoneypot", "largePayloadAction", "listIncidents", "loadConfig",
   "loadConfigFile", "matchesQuery", "mayHaveBody", "nodeDnsResolver", "nosqlInjectionDetector", "notFoundAction",
-  "openRedirectDetector", "parseConfig", "parseConfigText", "parseIps", "parseQuery", "pathBruteforceDetector", "pathOf",
+  "openRedirectDetector", "PASS_ACTION", "passAction", "parseConfig", "parseConfigText", "parseIps", "parseQuery", "pathBruteforceDetector", "pathOf",
   "payloadInjectionDetector", "planReload", "prototypePollutionDetector", "queryHits", "randomBetween",
   "rateLimitAction", "rateSpikeDetector", "readBody", "redactIncident", "redirectAction", "renderAlert", "renderMetrics",
   "repeatActorDetector", "resolveDelay", "scannerSignatureDetector", "scannerUserAgentPatterns",

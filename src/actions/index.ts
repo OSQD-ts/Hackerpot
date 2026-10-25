@@ -8,6 +8,7 @@ import { fakeDataAction } from "./fake-data.js";
 import { gzipBombAction } from "./gzip-bomb.js";
 import { chaosAction } from "./chaos.js";
 import { rateLimitAction } from "./rate-limit.js";
+import { passAction } from "./pass.js";
 import type { ResponseAction } from "./types.js";
 
 export type { ResponseAction, ResponseContext } from "./types.js";
@@ -29,6 +30,7 @@ export type { GzipBombOptions } from "./gzip-bomb.js";
 export { chaosAction } from "./chaos.js";
 export type { ChaosOptions } from "./chaos.js";
 export { rateLimitAction } from "./rate-limit.js";
+export { PASS_ACTION, passAction } from "./pass.js";
 export type { RateLimitOptions } from "./rate-limit.js";
 export { checkResponseActions } from "./check.js";
 export type { CheckResponseActionsOptions, ResponseCheckResult } from "./check.js";
@@ -36,6 +38,7 @@ export type { CheckResponseActionsOptions, ResponseCheckResult } from "./check.j
 /** The response actions registered when none are configured explicitly. */
 export function defaultResponseActions(): ResponseAction[] {
   return [
+    passAction(),
     decoyContentAction(),
     notFoundAction(),
     redirectAction(),

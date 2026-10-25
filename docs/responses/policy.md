@@ -113,8 +113,8 @@ by default the ladder above — so a handful of rules only overrides what it nam
 
 | Preset | For | What it does |
 | --- | --- | --- |
-| `observe` | a first deployment in front of real users | records and scores everything, serves a plain 404 every time; nobody can notice it |
-| `protect-app` | in front of a real application | blocks on proof, keeps decoys serving bait, tarpits exploitation attempts and persistent probing, never refuses on a score alone |
+| `observe` | a first deployment in front of real users | records and scores everything and passes every request to your application, which answers as it always would; nobody can notice it. Standalone, `pass` is a plain 404 |
+| `protect-app` | in front of a real application | blocks on proof, keeps decoys serving bait, tarpits exploitation attempts and persistent probing, passes everything else to your application; never refuses on a score alone |
 | `standalone` | its own address or ports | blocks confirmed attackers and proof, otherwise lets each detector serve its own expensive response |
 
 ```ts

@@ -1,6 +1,6 @@
 # Response actions
 
-All twelve, with every option, and what each costs you as well as the attacker.
+All thirteen, with every option, and what each costs you as well as the attacker.
 
 ← [Documentation](../index.md) · [Responses](index.md)
 
@@ -8,6 +8,7 @@ All twelve, with every option, and what each costs you as well as the attacker.
 
 | Action | What it does | Default policy uses it |
 | --- | --- | --- |
+| [`pass`](#pass) | lets the request through to your application; recorded and scored all the same | `observe` and `protect-app` presets |
 | [`decoy-content`](#decoy-content) | serves the fake content a decoy carries | through a decoy's `respondWith` |
 | [`not-found`](#not-found) | a flat 404 | yes, below the tarpit threshold |
 | [`redirect`](#redirect) | bounces the client toward another decoy | through a decoy's `respondWith` |
@@ -26,6 +27,16 @@ Every TOML section also takes `enabled`. Keys are the snake_case of the options.
 ---
 
 ## Revealing nothing
+
+### `pass`
+
+`passAction()` — the incident is recorded, scored and alerted on, and the request continues to your
+application, which answers it. In middleware mode (Express/Connect, Koa, Fastify, Fetch) the front end
+calls `next()` and this action never runs: the response is your application's, it carries no probe
+marker, and the site baseline learns from it as from any unflagged request. A passed request's body is
+never read, so detectors that inspect bodies do not see a request the policy passes on its headers. On the
+standalone server there is no application behind the honeypot, and `pass` answers like an empty path: a
+`404` with `Not Found`. No options.
 
 ### `not-found`
 

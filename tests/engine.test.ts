@@ -133,10 +133,15 @@ describe("client IP resolution cannot be forged into something that isn't an IP"
     expect(engine.resolveIp("203.0.113.9", { "x-forwarded-for": "" })).toBe("203.0.113.9");
   });
 
-  it("still honours a well-formed forwarded address when trustProxy is on", () => {
+  it("still honours a well-formed forwarded address when trustProxy is on, read from the right", () => {
+    // With no proxies listed, one hop is assumed: the rightmost entry is the one the proxy
+    // appended. The leftmost was taken before, and that one the client writes itself.
     const engine = new HoneypotEngine({ trustProxy: true });
-    expect(engine.resolveIp("10.9.9.9", { "x-forwarded-for": "198.51.100.7, 10.0.0.1" })).toBe("198.51.100.7");
+    expect(engine.resolveIp("10.9.9.9", { "x-forwarded-for": "198.51.100.7, 10.0.0.1" })).toBe("10.0.0.1");
     expect(engine.resolveIp("10.9.9.9", { "x-forwarded-for": "[2001:db8::5]" })).toBe("2001:db8::5");
+    // With the proxies listed, the chain is walked past them to the client.
+    const listed = new HoneypotEngine({ proxy: { trustProxy: true, trustedProxies: ["10.0.0.0/8"] } });
+    expect(listed.resolveIp("10.9.9.9", { "x-forwarded-for": "198.51.100.7, 10.0.0.1" })).toBe("198.51.100.7");
   });
 
   it("never reads the header at all when trustProxy is off", () => {

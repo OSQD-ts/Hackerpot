@@ -58,7 +58,7 @@ same.
 One human case fires, and passes: `wordpress-author-wp-login`, a real WordPress author signing in at
 `/wp-login.php`. That path is a decoy, so `decoy-path` catches them. The library cannot both bait
 scanners with the path and serve authors on it. The case is tagged `known-cost` and reported in its own
-section rather than hidden; a site that runs WordPress should exclude the path (`ignorePaths` or the
+section rather than hidden; a site that runs WordPress should exclude the path (`ignorePaths`, `[engine] ignore_paths` in the file, or the
 allowlist) or drop that decoy. See [decoys](../detection/decoys.md).
 
 ## Two details that make it honest

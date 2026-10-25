@@ -75,7 +75,7 @@ export { VERSION } from "./version.js";
 export { computeFingerprint, headerOrder, uaClass } from "./fingerprint.js";
 export { defaultIpEnricher } from "./enrichment.js";
 export type { IpEnricher, IpEnrichment } from "./enrichment.js";
-export type { HitQuery, HitStore, HoneypotConfig, HoneypotHit, ShadowEvent } from "./types.js";
+export type { HitQuery, HitStore, HoneypotConfig, HoneypotHit, ProxyConfig, ShadowEvent } from "./types.js";
 
 export * from "./detectors/index.js";
 export * from "./actions/index.js";

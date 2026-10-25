@@ -45,7 +45,9 @@ ESM and CommonJS, with declarations. Node 20 or later.
 | `store` | `new MemoryStore()` | see [stores](../operations/stores.md) |
 | `blocklist` | `new MemoryBlocklist()` | see [firewall](../operations/firewall.md#the-blocklists) |
 | `allowlist` | `[]` | addresses and CIDRs exempt from everything |
-| `trustProxy` | `false` | see [the client IP](../integration/client-ip.md) |
+| `trustProxy` | `false` | shorthand for `proxy: { trustProxy }`; see [the client IP](../integration/client-ip.md) |
+| `proxy` | — | `{ trustProxy, trustedProxies, hops, header }`; see [the client IP](../integration/client-ip.md) |
+| `ignorePaths` | `[]` | paths skipped entirely: a string ending in `/` is a prefix, any other string exact, a RegExp tested as written |
 | `onHit` | — | every recorded incident |
 | `onError` | — | every absorbed failure, with `{ source }`: a detector id, `store`, `onHit`, `enricher`, `middleware`, `blocklist`, `subscriber`, `onShadow` |
 | `activityWindowMs` | `60000` | |

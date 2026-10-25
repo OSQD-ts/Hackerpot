@@ -65,6 +65,12 @@ export interface ServerConfig {
   port: number;
   /** Resolve the client IP from X-Forwarded-For (only safe behind a trusted proxy). */
   trustProxy: boolean;
+  /** Addresses/CIDRs of your own proxies; the forwarded chain is walked from the right past them. See `ProxyConfig`. */
+  trustedProxies?: string[];
+  /** How many proxies sit in front, when they cannot be listed. Ignored with `trustedProxies`. */
+  proxyHops?: number;
+  /** Header carrying the chain. Default "x-forwarded-for". */
+  forwardedHeader?: string;
 }
 
 export interface LoggingConfig {
@@ -78,6 +84,10 @@ export interface LoggingConfig {
 }
 
 export interface EngineConfig {
+  /** Paths skipped entirely: exact, or a prefix when it ends in "/". See `HoneypotConfig.ignorePaths`. */
+  ignorePaths: string[];
+  /** Regular expressions (source text) for paths skipped entirely. Compiled when the engine is built. */
+  ignorePathPatterns: string[];
   /** Sliding-window length the stateful detectors read, in ms. */
   activityWindowMs: number;
   /** How long the actor registry remembers a fingerprint's IPs — bounds repeat-actor's horizon and its memory. */
@@ -314,6 +324,7 @@ export interface DetectorsConfig {
 }
 
 export interface ResponsesConfig {
+  pass: Toggle<Record<string, never>>;
   "decoy-content": Toggle<Record<string, never>>;
   "not-found": Toggle<Record<string, never>>;
   redirect: Toggle<Record<string, never>>;
@@ -1008,6 +1019,7 @@ function parseResponses(section: Section): ResponsesConfig {
   limitSection.done();
 
   const config: ResponsesConfig = {
+    pass: bareAction(child(section, "pass")),
     "decoy-content": bareAction(child(section, "decoy-content")),
     "not-found": bareAction(child(section, "not-found")),
     redirect: bareAction(child(section, "redirect")),
@@ -1377,6 +1389,32 @@ export function parseConfig(raw: Record<string, unknown>, source: string): Hacke
     // defaulting off means enabling it is a deliberate act by someone who has a proxy.
     trustProxy: server.boolean("trust_proxy", false),
   };
+  // Adapted from bothandlerjs's ProxyConfig. Each of these is refused rather than tolerated
+  // when it could not do what it says: a proxy list that matches nothing, a hop count of
+  // zero, or proxy settings left behind with `trust_proxy` off would all look configured
+  // while the forwarded header was read wrongly or not at all.
+  if (server.has("trusted_proxies")) {
+    const trusted = server.ipList("trusted_proxies", []);
+    if (trusted.length === 0) server.fail("trusted_proxies", "is empty, so no peer could ever be trusted; remove it or list your proxies");
+    const unusable = new IpAllowlist(trusted).invalid;
+    if (unusable.length > 0) server.fail("trusted_proxies", `${unusable.map((entry) => `"${entry}"`).join(", ")} cannot be matched at runtime`);
+    serverConfig.trustedProxies = trusted;
+  }
+  const proxyHops = server.integer("proxy_hops");
+  if (proxyHops !== undefined) {
+    if (proxyHops < 1) server.fail("proxy_hops", "must be at least 1");
+    serverConfig.proxyHops = proxyHops;
+  }
+  const forwardedHeader = server.string("forwarded_header");
+  if (forwardedHeader !== undefined) {
+    if (forwardedHeader.trim() === "") server.fail("forwarded_header", "must not be empty");
+    serverConfig.forwardedHeader = forwardedHeader.trim().toLowerCase();
+  }
+  if (!serverConfig.trustProxy) {
+    for (const key of ["trusted_proxies", "proxy_hops", "forwarded_header"]) {
+      if (server.has(key)) server.fail(key, "is set but trust_proxy is false, so the forwarded header is never read; set trust_proxy = true or remove it");
+    }
+  }
   server.done();
 
   const logging = root.section("logging");
@@ -1394,7 +1432,13 @@ export function parseConfig(raw: Record<string, unknown>, source: string): Hacke
     fingerprintWindowMs: engine.integer("fingerprint_window_ms", 3_600_000),
     detectorTimeoutMs: engine.integer("detector_timeout_ms", 2_000),
     shadowDetectors: engine.stringArray("shadow_detectors", []),
+    ignorePaths: engine.stringArray("ignore_paths", []),
+    ignorePathPatterns: engine.stringArray("ignore_path_patterns", []),
   };
+  // Compiled here only to refuse a pattern that does not compile; the file keeps the source text.
+  engine.regexpArray("ignore_path_patterns");
+  const notAPath = engineConfig.ignorePaths.filter((entry) => !entry.startsWith("/"));
+  if (notAPath.length > 0) engine.fail("ignore_paths", `${notAPath.map((entry) => `"${entry}"`).join(", ")} does not start with "/", so it can never match a path`);
   engine.done();
 
   const policy = root.section("policy");

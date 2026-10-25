@@ -16,13 +16,15 @@ import type { Rule } from "./rules.js";
 /**
  * Watch, and do nothing anybody could notice.
  *
- * Every probe is answered with an ordinary 404, exactly as an empty path would be, while the
- * incident is still recorded, scored and alerted on. Run this first on a deployment in front
- * of real users: it tells you what your traffic looks like without a single visitor being
- * slowed down or turned away.
+ * Every flagged request is passed through to your application, which answers it exactly as it
+ * would have, while the incident is still recorded, scored and alerted on. Run this first on a
+ * deployment in front of real users: it tells you what your traffic looks like without a
+ * single visitor being slowed down, turned away, or shown a 404 for a page that exists.
+ *
+ * Standalone, where there is no application, a passed request is answered with a plain 404.
  */
 export function observe(): Rule[] {
-  return [{ id: "observe-everything", match: {}, respondWith: "not-found", reason: "Observation only: recorded and scored, answered as though nothing is here." }];
+  return [{ id: "observe-everything", match: {}, respondWith: "pass", reason: "Observation only: recorded and scored, then handed to the application untouched." }];
 }
 
 /**
@@ -54,7 +56,7 @@ export function protectApp(): Rule[] {
       reason: "An exploitation attempt against the application: held, not refused, because the guess could be wrong and a slow page is recoverable.",
     },
     { id: "persistent-tarpit", match: { minTotalScore: 25 }, respondWith: "tarpit", reason: "This address has kept probing. Slowed down rather than refused." },
-    { id: "everything-else", match: {}, respondWith: "not-found", reason: "Some signal, not enough to act on. Recorded and answered normally." },
+    { id: "everything-else", match: {}, respondWith: "pass", reason: "Some signal, not enough to act on. Recorded, and answered by the application as normal." },
   ];
 }
 

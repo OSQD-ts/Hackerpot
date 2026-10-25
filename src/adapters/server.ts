@@ -61,6 +61,12 @@ export class HoneypotServer {
     const method = req.method ?? "GET";
     const url = req.url ?? "/";
     const path = pathOf(url);
+    // Nothing behind this server to hand an ignored path to: answered as an empty path is.
+    if (this.engine.ignores(path)) {
+      res.statusCode = 404;
+      res.end("Not Found");
+      return;
+    }
     const ip = this.engine.resolveIp(req.socket.remoteAddress, req.headers);
 
     // Allowlisted known-good sources bypass everything, including the block check, and so

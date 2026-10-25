@@ -64,3 +64,32 @@ export function sameAddress(a: string, b: string): boolean {
   const value = v6ToBigInt(left);
   return value !== undefined && value === v6ToBigInt(right);
 }
+
+/**
+ * An address with its source port removed, when it carried one. Adapted from bothandlerjs.
+ *
+ * Forwarded headers are not consistent about this. Most proxies write a bare address,
+ * but some load balancers write `1.2.3.4:5678`, and the bracketed `[2001:db8::1]:5678` is
+ * the form RFC 7239 defines for IPv6. An entry that carries a port is not an address, and
+ * the consequence is not that one entry is skipped: every entry in the chain looks the
+ * same way, the chain empties, and the whole internet collapses onto the proxy's own
+ * address — one actor, scored and blocked for everybody at once.
+ *
+ * The rule has to be narrow, because a bare IPv6 address is *made of* colons and must
+ * never be mistaken for a host and port. Only two shapes are a port: a bracketed host,
+ * which is unambiguous, and a single colon whose left side is an IPv4 address. Anything
+ * with more colons and no brackets is IPv6 and is returned untouched.
+ */
+export function stripPort(value: string): string {
+  const input = value.trim();
+  if (input.startsWith("[")) {
+    const close = input.indexOf("]");
+    if (close > 0) return input.slice(1, close);
+    return input;
+  }
+  const colon = input.indexOf(":");
+  // Exactly one colon: IPv6 always has at least two, so this can only be host:port.
+  if (colon === -1 || input.indexOf(":", colon + 1) !== -1) return input;
+  const host = input.slice(0, colon);
+  return net.isIPv4(host) ? host : input;
+}
