@@ -9,10 +9,12 @@ COPY package.json package-lock.json ./
 RUN npm ci
 
 # Build the library + the standalone entrypoint. `npm run build` first bundles the
-# dashboard's browser code (scripts/build-client.mjs) and emits the element's type
+# dashboard's browser code (scripts/build-client.mjs, which inlines the @osqd/ui stylesheet
+# through scripts/build-ui-css.mjs) and emits the element's type
 # declarations (tsconfig.element.json), so both have to be in the builder stage.
 COPY tsconfig.json tsconfig.element.json tsup.config.ts ./
 COPY scripts/build-client.mjs ./scripts/build-client.mjs
+COPY scripts/build-ui-css.mjs ./scripts/build-ui-css.mjs
 COPY scripts/strip-sources-content.mjs ./scripts/strip-sources-content.mjs
 COPY src ./src
 RUN npm run build
