@@ -29,6 +29,7 @@
 
 import { cssEscape } from "../dashboard/client/css.js";
 import { DASHBOARD_CSS, DASHBOARD_MARKUP } from "../dashboard/page.js";
+import { UI_CSS } from "../dashboard/ui-css.generated.js";
 import { VERSION } from "../version.js";
 import {
   checkDensity,
@@ -255,7 +256,8 @@ export class HackerpotDashboardElement extends ElementBase {
 
     adoptStyles(shadow);
     const frame = document.createElement("div");
-    frame.className = "hp-root";
+    // `oq` scopes the UI kit inside the shadow root; its colours come from the host's data-theme.
+    frame.className = "hp-root oq";
     // The markup is this package's own template, with no interpolation of anything a request
     // supplied; the one placeholder, the title, is replaced below through text nodes. Parsed
     // with DOMParser, which runs no scripts and creates inert nodes, then imported: the
@@ -318,6 +320,9 @@ export class HackerpotDashboardElement extends ElementBase {
     const checked = checkScheme(value);
     if (checked.warning !== undefined) this.warnOnce(`${LOG} ${checked.warning}`);
     if (checked.value !== undefined) this.setAttribute("data-theme", checked.value);
+    // Left unset, the host follows the viewer's own light or dark setting, as it always did:
+    // the UI kit's "auto" theme.
+    else if (!this.hasAttribute("data-theme")) this.setAttribute("data-theme", "auto");
   }
 
   private applyDensity(value: string | null | undefined): void {
@@ -446,7 +451,7 @@ function adoptStyles(shadow: ShadowRoot): void {
   if (typeof CSSStyleSheet !== "undefined" && "replaceSync" in CSSStyleSheet.prototype && "adoptedStyleSheets" in shadow) {
     if (sheet === undefined) {
       sheet = new CSSStyleSheet();
-      sheet.replaceSync(`${DASHBOARD_CSS}\n${EXTRA_CSS}`);
+      sheet.replaceSync(`${UI_CSS}\n${DASHBOARD_CSS}\n${EXTRA_CSS}`);
     }
     if (!shadow.adoptedStyleSheets.includes(sheet)) shadow.adoptedStyleSheets = [...shadow.adoptedStyleSheets, sheet];
     return;
@@ -454,7 +459,7 @@ function adoptStyles(shadow: ShadowRoot): void {
   if (shadow.querySelector("style[data-hp]") !== null) return;
   const style = document.createElement("style");
   style.setAttribute("data-hp", "");
-  style.textContent = `${DASHBOARD_CSS}\n${EXTRA_CSS}`;
+  style.textContent = `${UI_CSS}\n${DASHBOARD_CSS}\n${EXTRA_CSS}`;
   shadow.append(style);
 }
 

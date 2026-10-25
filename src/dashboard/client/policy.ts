@@ -98,7 +98,7 @@ export function renderPolicyChanges(): void {
   const list = el("div", "stack-gap");
   for (const notice of [...changes].reverse().slice(0, 20)) {
     const row = el("div", "notice");
-    row.append(el("span", "badge", notice.change?.part ?? "change"));
+    row.append(el("span", "badge oq-chip oq-sm oq-neutral", notice.change?.part ?? "change"));
     const body = el("div");
     body.append(el("div", null, notice.message));
     body.append(el("div", "faint tiny", [fmtTime(notice.timestamp), notice.change?.by === undefined ? undefined : `by ${notice.change.by}`].filter((part) => part !== undefined).join(" · ")));

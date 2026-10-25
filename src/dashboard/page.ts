@@ -1,4 +1,5 @@
 import { CLIENT_SCRIPT } from "./client.generated.js";
+import { UI_CSS } from "./ui-css.generated.js";
 import type { DashboardBootstrap } from "./types.js";
 
 /**
@@ -21,39 +22,6 @@ import type { DashboardBootstrap } from "./types.js";
  * shadow tree, where the host element is what the tokens hang off.
  */
 
-/**
- * The dark scheme's tokens, written once and used twice: under `prefers-color-scheme: dark`
- * (unless `data-theme="light"` says otherwise) and under an explicit `data-theme="dark"`, so
- * the theme button wins in both directions.
- *
- * The series slots are the same eight hues as the light scheme stepped for the dark surface,
- * not an automatic inversion; the sequential ramp runs the other way round (near zero recedes
- * toward the surface, which on a dark page means darker).
- */
-const DARK = `
-  color-scheme: dark;
-  --page: #0d0f12; --panel: #16181d; --panel-2: #1b1e24; --border: #272b33; --row-line: #202329;
-  --text: #f2f4f7; --text-2: #c4cad3; --muted: #8b929c; --faint: #7d838c;
-  --accent: #3987e5; --accent-solid: #2364b4; --link: #86b6ef; --focus: #86b6ef;
-  --ok: #3fb950; --warn: #d29922; --bad: #f85149;
-  --ok-text: #4ec97a; --warn-text: #fab219; --bad-text: #ff8078; --info-text: #86b6ef; --violet-text: #b3a4f5; --payload-text: #ffd9a0;
-  --ok-tint: rgba(63,185,80,.25); --bad-tint: rgba(248,81,73,.15); --bad-edge: rgba(248,81,73,.5);
-  --warn-tint: rgba(210,153,34,.15); --warn-edge: rgba(210,153,34,.5); --info-tint: rgba(88,166,255,.15); --info-edge: rgba(88,166,255,.45);
-  --violet-tint: rgba(163,113,247,.14); --violet-edge: rgba(163,113,247,.45);
-  --header-bg: #16181d; --tabs-bg: #16181d; --tip-bg: #0d0f12; --pre-bg: #0d0f12; --detail-bg: #0d0f12;
-  --hover: rgba(88,166,255,.06); --flash: rgba(245,166,35,.28); --shadow: 0 8px 26px rgba(0,0,0,.55);
-  /* A panel on a dark page is separated by its own surface and border; a shadow under it
-     only muddies the page. In light it does the separating, as it does in bothandlerjs. */
-  --panel-shadow: none;
-  --surface: #16181d; --grid: #23272e;
-  --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500; --s5: #d55181; --s6: #008300; --s7: #9085e9; --s8: #e66767; --so: #566173;
-  --q0: #1b1e24; --q1: #104281; --q2: #184f95; --q3: #1c5cab; --q4: #256abf; --q5: #2a78d6; --q6: #3987e5;
-  --q7: #5598e7; --q8: #6da7ec; --q9: #86b6ef; --q10: #9ec5f4; --q11: #b7d3f6; --q12: #cde2fb;
-  --o1: #184f95; --o2: #256abf; --o3: #3987e5; --o4: #6da7ec; --o5: #9ec5f4;
-  --meter-track: #184f95; --meter-fill: #6da7ec;
-  --det-sat: 70%; --det-light: 72%;
-`;
-
 const SLOT_RULES = ["s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8", "so"]
   .map((s) => `.fill-${s} { fill: var(--${s}); } .stroke-${s} { stroke: var(--${s}); } .bg-${s} { background: var(--${s}); }`)
   .concat(Array.from({ length: 13 }, (_, i) => `.fill-q${i} { fill: var(--q${i}); } .bg-q${i} { background: var(--q${i}); }`))
@@ -70,41 +38,58 @@ export const DASHBOARD_CSS = String.raw`/* -------------------------------------
    a series colour; the ink tokens are for text.
 --------------------------------------------------------------------------- */
 :root, :host {
-  color-scheme: light;
-  --page: #f4f5f7; --panel: #ffffff; --panel-2: #f3f4f6; --border: #e4e6ea; --row-line: #eef0f3;
-  --text: #0b0d12; --text-2: #3c414b; --muted: #5f646e; --faint: #676d77;
-  --accent: #2a78d6; --accent-solid: #1b5fb0; --link: #1b5fb0; --focus: #2a78d6;
-  --ok: #0ca30c; --warn: #b07800; --bad: #d03b3b;
-  --ok-text: #006300; --warn-text: #6d4700; --bad-text: #b02525; --info-text: #1c5cab; --violet-text: #5b34a8; --payload-text: #7a3e00;
-  --ok-tint: rgba(12,163,12,.14); --bad-tint: rgba(208,59,59,.09); --bad-edge: rgba(208,59,59,.38);
-  --warn-tint: rgba(201,133,0,.12); --warn-edge: rgba(201,133,0,.45); --info-tint: rgba(42,120,214,.09); --info-edge: rgba(42,120,214,.38);
-  --violet-tint: rgba(91,52,168,.08); --violet-edge: rgba(91,52,168,.32);
-  --header-bg: #ffffff; --tabs-bg: #fafbfc; --tip-bg: #ffffff; --pre-bg: #f6f8fa; --detail-bg: #f7f8fa;
-  --hover: rgba(42,120,214,.06); --flash: rgba(237,161,0,.26); --shadow: 0 8px 26px rgba(11,13,18,.14);
-  --panel-shadow: 0 1px 2px rgba(11,13,18,.06), 0 1px 8px rgba(11,13,18,.04);
-  --surface: #ffffff; --grid: #eceef1;
-  --s1: #2a78d6; --s2: #eb6834; --s3: #1baf7a; --s4: #eda100; --s5: #e87ba4; --s6: #008300; --s7: #4a3aa7; --s8: #e34948; --so: #8a9099;
-  --q0: #eef0f3; --q1: #cde2fb; --q2: #b7d3f6; --q3: #9ec5f4; --q4: #86b6ef; --q5: #6da7ec; --q6: #5598e7;
-  --q7: #3987e5; --q8: #2a78d6; --q9: #256abf; --q10: #1c5cab; --q11: #184f95; --q12: #104281;
-  --o1: #86b6ef; --o2: #5598e7; --o3: #2a78d6; --o4: #1c5cab; --o5: #104281;
-  --meter-track: #cde2fb; --meter-fill: #2a78d6;
-  --det-sat: 55%; --det-light: 32%;
-  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  /* The colours come from the OSQD UI kit (UI_CSS, stamped ahead of these rules): seven themes,
+     each held by the kit's tests to 7:1 body text and 4.5:1 for every intent on every layer.
+     These names are this page's own vocabulary and the documented embedding API, so they stay —
+     as aliases of the kit's tokens, which is what makes every theme apply to them for free.
+     Deprecated as an override surface: set the kit's --oq-* tokens instead (see embedding.md).
+     The categorical slots are the kit's series palette, validated for colour-vision separation
+     on every theme, and the sequential and ordinal ramps are the kit's, mixed per theme from its
+     surface toward its primary. */
+  --page: var(--oq-bg); --panel: var(--oq-surface); --panel-2: var(--oq-raised); --border: var(--oq-border);
+  --row-line: color-mix(in srgb, var(--oq-border) 55%, var(--oq-surface));
+  --text: var(--oq-text); --text-2: var(--oq-text-muted); --muted: var(--oq-text-faint); --faint: var(--oq-text-faint);
+  --accent: var(--oq-primary); --accent-solid: var(--oq-primary); --on-accent: var(--oq-on-primary);
+  --link: var(--oq-primary); --focus: var(--oq-focus);
+  --ok: var(--oq-success); --warn: var(--oq-warning); --bad: var(--oq-danger);
+  /* The status inks are mixed a little toward the body ink, because they sit on their own tints
+     (chips, the open row), where the kit's intent colours alone can fall under 4.5:1. In srgb, so
+     the computed value stays an rgb() colour the browser suite's contrast checks can read. */
+  --ok-text: color-mix(in srgb, var(--oq-success) 72%, var(--oq-text));
+  --warn-text: color-mix(in srgb, var(--oq-warning) 72%, var(--oq-text));
+  --bad-text: color-mix(in srgb, var(--oq-danger) 72%, var(--oq-text));
+  --info-text: color-mix(in srgb, var(--oq-primary) 72%, var(--oq-text));
+  --violet-text: color-mix(in srgb, var(--oq-secondary) 72%, var(--oq-text));
+  --payload-text: color-mix(in srgb, var(--oq-info) 72%, var(--oq-text));
+  --ok-tint: color-mix(in srgb, var(--oq-success) 16%, transparent);
+  --bad-tint: color-mix(in srgb, var(--oq-danger) 12%, transparent); --bad-edge: color-mix(in srgb, var(--oq-danger) 45%, transparent);
+  --warn-tint: color-mix(in srgb, var(--oq-warning) 13%, transparent); --warn-edge: color-mix(in srgb, var(--oq-warning) 48%, transparent);
+  --info-tint: color-mix(in srgb, var(--oq-primary) 11%, transparent); --info-edge: color-mix(in srgb, var(--oq-primary) 42%, transparent);
+  --violet-tint: color-mix(in srgb, var(--oq-secondary) 11%, transparent); --violet-edge: color-mix(in srgb, var(--oq-secondary) 40%, transparent);
+  --header-bg: var(--oq-surface); --tabs-bg: var(--oq-surface); --tip-bg: var(--oq-raised); --pre-bg: var(--oq-bg); --detail-bg: var(--oq-raised);
+  --hover: color-mix(in srgb, var(--oq-primary) 6%, transparent);
+  --flash: color-mix(in srgb, var(--oq-warning) 26%, transparent);
+  --shadow: var(--oq-shadow-lg); --panel-shadow: none;
+  --surface: var(--oq-surface); --grid: var(--oq-border);
+  --s1: var(--oq-series-1); --s2: var(--oq-series-2); --s3: var(--oq-series-3); --s4: var(--oq-series-4);
+  --s5: var(--oq-series-5); --s6: var(--oq-series-6); --s7: var(--oq-series-7); --s8: var(--oq-series-8); --so: var(--oq-neutral);
+  --q0: var(--oq-seq-0); --q1: var(--oq-seq-1); --q2: var(--oq-seq-2); --q3: var(--oq-seq-3); --q4: var(--oq-seq-4);
+  --q5: var(--oq-seq-5); --q6: var(--oq-seq-6); --q7: var(--oq-seq-7); --q8: var(--oq-seq-8); --q9: var(--oq-seq-9);
+  --q10: var(--oq-seq-10); --q11: var(--oq-seq-11); --q12: var(--oq-seq-12);
+  --o1: var(--oq-ord-1); --o2: var(--oq-ord-2); --o3: var(--oq-ord-3); --o4: var(--oq-ord-4); --o5: var(--oq-ord-5);
+  --meter-track: var(--oq-seq-2); --meter-fill: var(--oq-primary);
+  --mono: var(--oq-font-mono);
+  --sans: var(--oq-font-sans);
   /* bothandlerjs's token names, as aliases of these, so a rule carried over from its dashboard
      reads the same colours here without being rewritten. */
   --line: var(--border); --line-soft: var(--row-line); --ink: var(--text); --ink-2: var(--text-2);
   --surface-2: var(--panel-2); --raised: var(--panel); --good-text: var(--ok-text); --crit-text: var(--bad-text);
   --crit: var(--bad); --proven-text: var(--violet-text);
 }
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]), :host(:not([data-theme="light"])) {${DARK}}
-}
-:root[data-theme="dark"], :host([data-theme="dark"]) {${DARK}}
 
 * { box-sizing: border-box; }
 [hidden] { display: none !important; }
-body { margin: 0; background: var(--page); color: var(--text); font: 14px/1.55 var(--sans); -webkit-font-smoothing: antialiased; }
+body { margin: 0; background: var(--page); color: var(--text); font: var(--oq-text-md)/var(--oq-line-height) var(--sans); -webkit-font-smoothing: antialiased; }
 a { color: var(--link); }
 code, .mono { font-family: var(--mono); }
 .num { font-variant-numeric: tabular-nums; }
@@ -121,7 +106,7 @@ code, .mono { font-family: var(--mono); }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
 /* Clipped rather than pushed off the top: inside <hackerpot-dashboard> "off the top" is the host
    page's own heading, and the link sat on top of it. */
-.skip { position: absolute; left: 8px; top: 8px; z-index: 50; background: var(--panel); color: var(--text); padding: 6px 10px; border-radius: 6px; border: 1px solid var(--border); }
+.skip { position: absolute; left: 8px; top: 8px; z-index: 50; background: var(--panel); color: var(--text); padding: 6px 10px; border-radius: var(--oq-radius-sm); border: 1px solid var(--border); }
 .skip:not(:focus) { width: 1px; height: 1px; padding: 0; border: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 
 /* --- header -------------------------------------------------------------
@@ -143,11 +128,11 @@ code, .mono { font-family: var(--mono); }
 .brand span { color: var(--muted); font-size: 12.5px; white-space: nowrap; }
 .grow { flex: 1 1 auto; min-width: 8px; }
 .links { display: flex; gap: 6px; flex-wrap: wrap; }
-.linkbtn { font-size: 12.5px; padding: 6px 11px; border: 1px solid var(--border); border-radius: 8px; text-decoration: none; }
+/* A link dressed as a button: the same quiet button as below, with the button's ink rather than the kit's link colour. */
+a.linkbtn { color: var(--oq-text); text-decoration: none; }
 /* A hairline between "somewhere else" and "do something here". */
 .head-actions { display: flex; gap: 6px; align-items: center; }
 .links:not([hidden]) + .head-actions { padding-left: 12px; border-left: 1px solid var(--border); }
-button[aria-pressed="true"] { background: color-mix(in srgb, var(--s1) 12%, var(--surface)); border-color: color-mix(in srgb, var(--s1) 45%, var(--line)); color: var(--ink); }
 
 /* Status, not a control: a filled pill with no border, so it never reads as pressable. */
 .status { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 520; color: var(--text-2);
@@ -168,11 +153,10 @@ button[aria-pressed="true"] { background: color-mix(in srgb, var(--s1) 12%, var(
 @media (max-width: 560px) { .brand span { display: none; } }
 
 /* --- tabs --------------------------------------------------------------- */
-.tabs { display: flex; gap: 2px; margin-bottom: -1px; flex: none; }
-.tabs [role="tab"] { background: none; border: none; border-bottom: 2px solid transparent; border-radius: 0;
-  padding: 9px 12px; color: var(--muted); font-weight: 500; font-size: 13px; cursor: pointer; white-space: nowrap; }
-.tabs [role="tab"]:hover { color: var(--text); background: none; }
-.tabs [role="tab"][aria-selected="true"] { color: var(--text); border-bottom-color: var(--accent); }
+/* The UI kit's tab strip (oq-tabs, oq-tab). The header draws the rule under it, so the strip's
+   own border is dropped and the selected tab's line sits on the header's. It shrinks and scrolls
+   rather than pushing the page sideways. */
+.tabs.oq-tabs { border-bottom: 0; margin-bottom: -1px; flex: 0 1 auto; min-width: 0; }
 /* Six tabs are wider than a phone. Tightened first, and past that the strip scrolls on its own
    rather than pushing the whole document sideways. */
 @media (max-width: 640px) {
@@ -180,6 +164,7 @@ button[aria-pressed="true"] { background: color-mix(in srgb, var(--s1) 12%, var(
   .tabs::-webkit-scrollbar { display: none; }
   .tabs [role="tab"] { padding: 9px 7px; font-size: 12.5px; flex: none; }
 }
+.tab-badge { margin-left: 6px; }
 .pill { display: inline-block; margin-left: 6px; padding: 1px 7px; border-radius: 999px; font-size: 10.5px;
   border: 1px solid var(--border); color: var(--muted); font-variant-numeric: tabular-nums; }
 
@@ -197,30 +182,32 @@ button[aria-pressed="true"] { background: color-mix(in srgb, var(--s1) 12%, var(
 .hp-main > * { min-width: 0; }
 .toolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 18px; }
 .toolbar label.field { display: inline-flex; gap: 6px; align-items: center; font-size: 12px; color: var(--muted); }
-input, select, button { font: inherit; color: var(--text); }
-input[type="text"], input[type="number"], select {
-  font: inherit; font-size: 12.5px; padding: 5px 9px; border-radius: 7px;
-  border: 1px solid var(--line); background: var(--surface); color: var(--ink); min-width: 0;
+/* Fields and buttons in the markup carry the UI kit's classes (oq-input, oq-select, oq-btn and
+   its variants). The ones the client builds in script get the same look from these rules, held at
+   zero specificity with :where() — states included, since a :hover outside it counts as a class —
+   so a kit class, or any rule below that names a class, always wins over them. */
+:where(input, select, button) { font: inherit; color: var(--text); }
+:where(input[type="text"], input[type="number"], input[type="search"], input[type="datetime-local"], select) {
+  font: inherit; font-size: var(--oq-text-sm); padding: 0 9px; height: var(--oq-control-sm); border-radius: var(--oq-radius-md);
+  border: 1px solid var(--oq-border-strong); background: var(--oq-surface); color: var(--oq-text); min-width: 0;
 }
-select { cursor: pointer; }
-input[type="search"] {
-  font: inherit; font-size: 12.5px; padding: 5px 10px; min-width: 180px; flex: 1 1 180px;
-  border: 1px solid var(--line); border-radius: 8px; background: var(--surface-2); color: var(--ink);
+:where(select) { cursor: pointer; }
+input::placeholder { color: var(--oq-text-faint); }
+:where(input[type=text], input[type=search]) { width: 150px; }
+#f-query { min-width: 180px; flex: 1 1 180px; }
+:where(button, a.linkbtn) {
+  font: inherit; font-size: var(--oq-text-sm); line-height: 1.4; padding: 5px calc(var(--oq-space) * 2.5);
+  min-height: var(--oq-control-sm); border-radius: var(--oq-radius-md);
+  border: 1px solid var(--oq-border-strong); background: transparent; color: var(--oq-text);
+  font-weight: 500; cursor: pointer; white-space: nowrap; display: inline-block;
 }
-input::placeholder { color: color-mix(in srgb, var(--muted) 80%, transparent); }
-input[type="search"]::placeholder { color: var(--muted); }
-input[type=text], input[type=search] { width: 150px; }
-input:focus, select:focus { border-color: var(--link); }
-button { font: inherit; font-size: 12.5px; line-height: 1.4; padding: 6px 11px; border-radius: 8px;
-  border: 1px solid var(--border); background: var(--panel); color: var(--text-2);
-  cursor: pointer; white-space: nowrap; }
-button:hover { background: var(--panel-2); color: var(--text); border-color: color-mix(in srgb, var(--text) 22%, var(--border)); }
-button.sm { padding: 4px 10px; font-size: 12px; }
+@media (hover: hover) {
+  :where(button:hover, a.linkbtn:hover) { background: var(--oq-hover); color: var(--text); }
+}
+:where(button[aria-pressed="true"]), .oq-btn[aria-pressed="true"] { background: var(--oq-soft); border-color: color-mix(in srgb, var(--oq-primary) 45%, var(--oq-border-strong)); color: var(--text); }
 /* One button per panel may be the one you came for. bothandlerjs marks the same ones. */
-/* A solid of its own rather than --accent: white on the accent itself measures 3.6:1,
-   which is under the floor for text this size. bothandlerjs carries the same token. */
-button.primary { background: var(--accent-solid); border-color: var(--accent-solid); color: #fff; font-weight: 560; }
-button.primary:hover { background: color-mix(in srgb, var(--accent-solid) 86%, #000); border-color: transparent; color: #fff; }
+/* .primary buttons made in script, in the kit's colours. Static ones carry oq-btn themselves. */
+button.primary:not(.oq-btn) { background: var(--oq-primary); border-color: var(--oq-primary); color: var(--oq-on-primary); font-weight: 560; }
 /* Prose inside a panel: the legend below the feed, and anywhere a screen has to say what
    the reader is looking at rather than count it. */
 .note { padding: 13px 15px; font-size: 12.5px; color: var(--text-2); }
@@ -235,9 +222,8 @@ button.primary:hover { background: color-mix(in srgb, var(--accent-solid) 86%, #
 .lg-block { color: var(--bad-text); }
 .lg-protocol-capture { color: var(--payload-text); }
 /* A choice of one, as a row of pills: bothandlerjs's range chips. */
-.seg { display: inline-flex; gap: 4px; flex-wrap: wrap; }
-.seg button { font-size: 11px; padding: 2px 8px; border-radius: 999px; color: var(--ink-2); }
-.seg button[aria-pressed="true"] { background: color-mix(in srgb, var(--s1) 14%, var(--surface)); border-color: color-mix(in srgb, var(--s1) 50%, var(--line)); color: var(--ink); font-weight: 560; }
+/* A choice of one: the UI kit's segmented control (oq-segmented). */
+.seg.oq-segmented > button { min-height: 0; }
 .switch { display: inline-flex; align-items: center; gap: 8px; user-select: none; cursor: pointer; font-weight: 500; font-size: 12.5px; position: relative; }
 .switch input { position: absolute; opacity: 0; width: 40px; height: 22px; margin: 0; cursor: pointer; }
 .track { width: 40px; height: 22px; border-radius: 20px; background: var(--panel-2); border: 1px solid var(--border); position: relative; transition: background .15s; flex: none; }
@@ -246,7 +232,7 @@ button.primary:hover { background: color-mix(in srgb, var(--accent-solid) 86%, #
 .switch input:checked + .track::after { transform: translateX(18px); background: var(--ok); }
 .switch input:focus-visible + .track { outline: 2px solid var(--focus); outline-offset: 2px; }
 
-.banner { padding: 11px 15px; border-radius: 8px; margin-bottom: 18px; font-size: 13px; display: flex; gap: 8px 12px; flex-wrap: wrap; align-items: baseline; }
+.banner { padding: 11px 15px; border-radius: var(--oq-radius-md); margin-bottom: 18px; font-size: 13px; display: flex; gap: 8px 12px; flex-wrap: wrap; align-items: baseline; }
 .banner.err { background: var(--bad-tint); border: 1px solid var(--bad-edge); color: var(--bad-text); }
 .banner.warn { background: var(--warn-tint); border: 1px solid var(--warn-edge); color: var(--warn-text); }
 .banner ul { margin: 0; padding-left: 18px; flex-basis: 100%; }
@@ -259,17 +245,18 @@ button.primary:hover { background: color-mix(in srgb, var(--accent-solid) 86%, #
 /* The number first, then what it counts — bothandlerjs's tile. Reordered here rather than in the
    markup, because the label still reads first to a screen reader, which is the right way round
    for somebody who cannot glance at the number. */
-.card { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 8px 12px 9px; min-width: 0; display: flex; flex-direction: column; }
+/* Each counter is the UI kit's stat tile (oq-stat), tightened: a row of them shares the width. */
+.card.oq-stat { padding: 8px 12px 9px; gap: 1px; }
 .card .value { order: 1; }
 .card .label { order: 2; margin-top: 2px; }
 .card .sub { order: 3; }
 .card .spark { order: 4; }
-.card .label { font-size: 10.5px; text-transform: uppercase; letter-spacing: .055em; color: var(--muted); font-weight: 560; }
-.card .value { font-size: 21px; font-weight: 620; letter-spacing: -.025em; line-height: 1.15; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.card .label { font-size: var(--oq-text-xs); text-transform: uppercase; letter-spacing: .06em; color: var(--oq-text-faint); font-weight: 600; }
+.card .value { font-size: var(--oq-text-xl); font-weight: 600; letter-spacing: -.02em; line-height: 1.15; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .card .value.small { font-size: 17px; font-family: var(--mono); }
 .card .sub { font-size: 11px; color: var(--muted); margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .card .spark { margin-top: 8px; height: 26px; }
-.hero { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 18px 20px;
+.hero { background: var(--panel); border: 1px solid var(--border); border-radius: var(--oq-radius-lg); padding: 18px 20px;
   display: flex; align-items: center; gap: 26px; flex-wrap: wrap; margin-bottom: 14px; }
 .hero .big { font-size: 48px; font-weight: 620; letter-spacing: -.03em; line-height: 1; }
 .hero .caption { font-size: 10.5px; color: var(--muted); text-transform: uppercase; letter-spacing: .055em; font-weight: 560; }
@@ -284,9 +271,10 @@ button.primary:hover { background: color-mix(in srgb, var(--accent-solid) 86%, #
 @container dash (max-width: 780px) { .grid2, .grid3 { grid-template-columns: 1fr; } }
 /* The page's own gutters are the window's business, not the column's. */
 @media (max-width: 780px) { .hp-header, .hp-main { padding-left: 16px; padding-right: 16px; } }
-.panel { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 16px 18px; min-width: 0; box-shadow: var(--panel-shadow); }
+/* Every panel is the UI kit's card (oq-card); its own padding is the only thing kept here. */
+.panel { padding: 16px 18px; min-width: 0; }
 .panel.wide { margin-bottom: 14px; }
-.panel h3 { margin: 0 0 4px; font-size: 11.5px; text-transform: uppercase; letter-spacing: .055em; color: var(--muted); font-weight: 620; display: flex; align-items: center; gap: 8px; }
+.panel h3 { margin: 0 0 4px; font-size: var(--oq-text-xs); text-transform: uppercase; letter-spacing: .08em; color: var(--oq-text-faint); font-weight: 600; display: flex; align-items: center; gap: 8px; }
 .panel h3 .hint { font-weight: 400; text-transform: none; letter-spacing: 0; color: var(--muted); font-size: 11.5px; margin-left: auto; }
 /* A panel that opens with its title gets bothandlerjs's header strip: the title and whatever
    describes its scope on one ruled line, the content below it. A panel without a title (an
@@ -310,18 +298,12 @@ button.primary:hover { background: color-mix(in srgb, var(--accent-solid) 86%, #
 .foot { margin: 20px 4px; color: var(--faint); font-size: 12px; }
 
 /* --- bars and charts ------------------------------------------------------ */
-/* The name sits inside a tinted track, the same bar bothandlerjs draws. The fill is the series
-   hue at low opacity so the name over it keeps its contrast, in either scheme. */
-.bars { display: grid; gap: 8px; padding: 12px 15px 14px; }
+/* The UI kit's ranked bar list (oq-bars): label, bar, count. Only the panel padding is ours. */
+.bars { padding: 12px 15px 14px; }
+.oq-bars > .note { grid-column: 1 / -1; padding: 0; }
 .panel:has(> h3:first-child) > .bars { margin: 0; }
 /* A note brings its own padding, the same padding bothandlerjs gives it. */
 .panel:has(> h3:first-child) > .note { margin: 0; }
-.barrow { display: grid; grid-template-columns: minmax(0, 1fr) 46px; gap: 10px; align-items: center; font-size: 12.5px; }
-.barrow .bar { position: relative; height: 20px; border-radius: 6px; overflow: hidden; background: color-mix(in srgb, var(--text) 5%, transparent); }
-.barrow .bar > span { position: absolute; inset: 0 auto 0 0; border-radius: 0 5px 5px 0; opacity: .3; }
-.barrow .name { position: relative; padding: 0 8px; line-height: 20px; font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.barrow .n { text-align: right; font-variant-numeric: tabular-nums; color: var(--ink-2); font-size: 12px; }
-.barrow .n em { font-style: normal; color: var(--faint); font-size: 11px; }
 .chart { width: 100%; display: block; overflow: visible; }
 .chart .gridline { stroke: var(--grid); stroke-width: 1; shape-rendering: crispEdges; }
 .chart .axis { fill: var(--faint); font-size: 10px; font-family: var(--sans); }
@@ -342,8 +324,8 @@ button.primary:hover { background: color-mix(in srgb, var(--accent-solid) 86%, #
 .spark-line { fill: none; stroke-width: 1.5; stroke-linejoin: round; }
 .legend { display: flex; gap: 14px; flex-wrap: wrap; margin-top: 10px; font-size: 12px; color: var(--ink-2); }
 .legend .key { display: inline-flex; align-items: center; gap: 6px; }
-.sw { display: inline-block; width: 10px; height: 10px; border-radius: 3px; flex: none; vertical-align: middle; margin-right: 4px; }
-.stackbar { display: flex; height: 26px; border-radius: 5px; overflow: hidden; background: var(--panel-2); gap: 2px; }
+.sw { display: inline-block; width: 10px; height: 10px; border-radius: var(--oq-radius-sm); flex: none; vertical-align: middle; margin-right: 4px; }
+.stackbar { display: flex; height: 26px; border-radius: var(--oq-radius-sm); overflow: hidden; background: var(--panel-2); gap: 2px; }
 .stackbar > div { min-width: 2px; }
 .stack-gap { margin-top: 14px; }
 .scale { display: flex; align-items: center; gap: 8px; margin-top: 10px; font-size: 10px; color: var(--faint); }
@@ -352,7 +334,7 @@ button.primary:hover { background: color-mix(in srgb, var(--accent-solid) 86%, #
 .scale-note { margin-left: 6px; }
 .meter-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 8px; }
 .meter-value { font-size: 34px; font-weight: 620; letter-spacing: -.025em; line-height: 1; }
-.meter-track { height: 10px; border-radius: 5px; background: var(--meter-track); overflow: hidden; }
+.meter-track { height: 10px; border-radius: var(--oq-radius-sm); background: var(--meter-track); overflow: hidden; }
 .meter-fill { height: 100%; background: var(--meter-fill); border-radius: 0 4px 4px 0; }
 .meter-note { margin: 9px 0 0; }
 .stage { margin-bottom: 10px; }
@@ -366,7 +348,7 @@ button.primary:hover { background: color-mix(in srgb, var(--accent-solid) 86%, #
 .cadence-facts { margin-top: 12px; }
 
 #tip { position: fixed; z-index: 100; pointer-events: none; opacity: 0; transition: opacity .08s; left: 0; top: 0;
-  background: var(--tip-bg); color: var(--text); border: 1px solid var(--border); border-radius: 8px; padding: 8px 11px;
+  background: var(--tip-bg); color: var(--text); border: 1px solid var(--border); border-radius: var(--oq-radius-md); padding: 8px 11px;
   font-size: 12px; max-width: 340px; box-shadow: var(--shadow); overflow-wrap: anywhere; }
 #tip.on { opacity: 1; }
 #tip .t { font-weight: 700; margin-bottom: 3px; }
@@ -379,12 +361,14 @@ button.primary:hover { background: color-mix(in srgb, var(--accent-solid) 86%, #
    border here is a bottom border on the cell plus the left accent on td.edge, so nothing
    is shared between two cells and separating merges or doubles nothing. bothandlerjs's
    tables are built the same way, for the same reason. */
-table { width: 100%; border-collapse: separate; border-spacing: 0; }
-.tablewrap { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; box-shadow: var(--panel-shadow); }
+:where(table) { width: 100%; border-collapse: separate; border-spacing: 0; font-variant-numeric: tabular-nums; }
+.tablewrap { background: var(--panel); border: 1px solid var(--border); border-radius: var(--oq-radius-lg); overflow: hidden; }
 .tablewrap.scroll { overflow-x: auto; }
-thead th { text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted);
-  padding: 9px 15px; background: var(--panel); border-bottom: 1px solid var(--border); white-space: nowrap; font-weight: 600; }
-tbody td, tbody th { padding: 7px 14px; border-bottom: 1px solid var(--row-line); font-size: 13px; vertical-align: middle; text-align: left; }
+/* Tables in the markup are the UI kit's (oq-table). Tables the client builds get the same header
+   and row rules here, at zero specificity so the kit's classes and the per-column rules win. */
+:where(thead th) { text-align: left; font-size: var(--oq-text-xs); text-transform: uppercase; letter-spacing: .06em; color: var(--oq-text-faint);
+  padding: 9px 15px; background: var(--oq-raised); border-bottom: 1px solid var(--oq-border); white-space: nowrap; font-weight: 600; }
+:where(tbody td, tbody th) { padding: 7px 14px; border-bottom: 1px solid var(--row-line); font-size: var(--oq-text-md); vertical-align: middle; text-align: left; }
 td.r, th.r { text-align: right; font-variant-numeric: tabular-nums; }
 /* Narrow, quiet, and never the reason a row wraps: the time is for scanning down, not for
    reading across. The date sits above the time rather than beside it, because one line of
@@ -410,8 +394,9 @@ tbody td.when .when-time { display: block; color: var(--text-2); }
    at 980px never fires and the right-hand columns are clipped on an ordinary desktop. The
    rungs are further down, after the table's own rules — a container query adds no
    specificity, so one written above them would lose. */
-.feed-panel { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; min-width: 0; box-shadow: var(--panel-shadow); container: feed / inline-size; }
-.feed-head { margin: 0; padding: 9px 14px; font-size: 11.5px; font-weight: 620; color: var(--muted); text-transform: uppercase; letter-spacing: .055em;
+/* The feed is the UI kit's card (oq-card), sized by its container for the column ladder below. */
+.feed-panel { overflow: hidden; min-width: 0; container: feed / inline-size; }
+.feed-head { margin: 0; padding: 9px 14px; font-size: var(--oq-text-xs); font-weight: 600; color: var(--oq-text-faint); text-transform: uppercase; letter-spacing: .08em;
   border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 10px; }
 .feed-head .hint { margin-left: auto; font-weight: 400; text-transform: none; letter-spacing: 0; font-size: 11.5px; }
 .feed-panel .toolbar { margin: 0; padding: 10px 15px; border-bottom: 1px solid var(--line); }
@@ -419,7 +404,7 @@ tbody td.when .when-time { display: block; color: var(--text-2); }
 .feed-panel .toolbar:has(+ .toolbar) { border-bottom: 0; }
 /* One click narrows the feed to what the honeypot did — bothandlerjs's outcome chips. */
 .filters { display: flex; gap: 5px; flex-wrap: wrap; }
-.filters button { font-size: 11.5px; padding: 3px 10px; border-radius: 999px; }
+.filters button { font-size: var(--oq-text-sm); padding: 3px 10px; border-radius: 999px; }
 /* The slash shortcut, shown inside the box it focuses, as bothandlerjs shows it. */
 /* ---- the feed toolbar, carried over from bothandlerjs's dashboard rule for rule ---------- */
 .search { position: relative; display: flex; flex: 1 1 180px; min-width: 180px; }
@@ -427,15 +412,15 @@ tbody td.when .when-time { display: block; color: var(--text-2); }
 .search kbd {
   position: absolute; right: 7px; top: 50%; transform: translateY(-50%);
   font: 500 10.5px/1 var(--mono); color: var(--muted); background: color-mix(in srgb, var(--ink) 6%, transparent);
-  border: 1px solid var(--line); border-radius: 4px; padding: 3px 5px; pointer-events: none;
+  border: 1px solid var(--line); border-radius: var(--oq-radius-sm); padding: 3px 5px; pointer-events: none;
 }
 .search input[type="search"]:focus + kbd, .search input[type="search"]:not(:placeholder-shown) + kbd { display: none; }
 .suggest {
   position: absolute; top: calc(100% + 4px); left: 0; z-index: 30; margin: 0; padding: 4px;
   list-style: none; min-width: 220px; max-height: 260px; overflow-y: auto;
-  background: var(--surface); border: 1px solid var(--line); border-radius: 9px; box-shadow: var(--shadow);
+  background: var(--surface); border: 1px solid var(--line); border-radius: var(--oq-radius-lg); box-shadow: var(--shadow);
 }
-.suggest li { padding: 4px 9px; border-radius: 6px; cursor: pointer; font-size: 12px; font-family: var(--mono); }
+.suggest li { padding: 4px 9px; border-radius: var(--oq-radius-sm); cursor: pointer; font-size: 12px; font-family: var(--mono); }
 .suggest li[aria-selected="true"] { background: color-mix(in srgb, var(--focus) 18%, transparent); }
 .saved { display: flex; align-items: center; gap: 6px; }
 .saved input.saved-name { width: 18ch; flex: 0 0 auto; font: inherit; font-size: 12px; padding: 4px 8px; }
@@ -444,9 +429,9 @@ tbody td.when .when-time { display: block; color: var(--text-2); }
 .retention { border-left: 1px solid var(--line); padding-left: 10px; }
 .retention select { font-size: 11.5px; }
 .timeframe label { display: inline-flex; align-items: center; gap: 4px; }
-.timeframe input { font: inherit; font-size: 11.5px; padding: 2px 5px; border-radius: 6px; border: 1px solid var(--line); background: var(--surface); color: var(--ink); }
-.timeframe button, .saved button { font: inherit; font-size: 11.5px; padding: 3px 9px; border-radius: 7px; border: 1px solid var(--line); background: var(--surface); color: var(--ink); cursor: pointer; }
-.saved select { font: inherit; font-size: 11.5px; padding: 3px 6px; border-radius: 7px; border: 1px solid var(--line); background: var(--surface); color: var(--ink); max-width: 170px; }
+.timeframe input { font: inherit; font-size: 11.5px; padding: 2px 5px; border-radius: var(--oq-radius-sm); border: 1px solid var(--line); background: var(--surface); color: var(--ink); }
+.timeframe button, .saved button { font: inherit; font-size: 11.5px; padding: 3px 9px; border-radius: var(--oq-radius-md); border: 1px solid var(--line); background: var(--surface); color: var(--ink); cursor: pointer; }
+.saved select { font: inherit; font-size: 11.5px; padding: 3px 6px; border-radius: var(--oq-radius-md); border: 1px solid var(--line); background: var(--surface); color: var(--ink); max-width: 170px; }
 .saved button:hover { border-color: var(--focus); }
 .arrange { display: flex; gap: 6px; align-items: center; }
 .arrange label { font-size: 11.5px; color: var(--muted); }
@@ -457,16 +442,16 @@ tbody tr.grp th {
   border-top: 1px solid var(--line); border-bottom: 1px solid var(--line-soft);
 }
 tbody tr.grp:first-child th { border-top: 0; }
-.grp-toggle { display: inline-flex; align-items: baseline; gap: 8px; border: 0; background: none; border-radius: 6px; padding: 4px 8px; font: inherit; font-weight: 650; color: var(--ink-2); text-align: left; }
+.grp-toggle { display: inline-flex; align-items: baseline; gap: 8px; border: 0; background: none; border-radius: var(--oq-radius-sm); padding: 4px 8px; font: inherit; font-weight: 650; color: var(--ink-2); text-align: left; }
 .grp-toggle:hover { background: color-mix(in srgb, var(--ink) 6%, transparent); color: var(--ink); border-color: transparent; }
 .grp-toggle .chev { color: var(--muted); width: 9px; display: inline-block; }
-.grp-only { border: 0; background: none; padding: 3px 8px; font-size: 11px; color: var(--muted); border-radius: 6px; opacity: 0; }
+.grp-only { border: 0; background: none; padding: 3px 8px; font-size: 11px; color: var(--muted); border-radius: var(--oq-radius-sm); opacity: 0; }
 tr.grp:hover .grp-only, .grp-only:focus-visible { opacity: 1; }
 .grp-only:hover { background: color-mix(in srgb, var(--s1) 14%, transparent); color: var(--ink); border-color: transparent; }
 .grp-key { font-family: var(--mono); }
 .grp-n { color: var(--muted); font-weight: 400; font-variant-numeric: tabular-nums; }
 .pager { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 9px 2px 2px; font-size: 12px; color: var(--muted); }
-.pager button { font: inherit; padding: 4px 11px; border-radius: 7px; border: 1px solid var(--line); background: var(--surface); color: var(--ink); cursor: pointer; }
+.pager button { font: inherit; padding: 4px 11px; border-radius: var(--oq-radius-md); border: 1px solid var(--line); background: var(--surface); color: var(--ink); cursor: pointer; }
 .pager button:hover:not(:disabled) { border-color: var(--focus); }
 .pager button:disabled { opacity: .45; cursor: default; }
 .pager .where { font-variant-numeric: tabular-nums; }
@@ -475,16 +460,8 @@ tr.grp:hover .grp-only, .grp-only:focus-visible { opacity: 1; }
 .pager.pager-bottom { padding: 10px 14px; border-top: 1px solid var(--line); }
 .pager .step { min-width: 30px; font-size: 15px; line-height: 1; padding: 3px 8px 5px; }
 .pager .size { display: flex; align-items: center; gap: 6px; margin-left: auto; }
-.pager .size select { font: inherit; padding: 3px 6px; border-radius: 6px; border: 1px solid var(--line); background: var(--surface); color: var(--ink); }
-.toasts { position: fixed; right: 18px; bottom: 18px; z-index: 60; display: grid; gap: 8px; max-width: 380px; }
-.toast { background: var(--raised); border: 1px solid var(--line); border-left: 3px solid var(--s1); border-radius: 9px; padding: 10px 12px; font-size: 12.5px; box-shadow: 0 6px 22px rgba(0,0,0,.18); animation: toast-in .16s ease-out; }
-.toast.ok { border-left-color: var(--good-text); }
-.toast.bad { border-left-color: var(--crit-text); }
-.toast.warn { border-left-color: var(--warn-text); }
-.toast b { display: block; margin-bottom: 2px; }
-.toast span { color: var(--muted); }
-@keyframes toast-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
-@media (prefers-reduced-motion: reduce) { .toast { animation: none; } }
+.pager .size select { font: inherit; padding: 3px 6px; border-radius: var(--oq-radius-sm); border: 1px solid var(--line); background: var(--surface); color: var(--ink); }
+/* The UI kit's toast region and toasts (oq-toasts, oq-toast). */
 .feed-side { display: grid; gap: 16px; min-width: 0; }
 /* Sessions, Actors and Indicators sit in the same frame as the feed, the way bothandlerjs frames
    its actor registry: a ruled title with a count, then what the list is, then the list. */
@@ -492,7 +469,7 @@ tr.grp:hover .grp-only, .grp-only:focus-visible { opacity: 1; }
 .list-body { padding: 12px 14px 2px; }
 /* The policy editor: a box of rules, what pressing Preview said about them, and the two buttons. */
 #policy-rules { display: block; width: 100%; resize: vertical; min-height: 220px; font: 12.5px/1.55 var(--mono); color: var(--text);
-  background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; }
+  background: var(--panel-2); border: 1px solid var(--border); border-radius: var(--oq-radius-md); padding: 10px 12px; }
 #policy-rules:focus { border-color: var(--link); }
 .policy-actions { display: flex; align-items: center; gap: 8px; margin: 10px 0 4px; }
 #policy-apply { border-color: color-mix(in srgb, var(--s1) 45%, var(--border)); color: var(--text); }
@@ -550,10 +527,11 @@ tr.grp:hover .grp-only, .grp-only:focus-visible { opacity: 1; }
 .ref-link:hover { background: none; color: var(--ink); border-color: transparent transparent currentColor; }
 /* The counter strip bothandlerjs keeps above its views, rule for rule. */
 .tiles { display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(136px, 1fr)); }
-.tile { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 8px 12px 9px; }
-.tile .v { font-size: 21px; font-weight: 620; letter-spacing: -.025em; line-height: 1.15; font-variant-numeric: tabular-nums; }
-.tile .k { font-size: 10.5px; color: var(--muted); text-transform: uppercase; letter-spacing: .055em; margin-top: 2px; font-weight: 560; }
-.tile .s { font-size: 11px; color: var(--muted); margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* The UI kit's stat tile (oq-stat), tightened: a row of them shares the width. */
+.tile.oq-stat { padding: 8px 12px 9px; gap: 1px; }
+.tile .v { font-size: var(--oq-text-xl); }
+.tile .k { text-transform: uppercase; letter-spacing: .06em; font-size: var(--oq-text-xs); font-weight: 600; }
+.tile .s { font-size: var(--oq-text-xs); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .tile.good .v { color: var(--good-text); }
 .tile.warn .v { color: var(--warn-text); }
 .tile.crit .v { color: var(--crit-text); }
@@ -603,7 +581,7 @@ table.feed td:nth-child(3) { min-width: 240px; }
    on click, because that is a convenience rather than a role; the keyboard gets this, which is
    one control with one name and one job. */
 .row-toggle {
-  border: 0; background: none; padding: 0; margin: 0; border-radius: 4px;
+  border: 0; background: none; padding: 0; margin: 0; border-radius: var(--oq-radius-sm);
   font: inherit; font-size: 12.5px; color: inherit; text-align: left; cursor: pointer; width: 100%;
 }
 .row-toggle:hover { background: none; color: inherit; border-color: transparent; }
@@ -613,7 +591,7 @@ table.feed td:nth-child(3) { min-width: 240px; }
 .req-sub .ip { color: var(--text-2); }
 .req-sub .actor { color: var(--violet-text); font-weight: 600; }
 #tester textarea { display: block; width: 100%; margin-top: 8px; resize: vertical; min-height: 84px; font: 12px/1.5 var(--mono); color: var(--text);
-  background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; }
+  background: var(--panel-2); border: 1px solid var(--border); border-radius: var(--oq-radius-md); padding: 8px 10px; }
 #tester textarea:focus { border-color: var(--link); }
 .test-actions { display: flex; justify-content: flex-end; align-items: center; gap: 10px; margin-top: 8px; }
 #test-result:not(:empty) { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border); display: grid; gap: 8px; }
@@ -637,12 +615,12 @@ tr.flash { animation: flash 1.1s ease-out; }
 
 /* --- incident detail --------------------------------------------------------- */
 .detail-inner { padding: 16px 18px; }
-.detail-inner pre, .metrics-raw { margin: 0; background: var(--pre-bg); border: 1px solid var(--border); border-radius: 8px; padding: 12px; overflow: auto; font-size: 12px; max-height: 320px; }
+.detail-inner pre, .metrics-raw { margin: 0; background: var(--pre-bg); border: 1px solid var(--border); border-radius: var(--oq-radius-md); padding: 12px; overflow: auto; font-size: 12px; max-height: 320px; }
 .metrics-raw { max-height: 420px; }
 .explain-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
 @container dash (max-width: 820px) { .explain-grid { grid-template-columns: 1fr; } }
 .explain-col > h4, .decode > h4 { margin: 0 0 9px; font-size: 11px; text-transform: uppercase; letter-spacing: .6px; color: var(--muted); font-weight: 600; }
-.ex-card { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; margin-bottom: 10px; }
+.ex-card { background: var(--panel); border: 1px solid var(--border); border-radius: var(--oq-radius-lg); padding: 12px 14px; margin-bottom: 10px; }
 .ex-card.shadow { border-style: dashed; }
 .ex-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 9px; }
 .ex-reason { font-size: 12px; overflow-wrap: anywhere; }
@@ -657,9 +635,9 @@ details.raw { margin-top: 12px; }
 details.raw > summary { cursor: pointer; color: var(--muted); font-size: 12px; margin-bottom: 8px; }
 details.raw > summary:hover { color: var(--text); }
 .actor { margin-bottom: 12px; font-size: 12px; color: var(--muted); }
-code.fp { color: var(--violet-text); background: var(--violet-tint); border: 1px solid var(--violet-edge); border-radius: 6px; padding: 1px 7px; }
+code.fp { color: var(--violet-text); background: var(--violet-tint); border: 1px solid var(--violet-edge); border-radius: var(--oq-radius-sm); padding: 1px 7px; }
 .decode { margin-top: 12px; }
-.dec-row { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 9px 12px; margin-bottom: 8px; }
+.dec-row { background: var(--panel); border: 1px solid var(--border); border-radius: var(--oq-radius-md); padding: 9px 12px; margin-bottom: 8px; }
 .dec-meta { display: flex; gap: 8px; align-items: center; margin-bottom: 6px; flex-wrap: wrap; }
 .dec-src { font-size: 10px; text-transform: uppercase; letter-spacing: .5px; color: var(--muted); }
 .dec-enc { font-family: var(--mono); font-size: 10px; padding: 1px 7px; border-radius: 20px; background: var(--info-tint); color: var(--info-text); border: 1px solid var(--info-edge); }
@@ -667,9 +645,9 @@ code.fp { color: var(--violet-text); background: var(--violet-tint); border: 1px
 .dec-raw { font-family: var(--mono); font-size: 11px; color: var(--faint); word-break: break-all; margin: 2px 0 0; }
 
 /* --- badges ------------------------------------------------------------- */
-.badge { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 11px; font-weight: 600;
-  white-space: nowrap; background: var(--panel-2); color: var(--muted); border: 1px solid var(--border); }
-.badge.det { background: hsl(var(--h, 210) 60% 55% / .14); color: hsl(var(--h, 210) var(--det-sat) var(--det-light)); border-color: hsl(var(--h, 210) 60% 55% / .45); }
+/* Every badge is the UI kit's chip (client/badges.ts). Detectors wear the kit's hue tags; the
+   response classes below tint the rest. */
+.badge { font-weight: 600; }
 .badge.rotating { background: var(--bad-tint); color: var(--bad-text); border-color: var(--bad-edge); }
 .badge.ipbtn { cursor: pointer; color: var(--text); }
 .badge.ipbadge { color: var(--text); }
@@ -681,10 +659,10 @@ code.fp { color: var(--violet-text); background: var(--violet-tint); border: 1px
 .method { font-family: var(--mono); font-weight: 500; font-size: 12.5px; color: var(--text-2); }
 .score { font-variant-numeric: tabular-nums; font-weight: 700; }
 .sev-low { color: var(--ok-text); } .sev-mid { color: var(--warn-text); } .sev-high { color: var(--bad-text); }
-.resp-block { background: var(--bad-tint); color: var(--bad-text); border-color: var(--bad-edge); }
-.resp-tarpit, .resp-rate-limit, .resp-chaos, .resp-gzip-bomb { background: var(--warn-tint); color: var(--warn-text); border-color: var(--warn-edge); }
-.resp-decoy-content, .resp-fake-data, .resp-fake-success { background: var(--info-tint); color: var(--info-text); border-color: var(--info-edge); }
-.resp-redirect { background: var(--violet-tint); color: var(--violet-text); border-color: var(--violet-edge); }
+.badge.resp-block { background: var(--bad-tint); color: var(--bad-text); border-color: var(--bad-edge); }
+.badge:is(.resp-tarpit, .resp-rate-limit, .resp-chaos, .resp-gzip-bomb) { background: var(--warn-tint); color: var(--warn-text); border-color: var(--warn-edge); }
+.badge:is(.resp-decoy-content, .resp-fake-data, .resp-fake-success) { background: var(--info-tint); color: var(--info-text); border-color: var(--info-edge); }
+.badge.resp-redirect { background: var(--violet-tint); color: var(--violet-text); border-color: var(--violet-edge); }
 
 /* --- sessions, actors ----------------------------------------------------- */
 .panel.session { margin-bottom: 12px; }
@@ -709,7 +687,7 @@ ${SLOT_RULES}
 `;
 
 export const DASHBOARD_MARKUP = String.raw`<div id="hp-app" class="hp-app">
-<a class="skip" href="#hp-main">Skip to the dashboard</a>
+<a class="skip oq-skip-link" href="#hp-main">Skip to the dashboard</a>
 <header class="hp-header">
   <div class="head-row">
     <div class="brand"><h1 id="hp-title">__TITLE__</h1><span>operator dashboard</span></div>
@@ -717,21 +695,30 @@ export const DASHBOARD_MARKUP = String.raw`<div id="hp-app" class="hp-app">
     <div class="grow"></div>
     <nav class="links" id="hp-links" aria-label="Links" hidden></nav>
     <div class="head-actions">
-      <button id="refresh" type="button">Refresh</button>
-      <button id="theme" type="button">Theme</button>
-      <button id="live" type="button" aria-pressed="false">Pause</button>
+      <button class="oq-btn oq-btn--outline oq-neutral oq-sm" id="refresh" type="button">Refresh</button>
+      <select id="theme" class="oq-select oq-sm" aria-label="Colour theme">
+        <option value="auto">System</option>
+        <option value="light">Light</option>
+        <option value="dark">Dark</option>
+        <option value="graphite">Graphite</option>
+        <option value="midnight">Midnight</option>
+        <option value="contrast">Contrast</option>
+        <option value="paper">Paper</option>
+        <option value="slate">Slate</option>
+      </select>
+      <button class="oq-btn oq-btn--outline oq-neutral oq-sm" id="live" type="button" aria-pressed="false">Pause</button>
     </div>
   </div>
   <div class="nav-row">
-  <div class="tabs" role="tablist" aria-label="Dashboard screens">
-    <button type="button" role="tab" id="tab-overview" aria-controls="pane-overview" aria-selected="true">Overview</button>
-    <button type="button" role="tab" id="tab-incidents" aria-controls="pane-incidents" aria-selected="false" tabindex="-1">Incidents<span class="pill" id="tc-incidents">0</span></button>
-    <button type="button" role="tab" id="tab-statistics" aria-controls="pane-statistics" aria-selected="false" tabindex="-1">Statistics</button>
-    <button type="button" role="tab" id="tab-sessions" aria-controls="pane-sessions" aria-selected="false" tabindex="-1">Sessions<span class="pill" id="tc-sessions">0</span></button>
-    <button type="button" role="tab" id="tab-actors" aria-controls="pane-actors" aria-selected="false" tabindex="-1">Actors<span class="pill" id="tc-actors">0</span></button>
-    <button type="button" role="tab" id="tab-intel" aria-controls="pane-intel" aria-selected="false" tabindex="-1">Threat intel<span class="pill" id="tc-ioc">0</span></button>
-    <button type="button" role="tab" id="tab-policy" aria-controls="pane-policy" aria-selected="false" tabindex="-1">Policy</button>
-    <button type="button" role="tab" id="tab-reference" aria-controls="pane-reference" aria-selected="false" tabindex="-1">Reference</button>
+  <div class="tabs oq-tabs" role="tablist" aria-label="Dashboard screens">
+    <button class="oq-tab" type="button" role="tab" id="tab-overview" aria-controls="pane-overview" aria-selected="true">Overview</button>
+    <button class="oq-tab" type="button" role="tab" id="tab-incidents" aria-controls="pane-incidents" aria-selected="false" tabindex="-1">Incidents<span class="tab-badge oq-badge oq-neutral" id="tc-incidents">0</span></button>
+    <button class="oq-tab" type="button" role="tab" id="tab-statistics" aria-controls="pane-statistics" aria-selected="false" tabindex="-1">Statistics</button>
+    <button class="oq-tab" type="button" role="tab" id="tab-sessions" aria-controls="pane-sessions" aria-selected="false" tabindex="-1">Sessions<span class="tab-badge oq-badge oq-neutral" id="tc-sessions">0</span></button>
+    <button class="oq-tab" type="button" role="tab" id="tab-actors" aria-controls="pane-actors" aria-selected="false" tabindex="-1">Actors<span class="tab-badge oq-badge oq-neutral" id="tc-actors">0</span></button>
+    <button class="oq-tab" type="button" role="tab" id="tab-intel" aria-controls="pane-intel" aria-selected="false" tabindex="-1">Threat intel<span class="tab-badge oq-badge oq-neutral" id="tc-ioc">0</span></button>
+    <button class="oq-tab" type="button" role="tab" id="tab-policy" aria-controls="pane-policy" aria-selected="false" tabindex="-1">Policy</button>
+    <button class="oq-tab" type="button" role="tab" id="tab-reference" aria-controls="pane-reference" aria-selected="false" tabindex="-1">Reference</button>
   </div>
     <dl class="facts">
       <div><dt>instance</dt><dd id="hp-instance"></dd></div>
@@ -747,8 +734,8 @@ export const DASHBOARD_MARKUP = String.raw`<div id="hp-app" class="hp-app">
 
   <div id="stream-notice" class="banner warn" role="status" hidden>
     <span id="stream-notice-text" class="grow"></span>
-    <button id="stream-notice-reload" type="button" class="sm">Reload</button>
-    <button id="stream-notice-dismiss" type="button" class="sm">Dismiss</button>
+    <button id="stream-notice-reload" type="button" class="sm oq-btn oq-btn--outline oq-neutral oq-sm">Reload</button>
+    <button id="stream-notice-dismiss" type="button" class="sm oq-btn oq-btn--outline oq-neutral oq-sm">Dismiss</button>
   </div>
   <div id="banner" class="banner err" role="alert" hidden><strong id="banner-title"></strong><ul id="banner-list"></ul></div>
 
@@ -771,14 +758,14 @@ export const DASHBOARD_MARKUP = String.raw`<div id="hp-app" class="hp-app">
     </div>
 
     <div class="cards">
-      <div class="card"><div class="label">Top offender</div><div class="value small" id="c-top">&#8212;</div><div class="sub" id="c-top-sub"></div></div>
-      <div class="card"><div class="label">Last seen</div><div class="value small" id="c-last">&#8212;</div><div class="sub" id="c-last-sub"></div></div>
-      <div class="card"><div class="label">Peak rate</div><div class="value" id="c-peak">&#8212;</div><div class="sub" id="c-peak-sub"></div></div>
-      <div class="card"><div class="label">Median score</div><div class="value" id="c-median">&#8212;</div><div class="sub" id="c-median-sub"></div></div>
-      <div class="card"><div class="label">Blocked share</div><div class="value" id="c-blockshare">&#8212;</div><div class="sub" id="c-blockshare-sub"></div></div>
+      <div class="card oq-stat"><div class="label">Top offender</div><div class="value small" id="c-top">&#8212;</div><div class="sub" id="c-top-sub"></div></div>
+      <div class="card oq-stat"><div class="label">Last seen</div><div class="value small" id="c-last">&#8212;</div><div class="sub" id="c-last-sub"></div></div>
+      <div class="card oq-stat"><div class="label">Peak rate</div><div class="value" id="c-peak">&#8212;</div><div class="sub" id="c-peak-sub"></div></div>
+      <div class="card oq-stat"><div class="label">Median score</div><div class="value" id="c-median">&#8212;</div><div class="sub" id="c-median-sub"></div></div>
+      <div class="card oq-stat"><div class="label">Blocked share</div><div class="value" id="c-blockshare">&#8212;</div><div class="sub" id="c-blockshare-sub"></div></div>
     </div>
 
-    <div class="panel wide">
+    <div class="panel wide oq-card">
       <h3>Incident volume<span class="hint" id="ov-bucket"></span><button type="button" class="tabletoggle" data-table="ov-vol-table">table view</button></h3>
       <p class="sub">Every recorded hit, bucketed over the observation window. Hover for the exact count.</p>
       <div id="ov-vol"></div>
@@ -786,25 +773,25 @@ export const DASHBOARD_MARKUP = String.raw`<div id="hp-app" class="hp-app">
     </div>
 
     <div class="grid2">
-      <div class="panel"><h3>Detections by type<button type="button" class="tabletoggle" data-table="ov-det-table">table view</button></h3>
+      <div class="panel oq-card"><h3>Detections by type<button type="button" class="tabletoggle" data-table="ov-det-table">table view</button></h3>
         <p class="sub">How many incidents each detector fired on.</p>
         <div id="p-detectors"></div><div class="datatable" id="ov-det-table" hidden></div></div>
-      <div class="panel"><h3>Top offenders by score<button type="button" class="tabletoggle" data-table="ov-off-table">table view</button></h3>
+      <div class="panel oq-card"><h3>Top offenders by score<button type="button" class="tabletoggle" data-table="ov-off-table">table view</button></h3>
         <p class="sub">Cumulative suspicion score per source IP.</p>
         <div id="p-offenders"></div><div class="datatable" id="ov-off-table" hidden></div></div>
     </div>
 
-    <div class="panel wide" data-needs="overview">
+    <div class="panel wide oq-card" data-needs="overview">
       <h3>Notices<span class="hint" id="notice-count"></span></h3>
       <p class="sub">What this honeypot has said about itself: startup warnings, settings that would quietly do nothing, and every runtime change with who made it. Held in memory for this run.</p>
       <div id="p-notices"></div>
     </div>
 
     <div class="grid2">
-      <div class="panel"><h3>Response actions served</h3>
+      <div class="panel oq-card"><h3>Response actions served</h3>
         <p class="sub">What the honeypot answered with: the escalation policy's output.</p>
         <div id="p-responses-mix"></div><div id="p-responses-list" class="stack-gap"></div></div>
-      <div class="panel"><h3>Latest activity</h3>
+      <div class="panel oq-card"><h3>Latest activity</h3>
         <p class="sub">The five most recent incidents. The full list is on the Incidents screen.</p>
         <div id="p-recent"></div></div>
     </div>
@@ -812,36 +799,36 @@ export const DASHBOARD_MARKUP = String.raw`<div id="hp-app" class="hp-app">
 
   <section role="tabpanel" id="pane-incidents" aria-labelledby="tab-incidents" hidden>
     <div class="feed-layout">
-    <section class="feed-panel" aria-labelledby="feed-title">
+    <section class="feed-panel oq-card" aria-labelledby="feed-title">
     <h2 class="feed-head"><span id="feed-title">Incidents</span><span class="hint" id="feed-summary"></span></h2>
     <div class="toolbar">
       <div class="filters" id="f-outcome" role="group" aria-label="What the honeypot did"></div>
       <div class="search">
-        <input type="search" id="f-query" placeholder="ip:198.51.100.7  detector:decoy-path  -action:not-found" spellcheck="false" autocomplete="off"
+        <input class="oq-input oq-sm" type="search" id="f-query" placeholder="ip:198.51.100.7  detector:decoy-path  -action:not-found" spellcheck="false" autocomplete="off"
                role="combobox" aria-expanded="false" aria-controls="f-suggest" aria-autocomplete="list" aria-label="Filter the incidents">
-        <kbd aria-hidden="true">/</kbd>
+        <kbd class="oq-kbd" aria-hidden="true">/</kbd>
         <ul class="suggest" id="f-suggest" role="listbox" aria-label="Filter suggestions" hidden></ul>
       </div>
       <div class="saved" id="saved-filters"></div>
       <div class="timeframe" id="timeframe">
-        <label>From <input type="datetime-local" id="from-at" step="1"></label>
-        <label>To <input type="datetime-local" id="to-at" step="1"></label>
-        <button type="button" id="timeframe-clear" hidden>Clear</button>
+        <label>From <input class="oq-input oq-sm" type="datetime-local" id="from-at" step="1"></label>
+        <label>To <input class="oq-input oq-sm" type="datetime-local" id="to-at" step="1"></label>
+        <button class="oq-btn oq-btn--outline oq-neutral oq-sm" type="button" id="timeframe-clear" hidden>Clear</button>
       </div>
       <div class="timeframe retention">
         <label for="f-limit">Load</label>
-        <select id="f-limit" title="How many of the most recent incidents to fetch. The filters above search what is loaded."></select>
+        <select class="oq-select oq-sm" id="f-limit" title="How many of the most recent incidents to fetch. The filters above search what is loaded."></select>
       </div>
       <div class="arrange">
         <label for="feed-order">Order</label>
-        <select id="feed-order">
+        <select class="oq-select oq-sm" id="feed-order">
           <option value="newest">Newest first</option>
           <option value="oldest">Oldest first</option>
           <option value="score-high">Highest score</option>
           <option value="score-low">Lowest score</option>
         </select>
         <label for="feed-group">Group</label>
-        <select id="feed-group">
+        <select class="oq-select oq-sm" id="feed-group">
           <option value="none">No grouping</option>
           <option value="ip">Address</option>
           <option value="actor">Actor</option>
@@ -849,13 +836,13 @@ export const DASHBOARD_MARKUP = String.raw`<div id="hp-app" class="hp-app">
           <option value="outcome">Outcome</option>
           <option value="path">Path</option>
         </select>
-        <button id="feed-roll" type="button" aria-pressed="false" hidden>Roll up all</button>
+        <button class="oq-btn oq-btn--outline oq-neutral oq-sm" id="feed-roll" type="button" aria-pressed="false" hidden>Roll up all</button>
       </div>
-      <button id="f-export" type="button" title="Download every incident matching this filter as JSON Lines, which hackerpot replay reads">Export</button>
+      <button class="oq-btn oq-btn--outline oq-neutral oq-sm" id="f-export" type="button" title="Download every incident matching this filter as JSON Lines, which hackerpot replay reads">Export</button>
       <div class="pager pager-inline" id="feed-pager-top" hidden></div>
     </div>
     <div class="scroll">
-      <table class="feed">
+      <table class="feed oq-table oq-table--hover">
         <thead><tr><th scope="col">Time</th><th scope="col">Request</th><th scope="col">Detectors</th><th scope="col" class="r">Score</th><th scope="col">Response</th></tr></thead>
         <tbody id="rows"><tr><td colspan="5"><div class="empty">Loading incidents.</div></td></tr></tbody>
       </table>
@@ -863,15 +850,15 @@ export const DASHBOARD_MARKUP = String.raw`<div id="hp-app" class="hp-app">
     <div class="pager pager-bottom" id="feed-pager-bottom" hidden></div>
     </section>
     <aside class="feed-side" aria-label="What the rows above contain">
-      <section class="panel"><h3>Detectors firing <span class="hint" id="side-scope"></span></h3><div id="side-detectors"></div></section>
-      <section class="panel"><h3>Busiest sources <span class="hint" id="side-scope-ips"></span></h3><div id="side-sources"></div></section>
-      <section class="panel" id="tester" aria-labelledby="tester-title" hidden>
+      <section class="panel oq-card"><h3>Detectors firing <span class="hint" id="side-scope"></span></h3><div id="side-detectors"></div></section>
+      <section class="panel oq-card"><h3>Busiest sources <span class="hint" id="side-scope-ips"></span></h3><div id="side-sources"></div></section>
+      <section class="panel oq-card" id="tester" aria-labelledby="tester-title" hidden>
         <h3><span id="tester-title">Test a request</span> <span class="hint">nothing is recorded</span></h3>
-        <textarea id="test-input" rows="4" spellcheck="false" autocomplete="off" aria-label="A User-Agent, a curl command, or a request line with headers" placeholder="Paste a User-Agent, a curl command, or a request with its headers"></textarea>
-        <div class="test-actions"><span class="faint tiny">Ctrl+Enter</span><button id="test-run" type="button" class="primary">Try it</button></div>
+        <textarea class="oq-textarea" id="test-input" rows="4" spellcheck="false" autocomplete="off" aria-label="A User-Agent, a curl command, or a request line with headers" placeholder="Paste a User-Agent, a curl command, or a request with its headers"></textarea>
+        <div class="test-actions"><span class="faint tiny">Ctrl+Enter</span><button id="test-run" type="button" class="primary oq-btn oq-sm">Try it</button></div>
         <div id="test-result" aria-live="polite"></div>
       </section>
-      <section class="panel" id="feed-legend" aria-labelledby="feed-legend-title">
+      <section class="panel oq-card" id="feed-legend" aria-labelledby="feed-legend-title">
         <h3 id="feed-legend-title">Reading this</h3>
         <div class="note">
           <p>The <b>left edge</b> of a row is what the honeypot answered with, in the colours the badges and the
@@ -894,7 +881,7 @@ export const DASHBOARD_MARKUP = String.raw`<div id="hp-app" class="hp-app">
     <h2 class="sr-only">Statistics</h2>
     <div class="toolbar">
       <span class="faint small" id="st-range-label">Window</span>
-      <div class="seg" id="st-range" role="group" aria-labelledby="st-range-label">
+      <div class="seg oq-segmented" id="st-range" role="group" aria-labelledby="st-range-label">
         <button type="button" data-range="0" aria-pressed="true">all</button>
         <button type="button" data-range="300000" aria-pressed="false">5m</button>
         <button type="button" data-range="900000" aria-pressed="false">15m</button>
@@ -902,7 +889,7 @@ export const DASHBOARD_MARKUP = String.raw`<div id="hp-app" class="hp-app">
         <button type="button" data-range="21600000" aria-pressed="false">6h</button>
         <button type="button" data-range="86400000" aria-pressed="false">24h</button>
       </div>
-      <label class="field">Protocol <select id="st-proto"><option value="">all</option></select></label>
+      <label class="field">Protocol <select class="oq-select oq-sm" id="st-proto"><option value="">all</option></select></label>
       <div class="spacer"></div>
       <label class="switch small"><input id="st-tables" type="checkbox"><span class="track" aria-hidden="true"></span>Data tables</label>
       <span class="faint small" id="st-scope"></span>
@@ -911,21 +898,21 @@ export const DASHBOARD_MARKUP = String.raw`<div id="hp-app" class="hp-app">
     <div class="cards" id="st-kpis"></div>
 
     <h2 class="sec-title">Volume &amp; tempo <span>when the traffic arrived, and how fast</span></h2>
-    <div class="panel wide">
+    <div class="panel wide oq-card">
       <h3>Incidents over time<span class="hint" id="st-bucket"></span><button type="button" class="tabletoggle" data-table="st-vol-table">table view</button></h3>
       <p class="sub">Incident count per bucket, with the distinct source IPs active in each.</p>
       <div id="st-vol"></div>
       <div class="datatable" id="st-vol-table" hidden></div>
     </div>
     <div class="grid2">
-      <div class="panel"><h3>Cumulative reach</h3>
+      <div class="panel oq-card"><h3>Cumulative reach</h3>
         <p class="sub">Unique source IPs and unique actor fingerprints seen so far. A flat line means one attacker persisting; a climbing one means a widening campaign.</p>
         <div id="st-cum"></div></div>
-      <div class="panel"><h3>Request cadence<span class="hint">inter-arrival gaps</span></h3>
+      <div class="panel oq-card"><h3>Request cadence<span class="hint">inter-arrival gaps</span></h3>
         <p class="sub">Time between consecutive requests from the same IP. Tight, low-variance gaps are a machine; human browsing is bursty and irregular.</p>
         <div id="st-cadence-chart"></div><div id="st-cadence-facts" class="cadence-facts"></div></div>
     </div>
-    <div class="panel wide">
+    <div class="panel wide oq-card">
       <h3>Activity clock<span class="hint">hour of day by day of week, local time</span><button type="button" class="tabletoggle" data-table="st-heat-table">table view</button></h3>
       <p class="sub">Where the attack traffic lands on the clock. Scanners run around the clock; a human operator has a working day.</p>
       <div id="st-heat"></div>
@@ -934,14 +921,14 @@ export const DASHBOARD_MARKUP = String.raw`<div id="hp-app" class="hp-app">
 
     <h2 class="sec-title">Detections <span>what fired, how often, and what fires together</span></h2>
     <div class="grid2">
-      <div class="panel"><h3>Detector frequency<button type="button" class="tabletoggle" data-table="st-det-table">table view</button></h3>
+      <div class="panel oq-card"><h3>Detector frequency<button type="button" class="tabletoggle" data-table="st-det-table">table view</button></h3>
         <p class="sub">Incidents each detector fired on, and the share of all incidents.</p>
         <div id="st-det"></div><div class="datatable" id="st-det-table" hidden></div></div>
-      <div class="panel"><h3>Score contribution by detector</h3>
+      <div class="panel oq-card"><h3>Score contribution by detector</h3>
         <p class="sub">Total points each detector added. A rare high-confidence detector can outweigh a noisy one.</p>
         <div id="st-detscore"></div></div>
     </div>
-    <div class="panel wide">
+    <div class="panel wide oq-card">
       <h3>Detector co-occurrence<span class="hint">how often two detectors fire on the same request</span><button type="button" class="tabletoggle" data-table="st-cooc-table">table view</button></h3>
       <p class="sub">Corroboration map. A cell is the number of incidents where both detectors fired; the diagonal is each detector's own total.</p>
       <div id="st-cooc"></div>
@@ -950,44 +937,44 @@ export const DASHBOARD_MARKUP = String.raw`<div id="hp-app" class="hp-app">
 
     <h2 class="sec-title">Severity <span>how dangerous the traffic was, and how the honeypot answered</span></h2>
     <div class="grid2">
-      <div class="panel"><h3>Per-incident score distribution<button type="button" class="tabletoggle" data-table="st-hist-table">table view</button></h3>
+      <div class="panel oq-card"><h3>Per-incident score distribution<button type="button" class="tabletoggle" data-table="st-hist-table">table view</button></h3>
         <p class="sub">Points added by each single request. The long tail on the right is where the real exploitation attempts live.</p>
         <div id="st-hist"></div><div class="datatable" id="st-hist-table" hidden></div></div>
-      <div class="panel"><h3>Score percentiles</h3>
+      <div class="panel oq-card"><h3>Score percentiles</h3>
         <p class="sub">Per-incident score and per-IP cumulative score, side by side.</p>
         <div id="st-pct"></div></div>
     </div>
     <div class="grid2">
-      <div class="panel"><h3>Response mix</h3>
+      <div class="panel oq-card"><h3>Response mix</h3>
         <p class="sub">Share of incidents by the action served.</p>
         <div id="st-resp-mix"></div><div id="st-resp-list" class="stack-gap"></div></div>
-      <div class="panel"><h3>Escalation funnel<span class="hint">by source IP</span></h3>
+      <div class="panel oq-card"><h3>Escalation funnel<span class="hint">by source IP</span></h3>
         <p class="sub">How far each IP got up the escalation ladder: the honeypot's policy in one picture.</p>
         <div id="st-funnel"></div></div>
     </div>
 
     <h2 class="sec-title">Attack surface <span>what they went after</span></h2>
     <div class="grid3">
-      <div class="panel"><h3>Most-probed paths<button type="button" class="tabletoggle" data-table="st-path-table">table view</button></h3><div id="st-paths"></div><div class="datatable" id="st-path-table" hidden></div></div>
-      <div class="panel"><h3>HTTP methods</h3><div id="st-methods"></div></div>
-      <div class="panel"><h3>Protocol split</h3><p class="sub">HTTP against the SSH, SMTP, FTP and Telnet honeypots.</p><div id="st-protos"></div></div>
+      <div class="panel oq-card"><h3>Most-probed paths<button type="button" class="tabletoggle" data-table="st-path-table">table view</button></h3><div id="st-paths"></div><div class="datatable" id="st-path-table" hidden></div></div>
+      <div class="panel oq-card"><h3>HTTP methods</h3><div id="st-methods"></div></div>
+      <div class="panel oq-card"><h3>Protocol split</h3><p class="sub">HTTP against the SSH, SMTP, FTP and Telnet honeypots.</p><div id="st-protos"></div></div>
     </div>
     <div class="grid2">
-      <div class="panel"><h3>Client identities<span class="hint">User-Agent</span><button type="button" class="tabletoggle" data-table="st-ua-table">table view</button></h3>
+      <div class="panel oq-card"><h3>Client identities<span class="hint">User-Agent</span><button type="button" class="tabletoggle" data-table="st-ua-table">table view</button></h3>
         <p class="sub">Self-declared and trivially spoofed: read it as tooling fashion, not identity.</p>
         <div id="st-uas"></div><div class="datatable" id="st-ua-table" hidden></div></div>
-      <div class="panel"><h3>Request shape</h3>
+      <div class="panel oq-card"><h3>Request shape</h3>
         <p class="sub">Structural traits of the captured requests.</p>
         <div id="st-shape"></div></div>
     </div>
 
     <h2 class="sec-title">Sources <span>who the traffic came from</span></h2>
     <div class="grid3">
-      <div class="panel"><h3>Address class</h3><p class="sub">Special-use classification of the source IP. A private or loopback source on a public honeypot means a proxy is leaking internal clients.</p><div id="st-cats"></div></div>
-      <div class="panel"><h3>Country</h3><p class="sub">Only when a data-backed enricher is configured.</p><div id="st-countries"></div></div>
-      <div class="panel"><h3>Network / ASN</h3><p class="sub">Only when a data-backed enricher is configured.</p><div id="st-asns"></div></div>
+      <div class="panel oq-card"><h3>Address class</h3><p class="sub">Special-use classification of the source IP. A private or loopback source on a public honeypot means a proxy is leaking internal clients.</p><div id="st-cats"></div></div>
+      <div class="panel oq-card"><h3>Country</h3><p class="sub">Only when a data-backed enricher is configured.</p><div id="st-countries"></div></div>
+      <div class="panel oq-card"><h3>Network / ASN</h3><p class="sub">Only when a data-backed enricher is configured.</p><div id="st-asns"></div></div>
     </div>
-    <div class="panel wide">
+    <div class="panel wide oq-card">
       <h3>Source IP breakdown<span class="hint">sort by any column</span></h3>
       <p class="sub">Every IP seen in the window, with its activity over the observation period.</p>
       <div id="st-iptable"></div>
@@ -995,17 +982,17 @@ export const DASHBOARD_MARKUP = String.raw`<div id="hp-app" class="hp-app">
 
     <h2 class="sec-title">Obfuscation <span>what they tried to hide</span></h2>
     <div class="grid2">
-      <div class="panel"><h3>Encoding layers observed</h3>
+      <div class="panel oq-card"><h3>Encoding layers observed</h3>
         <p class="sub">Encodings peeled off request values across the window: URL-, base64- and hex-encoding, often layered.</p>
         <div id="st-enc"></div></div>
-      <div class="panel"><h3>Payload obfuscation rate</h3>
+      <div class="panel oq-card"><h3>Payload obfuscation rate</h3>
         <p class="sub">Share of incidents carrying at least one value that decoded to something different.</p>
         <div id="st-encrate"></div></div>
     </div>
   </section>
 
   <section role="tabpanel" id="pane-sessions" aria-labelledby="tab-sessions" hidden>
-    <section class="feed-panel list-panel" aria-labelledby="sessions-title">
+    <section class="feed-panel list-panel oq-card" aria-labelledby="sessions-title">
       <h2 class="feed-head"><span id="sessions-title">Sessions</span><span class="hint" id="sessions-count"></span></h2>
       <p class="panel-note">Each source IP's incidents in order: the attack as a narrative. Open a session to read its timeline.</p>
       <div id="sessions-list" class="list-body"><div class="empty">Loading sessions.</div></div>
@@ -1013,7 +1000,7 @@ export const DASHBOARD_MARKUP = String.raw`<div id="hp-app" class="hp-app">
   </section>
 
   <section role="tabpanel" id="pane-actors" aria-labelledby="tab-actors" hidden>
-    <section class="feed-panel list-panel" aria-labelledby="actors-title">
+    <section class="feed-panel list-panel oq-card" aria-labelledby="actors-title">
       <h2 class="feed-head"><span id="actors-title">Actors</span><span class="hint" id="actors-count"></span></h2>
       <p class="panel-note">Incidents grouped by <b>actor fingerprint</b> (header order and User-Agent family) instead of by IP, so one attacker rotating through addresses collapses into a single actor. Sorted by how many IPs each used.</p>
       <div id="actors-list" class="list-body"><div class="empty">Loading actors.</div></div>
@@ -1022,41 +1009,41 @@ export const DASHBOARD_MARKUP = String.raw`<div id="hp-app" class="hp-app">
 
   <section role="tabpanel" id="pane-reference" aria-labelledby="tab-reference" hidden>
     <div class="ref-layout">
-      <section class="feed-panel ref-index-panel" aria-labelledby="reference-title">
+      <section class="feed-panel ref-index-panel oq-card" aria-labelledby="reference-title">
         <h2 class="feed-head"><span id="reference-title">Detectors and actions</span><span class="hint" id="ref-count"></span></h2>
-        <div class="ref-search"><input type="search" id="ref-filter" placeholder="Filter by name or by what it does" aria-label="Filter detectors and actions" autocomplete="off" spellcheck="false"></div>
+        <div class="ref-search"><input class="oq-input oq-sm" type="search" id="ref-filter" placeholder="Filter by name or by what it does" aria-label="Filter detectors and actions" autocomplete="off" spellcheck="false"></div>
         <nav id="ref-index" aria-label="Detectors and actions"></nav>
         <div class="note" id="ref-empty" hidden>Nothing here matches that filter.</div>
       </section>
-      <article class="feed-panel ref-article" id="ref-article"></article>
+      <article class="feed-panel ref-article oq-card" id="ref-article"></article>
     </div>
   </section>
 
   <section role="tabpanel" id="pane-policy" aria-labelledby="tab-policy" hidden>
     <div class="policy-layout">
-      <section class="feed-panel" aria-labelledby="policy-title">
+      <section class="feed-panel oq-card" aria-labelledby="policy-title">
         <h2 class="feed-head"><span id="policy-title">Policy rules</span><span class="hint">the policy as data</span></h2>
         <div class="toolbar">
-          <button id="policy-example" type="button">Example</button>
-          <button id="policy-export" type="button" title="Download these rules as JSON">Export</button>
+          <button class="oq-btn oq-btn--outline oq-neutral oq-sm" id="policy-example" type="button">Example</button>
+          <button class="oq-btn oq-btn--outline oq-neutral oq-sm" id="policy-export" type="button" title="Download these rules as JSON">Export</button>
           <div class="spacer"></div>
-          <button id="policy-preview" type="button">Preview</button>
-          <button id="policy-apply" type="button" class="primary" hidden>Apply</button>
+          <button class="oq-btn oq-btn--outline oq-neutral oq-sm" id="policy-preview" type="button">Preview</button>
+          <button id="policy-apply" type="button" class="primary oq-btn oq-sm" hidden>Apply</button>
         </div>
         <p class="panel-note">Rules are read in order; the first whose match fits decides. Anything they do not match falls through to the shipped ladder. <strong>Preview replays them</strong> against the incidents this dashboard holds — nothing is recorded and the running policy is untouched until you apply.</p>
         <div class="list-body">
-          <textarea id="policy-rules" rows="14" spellcheck="false" autocomplete="off" aria-label="Policy rules as JSON"></textarea>
+          <textarea class="oq-textarea" id="policy-rules" rows="14" spellcheck="false" autocomplete="off" aria-label="Policy rules as JSON"></textarea>
           <div id="policy-result" aria-live="polite"></div>
         </div>
       </section>
       <div class="policy-side">
-        <section class="panel" id="policy-changes-panel" aria-labelledby="policy-changes-title">
+        <section class="panel oq-card" id="policy-changes-panel" aria-labelledby="policy-changes-title">
           <h3 id="policy-changes-title">Changes <span class="hint" id="policy-change-count"></span></h3>
           <div id="policy-changes"></div>
           <div class="note aside">What was replaced in this process at runtime, and by whom where the dashboard's
                authentication could say. Bounded and in memory: the durable record is the honeypot's own log.</div>
         </section>
-        <section class="panel" id="policy-running-panel">
+        <section class="panel oq-card" id="policy-running-panel">
           <h3>Running now</h3>
           <div class="note aside" id="policy-running">The policy this process runs is whatever the code that built this
                honeypot passed it — a function, not a list — so it cannot be printed here. What a rule set would do
@@ -1067,21 +1054,21 @@ export const DASHBOARD_MARKUP = String.raw`<div id="hp-app" class="hp-app">
   </section>
 
   <section role="tabpanel" id="pane-intel" aria-labelledby="tab-intel" hidden>
-    <section class="feed-panel" aria-labelledby="ioc-title">
+    <section class="feed-panel oq-card" aria-labelledby="ioc-title">
     <h2 class="feed-head"><span id="ioc-title">Indicators</span><span class="hint" id="ioc-count"></span></h2>
     <div class="toolbar">
       <span class="faint small" id="ioc-min-label">Minimum score</span>
-      <div class="seg" id="ioc-min" role="group" aria-labelledby="ioc-min-label">
+      <div class="seg oq-segmented" id="ioc-min" role="group" aria-labelledby="ioc-min-label">
         <button type="button" data-min="0" aria-pressed="true">0</button><button type="button" data-min="10" aria-pressed="false">10</button>
         <button type="button" data-min="25" aria-pressed="false">25</button><button type="button" data-min="50" aria-pressed="false">50</button><button type="button" data-min="100" aria-pressed="false">100</button>
       </div>
       <div class="spacer"></div>
-      <button type="button" class="sm" id="ioc-copy-txt">Copy IP list</button>
-      <button type="button" class="sm" id="ioc-copy-json">Copy JSON</button>
+      <button type="button" class="sm oq-btn oq-btn--outline oq-neutral oq-sm" id="ioc-copy-txt">Copy IP list</button>
+      <button type="button" class="sm oq-btn oq-btn--outline oq-neutral oq-sm" id="ioc-copy-json">Copy JSON</button>
     </div>
     <div id="ioc-list"><div class="empty">Loading indicators.</div></div>
     </section>
-    <div class="panel wide gap-top">
+    <div class="panel wide gap-top oq-card">
       <h3>Prometheus metrics<span class="hint">/api/metrics</span></h3>
       <p class="sub">The exposition this dashboard's source serves, verbatim.</p>
       <pre id="metrics-raw" class="metrics-raw" tabindex="0" role="group" aria-label="Prometheus exposition">&#8212;</pre>
@@ -1090,7 +1077,7 @@ export const DASHBOARD_MARKUP = String.raw`<div id="hp-app" class="hp-app">
 
   <p class="foot">Everything on this page is read from this dashboard's own API and live feed; nothing here talks to the attacker-facing honeypot. <span id="hp-version"></span></p>
 </main>
-<div class="toasts" id="toasts" aria-live="polite"></div>
+<div class="toasts oq-toasts" id="toasts" aria-live="polite"></div>
 <div id="tip" aria-hidden="true"></div>
 </div>`;
 
@@ -1103,7 +1090,7 @@ export function renderDashboardPage(bootstrap: DashboardBootstrap): (nonce: stri
   const boot = escapeForScript(JSON.stringify(JSON.stringify(bootstrap)));
   // Function replacements: a string replacement would read `$&` out of the bundle or a title.
   const html = PAGE.replace("__BOOT_JSON__", () => boot)
-    .replace("__CSS__", () => DASHBOARD_CSS)
+    .replace("__CSS__", () => `${UI_CSS}\n${DASHBOARD_CSS}`)
     .replace("__MARKUP__", () => DASHBOARD_MARKUP)
     .replace("__SCRIPT__", () => CLIENT_SCRIPT)
     .replace(/__TITLE__/g, () => escapeHtml(bootstrap.title));
@@ -1111,7 +1098,7 @@ export function renderDashboardPage(bootstrap: DashboardBootstrap): (nonce: stri
 }
 
 const PAGE = `<!doctype html>
-<html lang="en">
+<html lang="en" class="oq" data-theme="auto">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">

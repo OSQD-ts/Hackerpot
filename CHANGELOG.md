@@ -7,6 +7,30 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- **The dashboard is built from the OSQD UI kit (`@osqd/ui`), as bothandlerjs's is.** The kit's
+  stylesheet is read at build time (a devDependency, like `@osqd/jql`) and stamped ahead of the
+  page's own rules in the same nonced `<style>` and the same adopted sheet, so the CSP, the
+  runtime dependencies and the offline page are unchanged. Panels are the kit's cards, counters
+  its stat tiles, ranked bars its bar list, badges its chips — detectors wear its hue tags, held to
+  4.5:1 in every theme — and tables, buttons, fields, segmented ranges, tabs and toasts its own.
+  The categorical series and the sequential and ordinal ramps are the kit's too. The shared
+  computed-style contract now pins the kit's look, and bothandlerjs's suite holds its page to the
+  same values.
+- **Seven themes instead of two.** The theme button is a picker: `auto` (the default, following
+  the system's light or dark setting), `light`, `dark`, `graphite`, `midnight`, `contrast`,
+  `paper` and `slate`. A choice stored by the old toggle still applies. `<hackerpot-dashboard>`'s
+  `scheme` takes the same names. The accessibility pass now runs in four of them.
+
+### Deprecated
+
+- **The dashboard's own colour tokens as an override surface** (`--accent`, `--text`, `--page`,
+  `--surface`, `--s1`…`--s8`, `--q0`…`--q12`, `--o1`…`--o5`, …). They still work in this release —
+  they are aliases of the kit's `--oq-*` tokens now — but set the kit's tokens instead; see
+  [embedding](docs/operations/embedding.md#theming). The old names will be removed in a later
+  release.
+
 ### Added
 
 - **The dashboard is tested in a real browser.** `npm run test:browser` drives the page with

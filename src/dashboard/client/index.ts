@@ -350,29 +350,24 @@ function drawPills(): void {
 
 const THEME_KEY = "hackerpot-dashboard-theme";
 
+/**
+ * The OSQD UI kit's themes plus "auto", which follows the system's light or dark setting, in the
+ * order the picker lists them. "light" and "dark" are two of them, so a choice stored by the old
+ * two-way toggle still works.
+ */
+const THEMES: readonly string[] = ["auto", "light", "dark", "graphite", "midnight", "contrast", "paper", "slate"];
+
 function applyStoredTheme(): void {
   try {
     const stored = localStorage.getItem(THEME_KEY);
     // Embedded, a scheme the host set explicitly wins over one remembered from the standalone page.
-    if ((stored === "dark" || stored === "light") && !(isEmbedded() && themeElement().hasAttribute("data-theme"))) themeElement().setAttribute("data-theme", stored);
+    if (stored !== null && THEMES.includes(stored) && !(isEmbedded() && themeElement().hasAttribute("data-theme"))) themeElement().setAttribute("data-theme", stored);
   } catch {
     /* storage refused: private mode, or a sandboxed frame */
   }
-  labelThemeButton();
-}
-
-function currentScheme(): "dark" | "light" {
-  const explicit = themeElement().getAttribute("data-theme");
-  if (explicit === "dark" || explicit === "light") return explicit;
-  return typeof matchMedia === "function" && matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
-}
-
-function labelThemeButton(): void {
-  const button = maybe<HTMLButtonElement>("theme");
-  if (button === null) return;
-  const next = currentScheme() === "dark" ? "light" : "dark";
-  button.textContent = next === "dark" ? "Dark" : "Light";
-  button.setAttribute("aria-label", `Switch to the ${next} colour scheme`);
+  const picker = maybe<HTMLSelectElement>("theme");
+  const current = themeElement().getAttribute("data-theme") ?? "auto";
+  if (picker !== null) picker.value = THEMES.includes(current) ? current : "auto";
 }
 
 function initHeader(): void {
@@ -401,15 +396,15 @@ function initHeader(): void {
   links.hidden = links.childElementCount === 0;
 
   applyStoredTheme();
-  $("theme").addEventListener("click", () => {
-    const next = currentScheme() === "dark" ? "light" : "dark";
+  const picker = $("theme") as HTMLSelectElement;
+  picker.addEventListener("change", () => {
+    const next = THEMES.includes(picker.value) ? picker.value : "auto";
     themeElement().setAttribute("data-theme", next);
     try {
       localStorage.setItem(THEME_KEY, next);
     } catch {
       /* storage refused */
     }
-    labelThemeButton();
   });
 
   // The skip link is a fragment anchor, and fragment navigation does not cross a shadow boundary.

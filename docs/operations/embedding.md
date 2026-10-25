@@ -108,11 +108,11 @@ as the demo does, or use an `authorize` check that reads the session the page al
 | Attribute | Values | |
 | --- | --- | --- |
 | `src` | a same-origin path | where `createDashboardHandler` is mounted, e.g. `/_hackerpot`. Read once, when the element first mounts. |
-| `scheme` | `light`, `dark` | force a colour scheme; unset follows the viewer's setting |
+| `scheme` | `auto`, `light`, `dark`, `graphite`, `midnight`, `contrast`, `paper`, `slate` | one of the UI kit's themes; unset (or `auto`) follows the viewer's light or dark setting |
 | `density` | `comfortable`, `compact` | `compact` tightens table rows and panel padding |
 
 ```html
-<hackerpot-dashboard src="/_hackerpot" scheme="dark" density="compact"></hackerpot-dashboard>
+<hackerpot-dashboard src="/_hackerpot" scheme="midnight" density="compact"></hackerpot-dashboard>
 ```
 
 Any other `scheme` or `density` is ignored with one console warning. The same settings in
@@ -209,27 +209,43 @@ the first screen and says why; `ip` or `detector` without an Incidents screen wa
 
 ## Theming
 
+The dashboard's look comes from the [OSQD UI kit](https://www.npmjs.com/package/@osqd/ui)
+(`@osqd/ui`), the same as bothandlerjs's: its components, type and spacing, and its seven themes
+— `light`, `dark`, `graphite`, `midnight`, `contrast`, `paper` and `slate` — plus `auto`, which
+follows the viewer's light or dark setting and is the default. The kit's stylesheet is bundled into
+this package at build time, so there is nothing extra to install and nothing fetched.
+
 ```js
 config = {
   theme: {
-    scheme: "light",
+    scheme: "paper",
     density: "compact",
-    tokens: { accent: "#7c3aed", surface: "#ffffff", text: "#1a1a2e" },
+    tokens: { "--oq-primary": "#7c3aed", "--oq-surface": "#ffffff" },
   },
 };
 ```
 
-Tokens are the stylesheet's custom properties (`accent`, `link`, `text`, `muted`, `surface`, `page`,
-`header-bg` and the rest in `src/dashboard/page.ts`), named with or without the leading dashes. They are
-set on the host element and inherit into the shadow root. A name that is not a plain custom-property name
-is ignored with a warning. A token dropped from a later `theme` is removed from the element, so switching
-themes gives you the new theme, not the union of every theme you set. `theme` updates live.
+Tokens are custom properties, named with or without the leading dashes. They are set on the host
+element and inherit into the shadow root; the kit's palette is declared on `:root` and on `:host`
+(with `:host([data-theme=…])` for each theme), so one stylesheet themes the page and the element
+alike. A name that is not a plain custom-property name is ignored with a warning. A token dropped
+from a later `theme` is removed from the element, so switching themes gives you the new theme, not
+the union of every theme you set. `theme` updates live.
 
-The shipped palette was measured for contrast in both schemes. Replace a token and that measurement is
-yours to redo.
+**The dashboard's own token names are deprecated as an override surface.** `accent`, `link`,
+`text`, `muted`, `surface`, `page`, `header-bg`, the series slots `s1`…`s8` and `so`, the ramps
+`q0`…`q12` and `o1`…`o5`, and the rest still exist — they are aliases of the kit's `--oq-*`
+tokens now, so overriding one still works for this minor release — but set the kit's tokens
+instead (`--oq-primary`, `--oq-text`, `--oq-surface`, `--oq-bg`, `--oq-series-1`…`8`,
+`--oq-seq-0`…`12`, `--oq-ord-1`…`5`). The old names will be removed in a later release.
 
-The **Theme** button in the dashboard's header still works, and remembers the viewer's choice in
-`localStorage`. Embedded, a remembered choice does not override a scheme you set explicitly.
+Every kit theme was measured: body text at 7:1, every other ink and every status colour at 4.5:1
+on every layer, the chart series checked for colour-vision separation. Replace a token and that
+measurement is yours to redo.
+
+The theme picker in the dashboard's header still works, and remembers the viewer's choice in
+`localStorage`; a choice stored by the old light/dark button still applies. Embedded, a
+remembered choice does not override a scheme you set explicitly.
 
 ## Panels of your own
 

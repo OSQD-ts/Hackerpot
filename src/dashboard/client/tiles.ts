@@ -33,9 +33,10 @@ export function renderTiles(): void {
   painted = signature;
   clear(host);
   for (const tile of tiles) {
-    const node = el("div", tile.tone === undefined ? "tile" : `tile ${tile.tone}`);
-    node.append(el("div", "v", tile.value), el("div", "k", tile.key));
-    const sub = el("div", "s", tile.sub);
+    // The UI kit's stat tile, as bothandlerjs's dashboard draws its counters.
+    const node = el("div", tile.tone === undefined ? "tile oq-stat" : `tile oq-stat ${tile.tone}`);
+    node.append(el("div", "v oq-stat__value", tile.value), el("div", "k oq-stat__label", tile.key));
+    const sub = el("div", "s oq-stat__delta", tile.sub);
     sub.title = tile.sub;
     node.append(sub);
     host.append(node);

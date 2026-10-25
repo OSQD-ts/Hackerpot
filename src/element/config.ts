@@ -50,8 +50,11 @@ export interface HackerpotDashboardTheme {
    * measured for is yours to keep once you replace it.
    */
   tokens?: Record<string, string>;
-  /** Force a scheme instead of following the viewer's own setting. */
-  scheme?: "light" | "dark";
+  /**
+   * One of the OSQD UI kit's themes instead of following the viewer's own setting. "auto" (the
+   * default) follows their light or dark setting; "light" and "dark" are two of the seven.
+   */
+  scheme?: (typeof SCHEMES)[number];
   /** `compact` tightens table rows and panel padding. */
   density?: "comfortable" | "compact";
 }
@@ -222,10 +225,14 @@ export function tokenName(token: string): string | undefined {
   return /^--[A-Za-z0-9_-]+$/.test(name) ? name : undefined;
 }
 
-export function checkScheme(value: string | null | undefined): { value?: "light" | "dark"; warning?: string } {
+/** The UI kit's themes a `scheme` may name, and "auto". */
+export const SCHEMES = ["auto", "light", "dark", "graphite", "midnight", "contrast", "paper", "slate"] as const;
+
+export function checkScheme(value: string | null | undefined): { value?: (typeof SCHEMES)[number]; warning?: string } {
   if (value === null || value === undefined || value === "") return {};
-  if (value === "light" || value === "dark") return { value };
-  return { warning: `scheme "${value}" is not "light" or "dark", so it was ignored. Leave it unset to follow the viewer's own setting.` };
+  const known = SCHEMES.find((scheme) => scheme === value);
+  if (known !== undefined) return { value: known };
+  return { warning: `scheme "${value}" is not one of ${SCHEMES.join(", ")}, so it was ignored. Leave it unset to follow the viewer's own setting.` };
 }
 
 export function checkDensity(value: string | null | undefined): { value?: "comfortable" | "compact"; warning?: string } {

@@ -135,7 +135,7 @@ export function renderActors(): void {
       const ips = el("div", "badges gap-bottom");
       for (const ip of actor.ips) {
         if (SECTIONS.incidents) {
-          const button = el("button", "badge ipbtn", ip);
+          const button = el("button", "badge ipbtn oq-chip oq-sm oq-neutral", ip);
           button.type = "button";
           button.title = `Show incidents from ${ip}`;
           button.addEventListener("click", () => app.incidentsFor(ip));
@@ -247,7 +247,7 @@ export function renderNotices(): void {
   const list = el("div", "stack-gap");
   for (const { notice, count: times } of [...grouped.values()].slice(0, 40)) {
     const row = el("div", "notice");
-    const tag = el("span", "badge", notice.change === undefined ? "warning" : "change");
+    const tag = el("span", "badge oq-chip oq-sm oq-neutral", notice.change === undefined ? "warning" : "change");
     row.append(tag);
     const body = el("div");
     body.append(el("div", null, notice.message));

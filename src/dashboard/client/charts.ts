@@ -230,9 +230,9 @@ export interface RankedOptions {
 /**
  * Ranked horizontal bars: magnitude in one hue, biggest first. Width-independent, so plain HTML.
  *
- * The name is drawn inside its own track, as bothandlerjs's dashboard draws it, rather than in a
- * fixed-width column beside a thin bar: a long detector id or address gets the whole row to be
- * read in instead of being cut at a width chosen for the shortest.
+ * The UI kit's ranked bar list, as bothandlerjs's dashboard draws it: the container carries
+ * `oq-bars`, each row is label, track and count. The bar's length is a custom property set
+ * through the CSSOM, which the page's CSP allows where a style attribute would not be.
  */
 export function rankedBars(target: HTMLElement, entries: ReadonlyArray<readonly [name: string, n: number, note?: string]>, options: RankedOptions = {}): void {
   if (entries.length === 0) {
@@ -242,23 +242,23 @@ export function rankedBars(target: HTMLElement, entries: ReadonlyArray<readonly 
   const total = options.total ?? entries.reduce((sum, entry) => sum + entry[1], 0);
   const max = Math.max(1, ...entries.map((entry) => entry[1]));
   const rows = entries.map(([name, n, note]) => {
-    const row = el("div", "barrow");
-    const label = el("div", "name", name);
+    const row = el("div", "barrow oq-bars__item");
+    const label = el("span", "name oq-bars__label", name);
     label.title = name;
-    const bar = el("div", "bar");
-    const fill = el("span", `bg-${slot(options.slot ?? 0)}`);
-    fill.style.width = `${Math.max(1, (n / max) * 100).toFixed(2)}%`;
-    bar.append(fill, label);
-    const count = el("div", "n", fmtCompact(n));
-    if (options.share !== false) count.append(" ", el("em", null, fmtPct(n, total, 0)));
-    row.append(bar, count);
+    const bar = el("span", "bar oq-bars__track");
+    const fill = el("span", `oq-bars__bar bg-${slot(options.slot ?? 0)}`);
+    fill.style.setProperty("--value", `${Math.max(1, (n / max) * 100).toFixed(2)}%`);
+    bar.append(fill);
+    const count = el("span", "n oq-bars__value", fmtCompact(n));
+    if (options.share !== false) count.append(" ", el("span", "oq-bars__share", fmtPct(n, total, 0)));
+    row.append(label, bar, count);
     const line: TipPart[] = [{ strong: fmtInt(n) }, ` ${options.unit ?? "incidents"}`];
     if (total) line.push(` · ${fmtPct(n, total)} of ${fmtInt(total)}`);
     setTip(row, { title: name, lines: note === undefined ? [line] : [line, [note]] });
     return row;
   });
   // The same container bothandlerjs draws bars in: one grid, one gap, one padding.
-  target.classList.add("bars");
+  target.classList.add("bars", "oq-bars");
   replace(target, ...rows);
 }
 

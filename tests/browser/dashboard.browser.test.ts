@@ -80,29 +80,30 @@ const failuresOf = (page: Page): string[] => (page as Page & { failures?: string
  *
  * These are read off the page as the browser computes them, so a rule that stops applying — a
  * selector renamed, a stylesheet truncated, a token dropped — fails here rather than being
- * noticed in a screenshot months later. The values are bothandlerjs's.
+ * noticed in a screenshot months later. Both dashboards take the look from the OSQD UI kit, and
+ * bothandlerjs's suite holds its own page to these same values: the kit's dark theme.
  */
 const CONTRACT: ReadonlyArray<readonly [label: string, selector: string, property: string, expected: string]> = [
-  ["body type", "body", "fontFamily", 'system-ui, -apple-system, "Segoe UI", Roboto, sans-serif'],
-  ["body line height", "body", "lineHeight", "21.7px"],
-  ["page background", "body", "backgroundColor", "rgb(13, 15, 18)"],
-  ["panel surface", ".feed-panel", "backgroundColor", "rgb(22, 24, 29)"],
-  ["panel border", ".feed-panel", "borderTopColor", "rgb(39, 43, 51)"],
-  ["panel radius", ".feed-panel", "borderRadius", "12px"],
-  ["panel heading", ".feed-panel > h2", "fontSize", "11.5px"],
-  ["panel heading weight", ".feed-panel > h2", "fontWeight", "620"],
+  ["body type", "body", "fontFamily", 'Inter, "Segoe UI", system-ui, -apple-system, "Helvetica Neue", Arial, sans-serif'],
+  ["body line height", "body", "lineHeight", "20.3px"],
+  ["page background", "body", "backgroundColor", "rgb(34, 31, 34)"],
+  ["panel surface", ".feed-panel", "backgroundColor", "rgb(45, 42, 46)"],
+  ["panel border", ".feed-panel", "borderTopColor", "rgb(64, 62, 65)"],
+  ["panel radius", ".feed-panel", "borderRadius", "8px"],
+  ["panel heading", ".feed-panel > h2", "fontSize", "11px"],
+  ["panel heading weight", ".feed-panel > h2", "fontWeight", "600"],
   ["toolbar padding", "#pane-incidents .toolbar", "paddingLeft", "15px"],
   ["toolbar gap", "#pane-incidents .toolbar", "gap", "8px"],
-  ["button size", "#f-export", "fontSize", "12.5px"],
-  ["button radius", "#f-export", "borderRadius", "8px"],
+  ["button size", "#f-export", "fontSize", "13px"],
+  ["button radius", "#f-export", "borderRadius", "5px"],
   ["chip shape", "#pane-incidents .filters button", "borderRadius", "999px"],
-  ["chip size", "#pane-incidents .filters button", "fontSize", "11.5px"],
-  ["search field", '.search input[type="search"]', "fontSize", "12.5px"],
-  ["tile value", ".tiles .tile .v", "fontSize", "21px"],
-  ["tile label", ".tiles .tile .k", "fontSize", "10.5px"],
-  ["table header", "table.feed thead th", "paddingLeft", "15px"],
-  ["bar row type", "#pane-incidents .barrow", "fontSize", "12.5px"],
-  ["bars gap", "#pane-incidents .bars", "gap", "8px"],
+  ["chip size", "#pane-incidents .filters button", "fontSize", "13px"],
+  ["search field", '.search input[type="search"]', "fontSize", "13px"],
+  ["tile value", ".tiles .tile .v", "fontSize", "18px"],
+  ["tile label", ".tiles .tile .k", "fontSize", "11px"],
+  ["table header", "table.feed thead th", "paddingLeft", "12px"],
+  ["bar row type", "#pane-incidents .barrow", "fontSize", "13px"],
+  ["bars gap", "#pane-incidents .bars", "gap", "6px 12px"],
 ];
 
 const computed = (page: Page, selector: string, property: string): Promise<string | null> =>
@@ -277,12 +278,30 @@ describe("the dashboard in a browser", () => {
   it("remembers the colour scheme across a reload", async () => {
     const page = await open();
     const scheme = (): Promise<string | null> => page.evaluate(() => document.documentElement.getAttribute("data-theme"));
-    await page.locator("#theme").click();
-    const chosen = await scheme();
-    expect(["light", "dark"]).toContain(chosen);
+    // Follows the system until somebody picks: "auto" is the UI kit's light-or-dark-by-OS theme.
+    expect(await scheme()).toBe("auto");
+    expect(await page.locator("#theme option").evaluateAll((options) => options.map((o) => (o as HTMLOptionElement).value))).toEqual([
+      "auto",
+      "light",
+      "dark",
+      "graphite",
+      "midnight",
+      "contrast",
+      "paper",
+      "slate",
+    ]);
+    await page.locator("#theme").selectOption("midnight");
+    expect(await scheme()).toBe("midnight");
     await page.reload();
     await page.waitForSelector("tbody tr.row", { state: "attached" });
-    expect(await scheme()).toBe(chosen);
+    expect(await scheme()).toBe("midnight");
+    expect(await page.locator("#theme").inputValue()).toBe("midnight");
+    // A choice stored by the old light/dark toggle still applies.
+    await page.evaluate(() => localStorage.setItem("hackerpot-dashboard-theme", "light"));
+    await page.reload();
+    await page.waitForSelector("tbody tr.row", { state: "attached" });
+    expect(await scheme()).toBe("light");
+    await page.evaluate(() => localStorage.removeItem("hackerpot-dashboard-theme"));
     await page.close();
   });
 
@@ -297,22 +316,33 @@ describe("the dashboard in a browser", () => {
     await page.close();
   });
 
-  it("has no serious accessibility violations on any screen", async () => {
+  // The system's dark (via "auto"), and three of the UI kit's other themes picked the way a reader
+  // picks one. The kit holds its palettes to its contrast rules; this checks the page's own
+  // colours on top of them — the tints, the mixed status inks, the hue tags.
+  for (const theme of ["auto", "light", "contrast", "paper"] as const) {
+  it(`has no serious accessibility violations on any screen, in the ${theme} theme`, async () => {
     const page = await open();
+    if (theme !== "auto") {
+      await page.evaluate((name) => localStorage.setItem("hackerpot-dashboard-theme", name), theme);
+      await page.reload();
+      await page.waitForSelector("tbody tr.row", { state: "attached" });
+    }
     const found: string[] = [];
     for (const tab of ["Overview", "Incidents", "Statistics", "Sessions", "Actors", "Threat intel", "Policy", "Reference"]) {
       await page.getByRole("tab", { name: new RegExp(`^${tab}`) }).click();
       await page.waitForTimeout(500);
       await page.evaluate(axeSource);
       const violations = await page.evaluate(async () => {
-        const result = await (globalThis as unknown as { axe: { run: (context: unknown, options: unknown) => Promise<{ violations: Array<{ id: string; impact: string | null; nodes: unknown[] }> }> } }).axe.run(document, {
+        const result = await (globalThis as unknown as { axe: { run: (context: unknown, options: unknown) => Promise<{ violations: Array<{ id: string; impact: string | null; nodes: Array<{ target: string[] }> }> }> } }).axe.run(document, {
           runOnly: { type: "tag", values: ["wcag2a", "wcag2aa"] },
         });
-        return result.violations.filter((violation) => violation.impact === "serious" || violation.impact === "critical").map((violation) => `${violation.id} (${violation.nodes.length})`);
+        return result.violations.filter((violation) => violation.impact === "serious" || violation.impact === "critical").map((violation) => `${violation.id} (${violation.nodes.length}: ${violation.nodes.slice(0, 3).map((node) => node.target.join(" ")).join(", ")})`);
       });
       for (const violation of violations) found.push(`${tab}: ${violation}`);
     }
+    await page.evaluate(() => localStorage.removeItem("hackerpot-dashboard-theme"));
     expect(found).toEqual([]);
     await page.close();
   });
+  }
 });

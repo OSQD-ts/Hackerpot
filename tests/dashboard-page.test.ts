@@ -2,6 +2,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { CLIENT_SCRIPT } from "../src/dashboard/client.generated.js";
+import { UI_CSS } from "../src/dashboard/ui-css.generated.js";
 import { DASHBOARD_CSS, DASHBOARD_MARKUP, renderDashboardPage } from "../src/dashboard/page.js";
 import type { DashboardBootstrap } from "../src/dashboard/types.js";
 
@@ -77,7 +78,7 @@ describe("dashboard page", () => {
   it("ships the request tester hidden, for the client to show only when the control is granted", () => {
     // Hidden in the markup rather than revealed by default: a deployment that never granted
     // `testRequest` must not show a box whose every submission the server refuses.
-    expect(DASHBOARD_MARKUP).toMatch(/<section class="panel" id="tester"[^>]*\shidden>/);
+    expect(DASHBOARD_MARKUP).toMatch(/<section class="panel[^"]*" id="tester"[^>]*\shidden>/);
     expect(CLIENT_SCRIPT).toContain("/api/test");
     expect(CLIENT_SCRIPT).toContain("testRequest");
   });
@@ -128,12 +129,25 @@ describe("dashboard page", () => {
     expect(JSON.parse(JSON.parse(boot as string) as string)).toEqual(bootstrap);
   });
 
-  it("writes theme tokens for light and dark, for both the page and a shadow host", () => {
+  it("writes theme tokens for every theme, for both the page and a shadow host", () => {
+    // The page's own token names, as aliases of the UI kit's, under :root and :host alike.
     expect(DASHBOARD_CSS).toContain(":root, :host {");
-    expect(DASHBOARD_CSS).toContain(':root:not([data-theme="light"]), :host(:not([data-theme="light"]))');
-    expect(DASHBOARD_CSS).toContain(':root[data-theme="dark"], :host([data-theme="dark"])');
-    expect(DASHBOARD_CSS).toContain("prefers-color-scheme: dark");
     for (const slot of ["s1", "s8", "so", "q0", "q12", "o5"]) expect(DASHBOARD_CSS).toContain(`--${slot}:`);
+    // The kit's palette under each of its themes, for the page and for a shadow host; "auto"
+    // follows the system's light or dark setting.
+    expect(UI_CSS).toContain(":root,:host,");
+    for (const theme of ["light", "dark", "graphite", "midnight", "contrast", "paper", "slate", "auto"]) {
+      expect(UI_CSS, theme).toContain(`:host([data-theme="${theme}"])`);
+    }
+    expect(UI_CSS).toContain("prefers-color-scheme:light");
+  });
+
+  it("serves the UI kit's stylesheet ahead of its own, in the one nonced <style>", () => {
+    const html = renderDashboardPage(bootstrap)(NONCE);
+    const style = html.slice(html.indexOf(`<style nonce="${NONCE}">`), html.indexOf("</style>"));
+    expect(style.indexOf(UI_CSS.slice(0, 200))).toBeGreaterThan(-1);
+    expect(style.indexOf(UI_CSS.slice(0, 200))).toBeLessThan(style.indexOf(":root, :host {"));
+    expect(html).toContain('<html lang="en" class="oq" data-theme="auto">');
   });
 
   it("declares every element id the client looks up by name", () => {

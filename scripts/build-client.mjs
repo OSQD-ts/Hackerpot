@@ -17,6 +17,7 @@ import { build } from "esbuild";
 import { readFile, writeFile } from "node:fs/promises";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
+import { buildUiCss } from "./build-ui-css.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const entry = join(root, "src", "dashboard", "client", "index.ts");
@@ -90,19 +91,32 @@ export const CLIENT_SCRIPT = ${JSON.stringify(code)};
 `;
 }
 
-const contents = await buildClient();
-const existing = await readFile(target, "utf8").catch(() => "");
-const name = relative(root, target);
+/**
+ * The generated files: the client bundle, and the UI kit's stylesheet read from the installed
+ * `@osqd/ui` (see scripts/build-ui-css.mjs). `--check` holds both to being current, so an
+ * upgrade of the kit without a rebuild fails CI rather than shipping the old look.
+ */
+const outputs = [
+  [target, await buildClient()],
+  [join(root, "src", "dashboard", "ui-css.generated.ts"), await buildUiCss(root)],
+];
 
-if (process.argv.includes("--check")) {
-  if (existing !== contents) {
-    console.error(`${name} is out of date. Run \`node scripts/build-client.mjs\`.`);
-    process.exit(1);
+let stale = false;
+for (const [file, contents] of outputs) {
+  const existing = await readFile(file, "utf8").catch(() => "");
+  const name = relative(root, file);
+  if (process.argv.includes("--check")) {
+    if (existing !== contents) {
+      console.error(`${name} is out of date. Run \`node scripts/build-client.mjs\`.`);
+      stale = true;
+    } else {
+      console.log(`${name} is up to date`);
+    }
+  } else if (existing === contents) {
+    console.log(`${name} unchanged (${(contents.length / 1024).toFixed(1)} kB)`);
+  } else {
+    await writeFile(file, contents);
+    console.log(`${name} written (${(contents.length / 1024).toFixed(1)} kB)`);
   }
-  console.log(`${name} is up to date`);
-} else if (existing === contents) {
-  console.log(`${name} unchanged (${(contents.length / 1024).toFixed(1)} kB)`);
-} else {
-  await writeFile(target, contents);
-  console.log(`${name} written (${(contents.length / 1024).toFixed(1)} kB)`);
 }
+if (stale) process.exit(1);
