@@ -15,8 +15,10 @@ data
 # Not COPYed into any stage — excluded so they stay out of the build context too.
 tests
 scripts
-# Except the scripts the build runs: one bundles the dashboard client, one trims the sourcemaps.
+# Except the scripts the build runs: one bundles the dashboard client, one inlines the
+# @osqd/ui stylesheet into it, one trims the sourcemaps.
 !scripts/build-client.mjs
+!scripts/build-ui-css.mjs
 !scripts/strip-sources-content.mjs
 examples
 .github
