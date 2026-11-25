@@ -197,29 +197,40 @@ function normalize(path: string): string {
  * `startsWith` would make `/backup` match `/backup-your-data-a-guide`, an article. From
  * bothandlerjs's probe-signature detector.
  */
-function underPrefix(path: string, entry: string): boolean {
-  const lowerPath = path.toLowerCase();
+function underPrefix(lowerPath: string, entry: string): boolean {
   const lowerEntry = normalize(entry).toLowerCase();
   if (!lowerPath.startsWith(lowerEntry)) return false;
-  if (lowerPath.length === lowerEntry.length) return true;
-  const next = lowerPath.charCodeAt(lowerEntry.length);
+  return atBoundary(lowerPath, lowerEntry.length);
+}
+
+/** Whether `index` is the end of the path or a `/` or `.` in it. */
+function atBoundary(lowerPath: string, index: number): boolean {
+  if (index === lowerPath.length) return true;
+  const next = lowerPath.charCodeAt(index);
   return next === 0x2f /* / */ || next === 0x2e /* . */;
 }
 
-/** `underPrefix` at the root or below any directory: `/.env` matches `/app/.env.local`. */
-function underPrefixAnywhere(path: string, entry: string): boolean {
-  for (let slash = path.indexOf("/"); slash !== -1; slash = path.indexOf("/", slash + 1)) {
-    if (underPrefix(path.slice(slash), entry)) return true;
+/**
+ * `underPrefix` at the root or below any directory: `/.env` matches `/app/.env.local`.
+ *
+ * Every entry starts with `/`, so an occurrence of it is already at a directory boundary, and
+ * only the occurrences need checking: `indexOf` walks the path once per decoy rather than
+ * slicing a copy at every slash, which on a long attacker-chosen path was quadratic.
+ */
+function underPrefixAnywhere(lowerPath: string, entry: string): boolean {
+  const lowerEntry = normalize(entry).toLowerCase();
+  for (let at = lowerPath.indexOf(lowerEntry); at !== -1; at = lowerPath.indexOf(lowerEntry, at + 1)) {
+    if (atBoundary(lowerPath, at + lowerEntry.length)) return true;
   }
   return false;
 }
 
-function matches(decoy: DecoyPath, method: string, path: string): boolean {
+function matches(decoy: DecoyPath, method: string, path: string, lowerPath: string): boolean {
   const wanted = decoy.method ?? "*";
   if (wanted !== "*" && wanted.toUpperCase() !== method.toUpperCase()) return false;
   if (typeof decoy.path === "string") {
-    if (decoy.match === "anywhere") return underPrefixAnywhere(path, decoy.path);
-    return decoy.match === "prefix" ? underPrefix(path, decoy.path) : normalize(decoy.path) === normalize(path);
+    if (decoy.match === "anywhere") return underPrefixAnywhere(lowerPath, decoy.path);
+    return decoy.match === "prefix" ? underPrefix(lowerPath, decoy.path) : normalize(decoy.path) === normalize(path);
   }
   return decoy.path.test(path);
 }
@@ -232,7 +243,9 @@ export function decoyPathDetector(decoys: DecoyPath[] = defaultDecoyPaths): Dete
     id: "decoy-path",
     description: "Request targeted a decoy path that no legitimate client would know about",
     inspect(ctx: DetectionContext): Detection | undefined {
-      const decoy = safe.find((candidate) => matches(candidate, ctx.method, ctx.path));
+      // Lowercased once for every decoy, not once per decoy: the path is attacker-sized.
+      const lowerPath = ctx.path.toLowerCase();
+      const decoy = safe.find((candidate) => matches(candidate, ctx.method, ctx.path, lowerPath));
       if (!decoy) return undefined;
       const detection: Detection = {
         detector: "decoy-path",
