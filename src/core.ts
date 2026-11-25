@@ -18,6 +18,7 @@ import type { PolicyContext, ResponseDecision, ResponsePolicy } from "./policy/t
 import { computeFingerprint } from "./fingerprint.js";
 import { confidenceOf } from "./evidence.js";
 import { DURATION_BUCKETS_MS, Histogram } from "./internal/histogram.js";
+import { TtlLru } from "./internal/lru.js";
 import type { HistogramSnapshot } from "./internal/histogram.js";
 import { MAX_RAW_PATH_CHARS, boundedQuery, normalizePath } from "./internal/http.js";
 import { normalizeAddress, stripPort } from "./internal/ip.js";
@@ -173,14 +174,41 @@ export interface Notice {
  * dashboard, a SIEM sink, an operator's own logging — where several consumers want the same
  * facts and none of them should be able to take a request down by throwing.
  */
+/**
+ * Requests refused because their address is blocked, reported at most once a minute per
+ * address. A refusal is not an incident (no detector runs on it), so without this a block's
+ * effect was invisible: nothing logged it, nothing counted it.
+ */
+export interface RefusedEvent {
+  ip: string;
+  /** Refusals for this address since the last event about it, this one included. */
+  count: number;
+  timestamp: string;
+}
+
 export interface HoneypotEngineEvents extends Record<string, unknown> {
   hit: HoneypotHit;
+  refused: RefusedEvent;
   shadow: ShadowEvent;
   error: { error: unknown; source: string };
   warning: Notice;
   change: ChangeEvent;
   outcome: RequestOutcome;
 }
+
+/**
+ * The defaults plus the extras, an extra replacing the default that shares its id: the way
+ * response actions already behave (they are keyed by id). Appending both made one request
+ * count twice, which the default honeytoken detector (the built-in decoys' planted secrets)
+ * would otherwise do to anybody who adds a `honeytokenDetector` of their own.
+ */
+function withExtras(defaults: Detector[], extras: Detector[]): Detector[] {
+  const replaced = new Set(extras.map((detector) => detector.id));
+  return [...defaults.filter((detector) => !replaced.has(detector.id)), ...extras];
+}
+
+/** At most one `refused` event per address in this long. */
+const REFUSAL_REPORT_INTERVAL_MS = 60_000;
 
 /** Notices kept for the dashboard and `notices()`. Small: this is a recent-history panel, not a log. */
 const MAX_NOTICES = 200;
@@ -251,6 +279,10 @@ export class HoneypotEngine {
    * series for each from the first request rather than only after the first exemption.
    */
   readonly bypassed = new Map<string, number>([["allowlist", 0], ["service-token", 0], ["ignored-path", 0]]);
+  /** Requests refused because their address was already blocked, since the engine started. */
+  refusedWhileBlocked = 0;
+  /** Per address: refusals not yet reported, and when it was last reported. Bounded like every client-keyed map. */
+  private readonly refusalSamples = new TtlLru<{ pending: number; reportedAt: number }>(10_000, REFUSAL_REPORT_INTERVAL_MS * 10);
   /**
    * Time spent evaluating a request. Measured with a monotonic high-resolution timer rather than
    * `clock`: that clock models wall time for the activity windows at millisecond resolution,
@@ -273,7 +305,7 @@ export class HoneypotEngine {
 
   constructor(config: HoneypotConfig = {}) {
     this.clock = config.clock ?? systemClock;
-    this.detectors = config.detectors ?? [...defaultDetectors(), ...(config.extraDetectors ?? [])];
+    this.detectors = config.detectors ?? withExtras(defaultDetectors(), config.extraDetectors ?? []);
     const actions = config.responseActions ?? [...defaultResponseActions(), ...(config.extraResponseActions ?? [])];
     this.actions = new Map(actions.map((action) => [action.id, action]));
     this.policy = config.policy ?? ladderPolicy();
@@ -401,8 +433,8 @@ export class HoneypotEngine {
   }
 
   /** What the engine counts that no incident carries, for `/metrics`. */
-  counters(): { detectorFailures: Map<string, number>; bypassed: Map<string, number>; evaluationDuration: HistogramSnapshot } {
-    return { detectorFailures: this.detectorFailures, bypassed: this.bypassed, evaluationDuration: this.evaluationDuration.snapshot() };
+  counters(): { detectorFailures: Map<string, number>; bypassed: Map<string, number>; evaluationDuration: HistogramSnapshot; refusedWhileBlocked: number } {
+    return { detectorFailures: this.detectorFailures, bypassed: this.bypassed, evaluationDuration: this.evaluationDuration.snapshot(), refusedWhileBlocked: this.refusedWhileBlocked };
   }
 
   private countBypass(reason: BypassReason): void {
@@ -419,9 +451,36 @@ export class HoneypotEngine {
     return this.allowlist.allows(ip);
   }
 
-  /** Whether this IP is currently blocked (checks the configured blocklist). */
+  /**
+   * Whether this IP is currently blocked (checks the configured blocklist).
+   *
+   * The adapters ask this before anything else and refuse a blocked address outright, so a
+   * `true` here is a refused request: it is counted (`refusedWhileBlocked`, and
+   * `hackerpot_refused_blocked_total` on `/metrics`) and reported as a sampled `refused` event.
+   */
   isBlocked(ip: string): boolean | Promise<boolean> {
-    return this.blocklist.isBlocked(ip);
+    const blocked = this.blocklist.isBlocked(ip);
+    if (typeof blocked === "boolean") {
+      if (blocked) this.countRefusal(ip);
+      return blocked;
+    }
+    return blocked.then((result) => {
+      if (result) this.countRefusal(ip);
+      return result;
+    });
+  }
+
+  private countRefusal(ip: string): void {
+    this.refusedWhileBlocked++;
+    const now = this.clock.now();
+    const sample = this.refusalSamples.get(ip) ?? { pending: 0, reportedAt: Number.NEGATIVE_INFINITY };
+    sample.pending++;
+    if (now - sample.reportedAt >= REFUSAL_REPORT_INTERVAL_MS) {
+      this.events.emit("refused", { ip, count: sample.pending, timestamp: new Date(now).toISOString() });
+      sample.pending = 0;
+      sample.reportedAt = now;
+    }
+    this.refusalSamples.set(ip, sample);
   }
 
   /**

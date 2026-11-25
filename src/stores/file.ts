@@ -6,6 +6,7 @@ import { matchesQuery } from "./query.js";
 import { ScoreLedger } from "./scores.js";
 import type { HitQuery, HitStore, HoneypotHit } from "../types.js";
 import { upgradeHit } from "../detectors/legacy.js";
+import { redactIncident } from "../management/redact.js";
 
 /** Read granularity for the streaming readers. */
 const CHUNK_BYTES = 1024 * 1024;
@@ -36,6 +37,22 @@ export interface FileStoreOptions {
    * so an IP under active attack is never the one evicted. Default 100000.
    */
   maxScoreEntries?: number;
+  /**
+   * Replace credential headers (`Authorization`, `Cookie`, API-key and secret-named headers) and
+   * secret-named form or JSON body fields with `[redacted]` before a hit is written, and scrub
+   * the same values out of detection summaries. Default true.
+   *
+   * Scanners send credentials, and often stolen ones belonging to somebody else: a file that
+   * keeps them verbatim for weeks is a store of other people's passwords. The dashboard has
+   * always redacted what it shows; this is the same rule for what reaches the disk.
+   */
+  redact?: boolean;
+  /** Header names this deployment knows hold a secret, redacted beyond the built-in list. */
+  secretHeaders?: readonly string[];
+  /** Write request headers at all. Default true; false keeps only the hit's own fields. */
+  includeHeaders?: boolean;
+  /** Write the request body at all. Default true; false drops it before the line is written. */
+  includeBody?: boolean;
   /** Reported write/rotation failures. Recording never throws into the request path. */
   onError?: (error: Error) => void;
 }
@@ -61,12 +78,20 @@ export class FileStore implements HitStore {
   private readonly onError: ((error: Error) => void) | undefined;
   /** True once a read had to drop older records to stay under `maxReadBytes`. */
   truncated = false;
+  private readonly redact: boolean;
+  private readonly secretHeaders: readonly string[];
+  private readonly includeHeaders: boolean;
+  private readonly includeBody: boolean;
 
   constructor(options: FileStoreOptions) {
     this.path = options.path;
     this.maxReadBytes = Math.max(1024, options.maxReadBytes ?? 64 * 1024 * 1024);
     this.scores = new ScoreLedger(options.maxScoreEntries ?? 100_000);
     this.onError = options.onError;
+    this.redact = options.redact ?? true;
+    this.secretHeaders = options.secretHeaders ?? [];
+    this.includeHeaders = options.includeHeaders ?? true;
+    this.includeBody = options.includeBody ?? true;
     mkdirSync(dirname(this.path), { recursive: true });
     this.checkpointPath = `${this.path}.scores.json`;
     if (options.loadOnStart ?? true) this.replay();
@@ -218,7 +243,22 @@ export class FileStore implements HitStore {
    */
   record(hit: HoneypotHit): Promise<void> {
     this.inFlight.push({ ip: hit.ip, score: hit.score });
-    return this.writer.append(JSON.stringify(hit));
+    return this.writer.append(JSON.stringify(this.forDisk(hit)));
+  }
+
+  /**
+   * The copy of a hit that is written: redacted, and without headers or body when those are
+   * off. The caller's object is never changed, because the engine still hands it to the
+   * other stores, the notifier and the response action after this.
+   */
+  private forDisk(hit: HoneypotHit): HoneypotHit {
+    let out = this.redact ? redactIncident(hit, { credentials: true, secretHeaders: this.secretHeaders }) : hit;
+    if (!this.includeHeaders || (!this.includeBody && out.body !== undefined)) {
+      out = { ...out };
+      if (!this.includeHeaders) out.headers = {};
+      if (!this.includeBody) out.body = undefined;
+    }
+    return out;
   }
 
   /** Moves the oldest `count` queued hits into the ledger, now that they are on disk. */

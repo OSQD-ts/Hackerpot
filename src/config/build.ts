@@ -6,7 +6,9 @@ import {
   credentialBruteforceDetector,
   crlfInjectionDetector,
   decoyPathDetector,
-  defaultDecoyPaths,
+  DEFAULT_DECOY_SEED,
+  decoyHoneytokens,
+  decoyPathsFor,
   graphqlAbuseDetector,
   prototypePollutionDetector,
   headerAnomalyDetector,
@@ -23,6 +25,7 @@ import {
   markerDriftDetector,
   pathNoveltyDetector,
   repeatActorDetector,
+  uaRotationDetector,
   scannerSignatureDetector,
   sensitiveFileDetector,
   ssrfProbeDetector,
@@ -34,7 +37,7 @@ import {
 import { TrafficAudit } from "../audit.js";
 import type { CrawlerRanges } from "../crawler-ranges.js";
 import { managementApiSource, type DashboardOptions, type DashboardSource } from "../dashboard/index.js";
-import type { Detector, PortScanEvent, PortScanSentinelOptions } from "../detectors/index.js";
+import type { DecoyPath, Detector, PortScanEvent, PortScanSentinelOptions } from "../detectors/index.js";
 import {
   blockAction,
   chaosAction,
@@ -50,7 +53,8 @@ import {
   redirectAction,
   tarpitAction,
 } from "../actions/index.js";
-import { PRESETS, ladderPolicy, rulePolicy } from "../policy/index.js";
+import { PRESETS, PRESET_THRESHOLDS, ladderPolicy, rulePolicy } from "../policy/index.js";
+import type { PresetThresholds } from "../policy/index.js";
 import type { ResponseAction } from "../actions/index.js";
 import type { ResponsePolicy, Rule } from "../policy/index.js";
 import { ManagementServer } from "../management/index.js";
@@ -104,10 +108,8 @@ export function buildDetectors(config: HackerpotConfig, shared: SharedDetectorSt
   // Early, and before anything that could answer the request first: a trap is proof.
   if (d.trap.enabled) detectors.push(trapDetector(d.trap.options));
   if (d["decoy-path"].enabled) {
-    const custom = d["decoy-path"].decoys;
-    const base = d["decoy-path"].replaceDefaults ? [] : defaultDecoyPaths.filter((decoy) => !d["decoy-path"].disabled.includes(decoy.id));
     // Custom decoys come first so one sharing an id with a built-in wins the match.
-    detectors.push(decoyPathDetector([...custom, ...base]));
+    detectors.push(decoyPathDetector(configuredDecoys(config)));
   }
   if (d["payload-injection"].enabled) detectors.push(payloadInjectionDetector(d["payload-injection"].options));
   if (d["ssrf-probe"].enabled) detectors.push(ssrfProbeDetector(d["ssrf-probe"].options));
@@ -133,7 +135,12 @@ export function buildDetectors(config: HackerpotConfig, shared: SharedDetectorSt
   if (d["client-anomaly"].enabled) detectors.push(clientAnomalyDetector(d["client-anomaly"].options));
   if (d["rate-spike"].enabled) detectors.push(rateSpikeDetector(d["rate-spike"].options));
   if (d["repeat-actor"].enabled) detectors.push(repeatActorDetector(d["repeat-actor"].options));
-  if (d.honeytoken.enabled && d.honeytoken.options.tokens.length > 0) detectors.push(honeytokenDetector(d.honeytoken.options));
+  if (d["ua-rotation"].enabled) detectors.push(uaRotationDetector(d["ua-rotation"].options));
+  // The built-in decoys' planted secrets are honeytokens too: they exist only in what the
+  // decoys hand out, so one coming back is somebody using what they harvested.
+  const planted = plantedHoneytokens(config);
+  const tokens = [...(d.honeytoken.enabled ? d.honeytoken.options.tokens : []), ...planted];
+  if (tokens.length > 0) detectors.push(honeytokenDetector({ ...d.honeytoken.options, tokens }));
 
   return detectors;
 }
@@ -176,6 +183,7 @@ function toRule(configured: PolicyRuleConfig): Rule {
     match: {
       ...(m.detector !== undefined ? { detector: m.detector } : {}),
       ...(m.certain !== undefined ? { certain: m.certain } : {}),
+      ...(m.detectorResponds !== undefined ? { detectorResponds: m.detectorResponds } : {}),
       ...(m.minScore !== undefined ? { minScore: m.minScore } : {}),
       ...(m.maxScore !== undefined ? { maxScore: m.maxScore } : {}),
       ...(m.minConfidence !== undefined ? { minConfidence: m.minConfidence } : {}),
@@ -241,6 +249,24 @@ export function buildMarkerCookie(config: HackerpotConfig): MarkerCookie | undef
   return new MarkerCookie({ secret: m.secret, name: m.name, maxAgeSeconds: m.maxAgeSeconds, secure: m.secure, sameSite: m.sameSite });
 }
 
+/** The decoys a configuration serves: its own first, then the built-ins it keeps, seeded. */
+export function configuredDecoys(config: HackerpotConfig): DecoyPath[] {
+  const settings = config.detectors["decoy-path"];
+  const base = settings.replaceDefaults ? [] : decoyPathsFor(settings.seed ?? DEFAULT_DECOY_SEED).filter((decoy) => !settings.disabled.includes(decoy.id));
+  return [...settings.decoys, ...base];
+}
+
+/** The built-in decoys' secrets to watch for, or none when those decoys are off or replaced. */
+function plantedHoneytokens(config: HackerpotConfig): Array<{ value: string; label: string }> {
+  const settings = config.detectors["decoy-path"];
+  if (!settings.enabled || !settings.honeytokens || settings.replaceDefaults) return [];
+  const serving = new Set(configuredDecoys(config).map((decoy) => decoy.id));
+  // A custom decoy sharing a built-in's id replaces it, so its secrets are no longer handed out.
+  const own = new Set(settings.decoys.map((decoy) => decoy.id));
+  if (!["dotenv", "aws-credentials"].some((id) => serving.has(id) && !own.has(id))) return [];
+  return decoyHoneytokens(settings.seed ?? DEFAULT_DECOY_SEED);
+}
+
 export function buildPolicy(config: HackerpotConfig): ResponsePolicy {
   const ladder = ladderPolicy(config.policy.blockThreshold, config.policy.tarpitThreshold);
   const own = config.policy.rules.map(toRule);
@@ -248,9 +274,52 @@ export function buildPolicy(config: HackerpotConfig): ResponsePolicy {
   // replaces it rather than colliding with it: a preset is a starting point you can override
   // one rule at a time. Anything neither covers falls through to the shipped ladder.
   const ownIds = new Set(own.map((rule) => rule.id));
-  const fromPreset = config.policy.preset ? PRESETS[config.policy.preset]().filter((rule) => !ownIds.has(rule.id)) : [];
+  const fromPreset = config.policy.preset ? PRESETS[config.policy.preset](presetThresholds(config)).filter((rule) => !ownIds.has(rule.id)) : [];
   const rules = [...own, ...fromPreset];
   return rules.length === 0 ? ladder : rulePolicy(rules, { fallback: ladder });
+}
+
+/** The thresholds the file set, in the shape a preset takes. Unset ones keep the preset's own default. */
+function presetThresholds(config: HackerpotConfig): PresetThresholds {
+  const set = config.policy.explicitThresholds ?? [];
+  return {
+    ...(set.includes("block_threshold") ? { blockThreshold: config.policy.blockThreshold } : {}),
+    ...(set.includes("tarpit_threshold") ? { tarpitThreshold: config.policy.tarpitThreshold } : {}),
+  };
+}
+
+const THRESHOLD_KEYS: Record<keyof PresetThresholds, "block_threshold" | "tarpit_threshold"> = { blockThreshold: "block_threshold", tarpitThreshold: "tarpit_threshold" };
+
+/**
+ * What in `[policy]` looks configured but decides nothing, in words for the startup log.
+ *
+ * A threshold the preset does not read, or one shadowed by a rule that matches every request,
+ * used to be printed beside the active ones with nothing to tell them apart, so an edit to it
+ * changed nothing and said nothing. Empty when every number in the file is in effect.
+ */
+export function policyNotices(config: HackerpotConfig): string[] {
+  const notices: string[] = [];
+  const set = config.policy.explicitThresholds ?? [];
+  const preset = config.policy.preset;
+  if (preset !== undefined) {
+    const read = PRESET_THRESHOLDS[preset];
+    const unused = (Object.keys(THRESHOLD_KEYS) as Array<keyof PresetThresholds>).filter((key) => !read.includes(key) && set.includes(THRESHOLD_KEYS[key]));
+    if (unused.length > 0) {
+      const names = unused.map((key) => THRESHOLD_KEYS[key]).join(" and ");
+      notices.push(`[policy] ${names} ${unused.length > 1 ? "are" : "is"} not used: preset "${preset}" ${preset === "observe" ? "passes every request" : "never blocks on a score alone"}.`);
+    }
+  }
+  const catchAll = config.policy.rules.find((rule) => Object.values(rule.match).every((value) => value === undefined));
+  if (catchAll !== undefined) {
+    const after = [
+      ...config.policy.rules.slice(config.policy.rules.indexOf(catchAll) + 1).map((rule) => `rule "${rule.id}"`),
+      ...(preset !== undefined ? [`preset "${preset}"`] : []),
+      "block_threshold",
+      "tarpit_threshold",
+    ];
+    notices.push(`[policy] rule "${catchAll.id}" matches every request, so ${after.join(", ")} ${after.length > 1 ? "are" : "is"} never consulted.`);
+  }
+  return notices;
 }
 
 export interface BuiltStore {
@@ -320,11 +389,15 @@ export function createStore(config: HackerpotConfig, onError?: (error: Error) =>
       maxArchiveAgeMs: settings.maxArchiveAgeSeconds * 1000,
       compressArchives: settings.compressArchives,
       maxScoreEntries: settings.maxScoreEntries,
+      redact: settings.redact,
+      secretHeaders: settings.secretHeaders,
+      includeHeaders: settings.includeHeaders,
+      includeBody: settings.includeBody,
     };
     if (onError) options.onError = onError;
     file = new FileStore(options);
     backends.push(file);
-    names.push(`file(${settings.path}${settings.maxBytes > 0 ? `, roll at ${Math.round(settings.maxBytes / 1024 / 1024)}MB x${settings.maxArchives}` : ""})`);
+    names.push(`file(${settings.path}${settings.maxBytes > 0 ? `, roll at ${Math.round(settings.maxBytes / 1024 / 1024)}MB x${settings.maxArchives}` : ""}${settings.redact ? ", redacted" : ", UNREDACTED"})`);
   }
 
   const close = async (): Promise<void> => {
@@ -741,6 +814,7 @@ export function buildDashboardOptions(config: HackerpotConfig): DashboardOptions
   if (d.auth.kind === "basic") options.auth = { username: d.auth.username, password: d.auth.password };
   else if (d.auth.kind === "token") options.auth = { token: d.auth.token };
   else if (d.auth.kind === "none") options.auth = false;
+  if (d.controls.testRequest || d.controls.previewPolicy || d.controls.editPolicy) options.controls = { ...d.controls };
   return options;
 }
 

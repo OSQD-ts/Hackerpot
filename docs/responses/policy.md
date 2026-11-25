@@ -92,7 +92,8 @@ new HoneypotEngine({ policy });
 ```
 
 A match holds when every field present holds; absent fields constrain nothing, so `match: {}` is a
-last-resort rule. The fields are `detector`, `certain`, `minScore`/`maxScore` (this request),
+last-resort rule. The fields are `detector`, `certain`, `detectorResponds` (the detection named a
+response of its own, such as a decoy's bait), `minScore`/`maxScore` (this request),
 `minTotalScore`/`maxTotalScore` (the address),
 [`minConfidence`/`maxConfidence`](../concepts/scoring.md#confidence-how-strong-not-how-much) (how
 *strong* the evidence is, rather than how much of it), `path` (a string is a prefix, a RegExp is a
@@ -115,7 +116,15 @@ by default the ladder above — so a handful of rules only overrides what it nam
 | --- | --- | --- |
 | `observe` | a first deployment in front of real users | records and scores everything and passes every request to your application, which answers as it always would; nobody can notice it. Standalone, `pass` is a plain 404 |
 | `protect-app` | in front of a real application | blocks on proof, keeps decoys serving bait, tarpits exploitation attempts and persistent probing, passes everything else to your application; never refuses on a score alone |
-| `standalone` | its own address or ports | blocks confirmed attackers and proof, otherwise lets each detector serve its own expensive response |
+| `standalone` | its own address or ports | blocks confirmed attackers (`blockThreshold`, 40) and proof, lets a detector that named a response serve it (bait, a fake shell), tarpits an address past `tarpitThreshold` (15), and answers anything else with a plain 404 |
+
+The presets are functions of the thresholds: `standalone({ blockThreshold, tarpitThreshold })` and
+`protectApp({ tarpitThreshold })` (its own default is 25). `observe` reads neither, and `protect-app`
+never blocks on a score. From a file, `[policy] block_threshold` and `tarpit_threshold` are handed to
+the preset when they are set, and a preset keeps its own default for one that is not;
+`PRESET_THRESHOLDS` says which preset reads which. A threshold the chosen preset does not read, or one
+that a rule matching every request leaves unreachable, is named in a `warning` line at startup
+(`policyNotices(config)`), so a number in the file that decides nothing says so.
 
 ```ts
 import { protectApp, rulePolicy } from "@osqd/hackerpot";

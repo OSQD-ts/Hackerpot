@@ -41,6 +41,8 @@ export {
   buildDetectors,
   buildHoneypotConfig,
   buildPolicy,
+  policyNotices,
+  configuredDecoys,
   buildResponseActions,
   createBlocklist,
   createManagementServer,

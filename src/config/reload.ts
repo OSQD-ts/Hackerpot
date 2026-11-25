@@ -34,6 +34,7 @@ const RESTART_REQUIRED: Array<{ key: string; select: (c: HackerpotConfig) => unk
   { key: "syslog", select: (c) => c.syslog, why: "the syslog transport is opened at startup" },
   { key: "management", select: (c) => c.management, why: "the management listener is already bound" },
   { key: "dashboard", select: (c) => c.dashboard, why: "the dashboard listener is already bound" },
+  { key: "metrics", select: (c) => c.metrics, why: "the metrics listener is already bound" },
   // Turning ingest on/off or flipping enforce changes how the blocklist itself is
   // composed (whether a non-enforcing feed child exists at all), which is decided
   // when the engine is built. The feed list and schedule are reloadable; these are not.

@@ -4,7 +4,7 @@ import type { Detection } from "../src/detectors/types.js";
 import type { RequestFacts } from "../src/detectors/types.js";
 import { PRESETS, compileMatch, ladderPolicy, observe, protectApp, rulePolicy, standalone } from "../src/policy/index.js";
 import type { PolicyContext } from "../src/policy/index.js";
-import { buildPolicy } from "../src/config/build.js";
+import { buildPolicy, policyNotices } from "../src/config/build.js";
 import { parseConfig } from "../src/config/schema.js";
 
 /**
@@ -159,6 +159,26 @@ describe("presets", () => {
     expect(policy(context({ detection: detection("decoy-path", { respondWith: "gzip-bomb" }) }))).toMatchObject({ actionId: "gzip-bomb", rule: "detector-choice" });
   });
 
+  it("reaches its tarpit rung: a detector with no bait of its own no longer swallows every request", () => {
+    const policy = rulePolicy(standalone());
+    const bare = detection("scanner-signature");
+    expect(policy(context({ totalScore: 20, detection: bare, detections: [bare] }))).toMatchObject({ actionId: "tarpit", rule: "repeat-tarpit" });
+    expect(policy(context({ totalScore: 5, detection: bare, detections: [bare] }))).toMatchObject({ actionId: "not-found", rule: "first-probe" });
+    // Bait still wins over the tarpit below the block line.
+    expect(policy(context({ totalScore: 20, detection: detection("decoy-path", { respondWith: "decoy-content" }) }))).toMatchObject({ actionId: "decoy-content", rule: "detector-choice" });
+  });
+
+  it("builds standalone and protect-app from the thresholds it is given", () => {
+    const bare = detection("scanner-signature");
+    const strict = rulePolicy(standalone({ blockThreshold: 25, tarpitThreshold: 8 }));
+    expect(strict(context({ totalScore: 25 }))).toMatchObject({ actionId: "block", rule: "confirmed-block" });
+    expect(strict(context({ totalScore: 8, detection: bare, detections: [bare] }))).toMatchObject({ actionId: "tarpit", rule: "repeat-tarpit" });
+    const app = rulePolicy(protectApp({ tarpitThreshold: 10 }));
+    expect(app(context({ totalScore: 10, detection: bare, detections: [bare] }))).toMatchObject({ actionId: "tarpit", rule: "persistent-tarpit" });
+    // Left out, protect-app keeps its own 25 rather than the ladder's 15.
+    expect(rulePolicy(protectApp())(context({ totalScore: 15, detection: bare, detections: [bare] }))).toMatchObject({ actionId: "pass" });
+  });
+
   it("names every preset it ships", () => {
     expect(Object.keys(PRESETS).sort()).toEqual(["observe", "protect-app", "standalone"]);
     for (const build of Object.values(PRESETS)) {
@@ -252,5 +272,35 @@ describe("what the engine records", () => {
     expect(result.reason).toContain("Anything probing this host is hostile.");
     expect(result.reason).toContain("No detection was proof");
     expect(result.reason).toContain("tarpit served instead");
+  });
+});
+
+describe("thresholds under a preset", () => {
+  const bare = (): Detection => detection("scanner-signature");
+
+  it("hands the file's thresholds to the preset", () => {
+    const policy = buildPolicy(parseConfig({ policy: { preset: "standalone", block_threshold: 30, tarpit_threshold: 12 } }, "<test>"));
+    expect(policy(context({ totalScore: 30 }))).toMatchObject({ actionId: "block", rule: "confirmed-block" });
+    expect(policy(context({ totalScore: 12, detection: bare(), detections: [bare()] }))).toMatchObject({ actionId: "tarpit", rule: "repeat-tarpit" });
+  });
+
+  it("keeps protect-app's own tarpit line when the file sets none", () => {
+    const policy = buildPolicy(parseConfig({ policy: { preset: "protect-app" } }, "<test>"));
+    expect(policy(context({ totalScore: 20, detection: bare(), detections: [bare()] }))).toMatchObject({ actionId: "pass" });
+    expect(policy(context({ totalScore: 25, detection: bare(), detections: [bare()] }))).toMatchObject({ actionId: "tarpit" });
+  });
+
+  it("says at startup which thresholds decide nothing", () => {
+    expect(policyNotices(parseConfig({ policy: { preset: "standalone", block_threshold: 30 } }, "<test>"))).toEqual([]);
+    expect(policyNotices(parseConfig({ policy: { preset: "observe", tarpit_threshold: 10 } }, "<test>"))).toEqual(['[policy] tarpit_threshold is not used: preset "observe" passes every request.']);
+    expect(policyNotices(parseConfig({ policy: { preset: "protect-app", block_threshold: 30 } }, "<test>"))).toEqual(['[policy] block_threshold is not used: preset "protect-app" never blocks on a score alone.']);
+    const shadowed = policyNotices(parseConfig({ policy: { rules: [{ id: "everything", respond_with: "not-found" }] } }, "<test>"));
+    expect(shadowed).toEqual(['[policy] rule "everything" matches every request, so block_threshold, tarpit_threshold are never consulted.']);
+  });
+
+  it("matches detector_responds from a file rule", () => {
+    const policy = buildPolicy(parseConfig({ policy: { rules: [{ id: "bait-only", detector_responds: true, respond_with: "@detector" }] } }, "<test>"));
+    expect(policy(context({ detection: detection("decoy-path", { respondWith: "decoy-content" }) }))).toMatchObject({ rule: "bait-only" });
+    expect(policy(context({ totalScore: 1, detection: bare(), detections: [bare()] }))).not.toMatchObject({ rule: "bait-only" });
   });
 });

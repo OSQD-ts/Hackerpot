@@ -22,18 +22,20 @@ import { insecureDeserializationDetector } from "./insecure-deserialization.js";
 import { hostHeaderInjectionDetector } from "./host-header-injection.js";
 import { repeatActorDetector } from "./repeat-actor.js";
 import type { Detector } from "./types.js";
+import { DEFAULT_DECOY_SEED, decoyHoneytokens } from "./decoy-paths.js";
+import { honeytokenDetector } from "./honeytoken.js";
 
 export type { Detection, DetectionContext, Detector, RequestFacts } from "./types.js";
 export type { LegacyDetection } from "./legacy.js";
-export { decoyPathDetector, defaultDecoyPaths } from "./decoy-paths.js";
-export type { DecoyPath } from "./decoy-paths.js";
+export { DEFAULT_DECOY_SEED, decoyHoneytokens, decoyPathDetector, decoyPathsFor, decoySecrets, defaultDecoyPaths } from "./decoy-paths.js";
+export type { DecoyPath, DecoySecrets } from "./decoy-paths.js";
 export { pathBruteforceDetector } from "./path-bruteforce.js";
 export type { PathBruteforceOptions } from "./path-bruteforce.js";
 export { credentialBruteforceDetector } from "./credential-bruteforce.js";
 export type { CredentialBruteforceOptions } from "./credential-bruteforce.js";
 export { rateSpikeDetector } from "./rate-spike.js";
 export type { RateSpikeOptions } from "./rate-spike.js";
-export { attackToolUserAgentPatterns, scannerSignatureDetector, scannerUserAgentPatterns, scriptingClientUserAgentPatterns } from "./scanner-signature.js";
+export { attackToolUserAgentPatterns, scannerSignatureDetector, scannerUserAgentPatterns, scriptingClientUserAgentPatterns, surveyScannerUserAgentPatterns } from "./scanner-signature.js";
 export type { ScannerSignatureOptions } from "./scanner-signature.js";
 export { payloadInjectionDetector, injectionSignatures } from "./payload-injection.js";
 export type { PayloadInjectionOptions, InjectionSignature } from "./payload-injection.js";
@@ -71,6 +73,9 @@ export { hostHeaderInjectionDetector } from "./host-header-injection.js";
 export type { HostHeaderInjectionOptions } from "./host-header-injection.js";
 export { repeatActorDetector } from "./repeat-actor.js";
 export type { RepeatActorOptions } from "./repeat-actor.js";
+// Off by default: a shared address in front of real users carries several browsers at once.
+export { uaRotationDetector } from "./ua-rotation.js";
+export type { UaRotationOptions } from "./ua-rotation.js";
 // Off by default: it reads the site baseline, which only exists where outcomes are reported.
 export { pathNoveltyDetector } from "./path-novelty.js";
 export type { PathNoveltyOptions } from "./path-novelty.js";
@@ -92,9 +97,10 @@ export { PortScanSentinel } from "./port-scan.js";
 export type { PortScanEvent, PortScanSentinelOptions } from "./port-scan.js";
 
 /**
- * The detector set used when none is configured explicitly. honeytokenDetector
- * is intentionally excluded — it requires you to supply the seeded token values
- * — so add it yourself via `extraDetectors` once you have planted some.
+ * The detector set used when none is configured explicitly. Its honeytoken detector watches
+ * only the secrets the built-in decoys hand out; for tokens you planted yourself, pass your own
+ * `honeytokenDetector` in `extraDetectors`, which replaces this one (keep
+ * `decoyHoneytokens(DEFAULT_DECOY_SEED)` in its list to go on watching those).
  */
 export function defaultDetectors(): Detector[] {
   return [
@@ -121,5 +127,8 @@ export function defaultDetectors(): Detector[] {
     clientAnomalyDetector(),
     rateSpikeDetector(),
     repeatActorDetector(),
+    // The built-in decoys' planted secrets: only ever handed out by those decoys, so one coming
+    // back is somebody using what they harvested.
+    honeytokenDetector({ tokens: decoyHoneytokens(DEFAULT_DECOY_SEED) }),
   ];
 }

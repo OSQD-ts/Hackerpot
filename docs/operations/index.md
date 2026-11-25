@@ -34,6 +34,7 @@ exploit.
 | [Stores](stores.md) | where incidents and scores live, and how long |
 | [Threat intel](threat-intel.md) | consuming other honeypots' indicator feeds |
 | [Firewall enforcement](firewall.md) | pushing blocks out to iptables, nftables or a WAF |
+| [Edge bans](edge-bans.md) | banning at the firewall from the log, with fail2ban, while the honeypot stays isolated |
 | [Runtime changes](runtime-changes.md) | changing configuration without a restart |
 
 ## What to alert on

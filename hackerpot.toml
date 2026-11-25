@@ -38,6 +38,15 @@ port = 4004
 # detection entirely, or getting an arbitrary victim blocked (and firewalled, if
 # [blocklist.enforcer] is on).
 trust_proxy = false
+# With trust_proxy on: the addresses and CIDRs of your proxies. The header is read only
+# from these peers and walked from the right past them, so an address the client wrote
+# into it is never taken. Recommended whenever the proxies' addresses are known. Each of
+# these three is a startup error with trust_proxy = false: the header would never be read.
+# trusted_proxies = ["172.30.89.20"]
+# Without trusted_proxies: the Nth address from the right is the client.
+# proxy_hops = 1
+# The header carrying the chain.
+# forwarded_header = "x-forwarded-for"
 
 
 # ── Logging ──────────────────────────────────────────────────────────────────
@@ -50,6 +59,19 @@ startup = true
 # you want full forensic detail in the log rather than only in the hit store.
 include_headers = false
 include_body = false
+# A "verdict" line (kind, then ip, then reason) for each hit that is worth acting on at
+# the edge: "proof" (a replayed honeytoken, a tool naming itself), "block" (the policy
+# refused the address) or "burst" (burst_hits hits from one address within
+# burst_window_ms, which a person typing addresses cannot do). Its shape is stable, so a
+# fail2ban filter can match it; see docs/operations/edge-bans.md. Everything else stays
+# a plain "hit" line, so a ban built on verdicts never acts on one curious visitor.
+verdicts = true
+burst_hits = 3
+burst_window_ms = 5000
+# A "refused" line, at most once a minute per address, counting requests refused because
+# the address is already blocked. They run no detector and record no incident, so without
+# this a block's effect never shows in the log.
+refusals = true
 
 
 # ── Engine ───────────────────────────────────────────────────────────────────
@@ -70,6 +92,13 @@ detector_timeout_ms = 2000
 # How long the actor registry remembers which IPs a fingerprint attacked from.
 # Bounds repeat-actor's correlation horizon and the registry's memory footprint.
 fingerprint_window_ms = 3600000
+# Paths the honeypot skips entirely: no detection, no block check, no record. An entry
+# ending in "/" is a prefix, any other the exact path; each must start with "/". The
+# patterns are regular expressions for the same.
+ignore_paths = []
+ignore_path_patterns = []
+# ignore_paths = ["/healthz", "/assets/"]
+# ignore_path_patterns = ["\\.png$"]
 
 
 # ── Traffic audit ────────────────────────────────────────────────────────────
@@ -106,12 +135,16 @@ header = "x-hackerpot-token"
 # keep serving bait); otherwise at or above tarpit_threshold the request is
 # tarpitted; below that it gets a plain 404.
 [policy]
-block_threshold = 40
-tarpit_threshold = 15
-# A rule set to start from: "observe" (record everything, serve plain 404s), "protect-app"
-# (bait and tarpits, never a block on a score alone) or "standalone" (nothing here can reach a
-# real visitor, so the expensive responses are fair game). Left out, the thresholds above are
-# the whole policy.
+# The running score at which an address is blocked, and at which a request with no bait of its
+# own is tarpitted. Left commented out on purpose: a preset keeps its own default for a
+# threshold the file does not set ("protect-app" tarpits at 25), and setting one here hands it
+# to the preset. Uncomment to change it.
+# block_threshold = 40
+# tarpit_threshold = 15
+# A rule set to start from: "observe" (record everything, pass every request: no threshold is
+# used), "protect-app" (bait and tarpits, never a block on a score alone: uses tarpit_threshold
+# only) or "standalone" (nothing here can reach a real visitor: uses both). Left out, the
+# thresholds above are the whole policy. A threshold a preset does not use is named at startup.
 # preset = "standalone"
 
 # Rules are consulted in order, before the preset and the thresholds; the first that matches
@@ -123,6 +156,20 @@ tarpit_threshold = 15
 # path_prefix = ["/admin", "/wp-login.php"]
 # respond_with = "rate-limit"
 # reason = "Password guessing against the admin login: answered like an ordinary rate limit."
+#
+# Every key a rule can match on (all those given must hold): detector, certain,
+# detector_responds (the detection named its own response, e.g. a decoy's bait),
+# min_score / max_score (this request), min_total_score / max_total_score (the address's
+# running score), min_confidence / max_confidence (0 to 1), path_prefix, path_pattern
+# (regular expressions), method and ip. respond_with = "@detector" runs the detector's
+# own choice, falling back to fallback_action.
+# [[policy.rules]]
+# id = "repeat-tarpit"
+# detector = ["sensitive-file", "path-bruteforce", "scanner-signature"]
+# min_total_score = 15
+# max_total_score = 39
+# path_pattern = ["\\.php$"]
+# respond_with = "tarpit"
 
 # ── Names for sources you already know ───────────────────────────────────────
 # A label is shown wherever the address would be, so a feed reads "Our uptime
@@ -149,6 +196,7 @@ tarpit_threshold = 15
 # correlating them. Enable [detectors.marker-drift] to act on it.
 # [markers]
 # secret = "a-long-random-secret"
+# enabled = true            # on when secret is set
 # name = "__hp"
 # max_age_seconds = 86400
 # secure = true
@@ -196,6 +244,17 @@ max_archives = 10
 # Also delete an archive older than this, whatever the count. 0 = age-based pruning off.
 max_archive_age_seconds = 0
 compress_archives = true
+
+# What reaches the disk. Scanners send credentials, often stolen ones belonging to
+# somebody else, and this file keeps them for as long as its archives live. With redact
+# on, Authorization, Cookie, API-key and secret-named headers, and secret-named form or
+# JSON fields, are written as "[redacted]" (and scrubbed from detection summaries).
+# secret_headers adds header names of your own. include_headers / include_body = false
+# leave them out entirely.
+redact = true
+secret_headers = []
+include_headers = true
+include_body = true
 
 # Per-IP cumulative scores are cached in memory for fast lookups. One entry per distinct
 # source ever seen is unbounded on an internet-facing service, so the cache is capped and
@@ -411,6 +470,14 @@ enabled = true
 replace_defaults = false
 # Ids of built-in decoys to drop, e.g. ["swagger"] if you serve a real spec.
 disabled = []
+# The built-in decoys' secrets (the fake .env, AWS credentials and git remote) are
+# generated from this seed, so no two installs serve the same file and none serves a
+# well-known example key. Unset: random per start, so the values change on every
+# restart. Set at least 16 random characters (openssl rand -hex 16) to keep them stable.
+# seed = "replace-with-a-random-hex-string"
+# Watch for those secrets coming back, as honeytokens: they exist only in what the decoys
+# hand out, so a replay is proof. On while the built-in .env or AWS decoy is served.
+honeytokens = true
 
 # Add your own bait. Use `path` for an exact match or `pattern` for a regex —
 # one or the other, not both. A custom decoy sharing an id with a built-in one
@@ -419,6 +486,8 @@ disabled = []
 # id = "internal-backup"
 # description = "Fake internal backup endpoint"
 # path = "/internal/backup.sql"
+# match = "exact"      # "prefix": also anything under it; "anywhere": at any depth
+# method = "GET"       # optional; any method when left out
 # score = 9
 # respond_with = "large-payload"
 #
@@ -432,6 +501,7 @@ disabled = []
 # status = 200
 # content_type = "text/html; charset=utf-8"
 # body = "<html><body><h1>Jenkins</h1></body></html>"
+# location = "/elsewhere"    # for respond_with = "redirect"
 
 # Exploitation payloads: traversal, SQLi, XSS, command/template injection,
 # Log4Shell, XXE — in the path, query, listed headers, and body.
@@ -704,18 +774,52 @@ score = 7
 distinct_ip_threshold = 3
 window_ms = 600000
 
+# One address presenting several different User-Agents within seconds: a scanner rotating
+# its User-Agent to look like several browsers. Off by default and meant for a standalone
+# trap: in front of real users a shared address (an office, a school, a carrier's NAT)
+# carries several browsers at once. Suspicion, never proof.
+[detectors.ua-rotation]
+enabled = false
+score = 5
+window_ms = 10000
+distinct_threshold = 3
+max_addresses = 50000
+
+# Paths nobody has been served, asked for by one address, measured against what the
+# application really answers. Off by default: it needs the site profile, which only
+# middleware mode feeds. See docs/concepts/baseline.md.
+[detectors.path-novelty]
+enabled = false
+score = 6
+window_ms = 60000
+unseen_path_threshold = 5
+walker_threshold = 4
+min_observations = 500
+min_served_paths = 20
+
+# One marked client arriving from several addresses. Off by default: it needs [markers],
+# which only work in middleware mode.
+[detectors.marker-drift]
+enabled = false
+score = 7
+distinct_ip_threshold = 3
+window_ms = 600000
+
 # Fake credentials you deliberately planted (in a decoy .env, a fake admin page,
 # a seeded config). No legitimate client ever holds one, so a replay is the
-# highest-confidence breach signal there is. Off until you list tokens; listing
-# any turns it on. Values must match what you planted, exactly.
+# highest-confidence breach signal there is. Values must match what you planted,
+# exactly. The built-in decoys' own secrets are watched whatever is listed here (see
+# [detectors.decoy-path] honeytokens); `enabled` turns on watching the tokens below, and
+# is on when any are listed.
 [detectors.honeytoken]
+# enabled = true
 score = 15
 tokens = []
 # tokens = ["AKIA_HACKERPOT_HONEYTOKEN_DEMO"]
 #
 # Or label each one so the log says where it leaked from:
 # [[detectors.honeytoken.tokens]]
-# value = "AKIAIOSFODNN7EXAMPLE"
+# value = "pkp_replace-with-the-random-value-you-planted"
 # label = "decoy-env-aws-key"
 
 
@@ -729,6 +833,11 @@ enabled = true
 
 # Flat 404 — the probe itself was the signal.
 [responses.not-found]
+enabled = true
+
+# Hands the request to the application untouched (middleware mode); standalone, where
+# there is no application, a plain 404. What the "observe" preset answers with.
+[responses.pass]
 enabled = true
 
 # Bounces the attacker toward another decoy.
@@ -1051,6 +1160,7 @@ max_session_ms = 120000
 # lost; and when a TCP collector is down, messages are DROPPED and the outage
 # reported, never queued.
 [syslog]
+# enabled = true            # on when host is set
 # host = "siem.internal"
 port = 514
 # "udp" is fire-and-forget. "tcp" reconnects with backoff and reports what it lost.
@@ -1092,9 +1202,25 @@ port = 9500
 api_keys = []
 # api_keys = ["replace-me-with-a-long-random-string"]
 websocket = true
+# A cap on deliveries across every webhook together, per minute; 0 is unlimited. Each
+# webhook's own throttle still applies.
+webhook_global_max_per_minute = 0
 # The API also serves Prometheus metrics at GET /metrics (authenticated, like
 # every other endpoint here except /health). Standalone adds live active_blocks
-# and tracked_ips gauges on top of the store-derived counters.
+# and tracked_ips gauges on top of the store-derived counters. To scrape without
+# enabling the API at all, use [metrics] below.
+
+# ── Metrics only ─────────────────────────────────────────────────────────────
+# A listener that serves the same Prometheus exposition at `path` and nothing else: no
+# captured data, no API key to hold, so it can sit on a network the management API never
+# should. allowed_clients limits who may scrape (others are disconnected unanswered);
+# empty allows any peer that can reach the bind. Changing it needs a restart.
+[metrics]
+enabled = false
+host = "127.0.0.1"
+port = 9502
+path = "/metrics"
+allowed_clients = []
 
 # ── Dashboard ────────────────────────────────────────────────────────────────
 # The operator dashboard: the live incident feed, statistics, attack sessions,
@@ -1140,6 +1266,16 @@ mask_ip = false
 hide = []
 # management_url = "http://honeypot:9500"
 # management_api_key = "…"  # or DASHBOARD_MANAGEMENT_API_KEY
+
+# What viewers may do beyond reading. Each is off unless granted here:
+#   test_request    run a pasted request through the detectors (a dry run: nothing recorded)
+#   preview_policy  replay the incidents the page holds against a candidate rule set
+#   edit_policy     replace the running policy from the page. Needs authentication; a
+#                   SIGHUP reload puts the file's policy back.
+[dashboard.controls]
+test_request = false
+preview_policy = false
+edit_policy = false
 
 # Push every incident to your own endpoint as JSON. With `secret` set, the body
 # is signed HMAC-SHA256 and the hex digest sent in X-Hackerpot-Signature, and
@@ -1203,5 +1339,11 @@ hide = []
 # too, so alert text is never fully attacker-free. Render it as plain text rather
 # than markup in whatever receives it.
 # omit_body = true
+# Credential headers and secret-named body fields are sent as "[redacted]"; mask_ip sends
+# the address as its /24 or /48 (worth it for a destination somebody else operates).
+# redact = true
+# mask_ip = false
+# Also deliver traffic anomalies (kind "anomaly") from [audit].
+# anomalies = true
 # [management.webhooks.headers]
 # X-Team = "security"

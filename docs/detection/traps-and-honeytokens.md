@@ -133,12 +133,18 @@ tokens = ["AKIA_HACKERPOT_HONEYTOKEN_DEMO"]
 
 # or labelled, so the incident says where it leaked from:
 [[detectors.honeytoken.tokens]]
-value = "AKIAIOSFODNN7EXAMPLE"
-label = "decoy-env-aws-key"
+value = "pkp_replace-with-the-random-value-you-planted"
+label = "decoy-env-panel-token"
 ```
 
 Listing any token enables the detector. `HONEYTOKENS=a,b` in the environment replaces the
 list.
+
+The built-in decoys plant tokens of their own: the fake `.env` and AWS credentials carry
+[seeded secrets](decoys.md#seeded-secrets) that exist nowhere else, and they are watched whether or
+not you list anything (`[detectors.decoy-path] honeytokens`, default true). Your tokens are added to
+them. In code, a `honeytokenDetector` of yours in `extraDetectors` replaces the default one, so
+include `decoyHoneytokens(DEFAULT_DECOY_SEED)` in its list to keep watching both.
 
 ### Where it looks
 

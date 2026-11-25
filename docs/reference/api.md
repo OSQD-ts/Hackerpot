@@ -14,7 +14,7 @@ is a breaking change, and either is a deliberate edit there. Types are exported 
 | Path | Holds |
 | --- | --- |
 | `@osqd/hackerpot` | everything below |
-| `@osqd/hackerpot/adapters` | `createMiddleware`, `dispatch`, `trapFormGuard`, `koaHoneypot`, `fastifyHoneypot`, `fetchHoneypot`, `withFetchHoneypot`, `createDashboardHandler`, and their types. Also exported from the root |
+| `@osqd/hackerpot/adapters` | `createMiddleware`, `dispatch`, `trapFormGuard`, `honeytokenGuard`, `koaHoneypot`, `fastifyHoneypot`, `fetchHoneypot`, `withFetchHoneypot`, `createDashboardHandler`, and their types. Also exported from the root |
 | `@osqd/hackerpot/cli` | `main(argv): Promise<number>`, `readStdin()` |
 | `@osqd/hackerpot/corpus` | the labelled traffic corpus and the harness that runs it against a configuration. See [the corpus](../testing/corpus.md) |
 | `@osqd/hackerpot/element` | `<hackerpot-dashboard>`, the dashboard as a custom element. See [embedding](../operations/embedding.md) |
@@ -38,7 +38,7 @@ ESM and CommonJS, with declarations. Node 20 or later.
 | Option | Default | |
 | --- | --- | --- |
 | `detectors` | `defaultDetectors()` | the exact detector list, in order |
-| `extraDetectors` | `[]` | appended to the defaults; ignored with `detectors` |
+| `extraDetectors` | `[]` | appended to the defaults, one sharing a default's id replacing it; ignored with `detectors` |
 | `responseActions` | `defaultResponseActions()` | the actions the policy may name |
 | `extraResponseActions` | `[]` | appended |
 | `policy` | `defaultResponsePolicy()` | see [writing a policy](../responses/policy.md) |
@@ -64,7 +64,9 @@ ESM and CommonJS, with declarations. Node 20 or later.
 | `evaluate(facts, options?)` | run one request: `{ detections, score, totalScore, tracker, actionId, action, fingerprint, path, downgradedFrom?, shadowDetections, serviceToken? }`. Options: `trackActivity`, `recordHit`, `activityStatus`, `blockRequiresProof`, `unprovenBlockFallback`, `now`, `audit` |
 | `reconfigure({ detectors?, responseActions?, policy?, allowlist?, shadowDetectors?, serviceTokens? })` | hot-swap; see [runtime changes](../operations/runtime-changes.md) |
 | `resolveIp(remoteAddress, headers)` | the client address |
-| `isAllowlisted(ip)`, `isBlocked(ip)`, `serviceTokenFor(headers)` | |
+| `isAllowlisted(ip)`, `isBlocked(ip)`, `serviceTokenFor(headers)` | a `true` from `isBlocked` is a refused request: counted in `refusedWhileBlocked` and announced as `refused` |
+| `on(event, listener)` | `hit`, `shadow`, `error`, `warning`, `change`, `outcome`, `refused` (at most once a minute per address); returns the way to stop |
+| `counters()` | `{ detectorFailures, bypassed, evaluationDuration, refusedWhileBlocked }` for `/metrics` |
 | `subscribe(listener)` | every recorded hit, after `onHit`; returns an unsubscribe |
 | `publish(hit)` | tell subscribers about a hit recorded elsewhere (a protocol honeypot) |
 | `reportError(error, context)`, `reportShadow(facts, detections, alsoHit)` | for front ends |
@@ -82,7 +84,8 @@ ESM and CommonJS, with declarations. Node 20 or later.
 | `fastifyHoneypot(engine, options?)` | a Fastify `onRequest` hook |
 | `fetchHoneypot(engine, options?)` | `(request, { ip }) => Promise<Response \| undefined>` |
 | `withFetchHoneypot(engine, handler, options?)` | wraps a Fetch handler |
-| `trapFormGuard(engine, options?)` | checks parsed trap form fields |
+| `trapFormGuard(engine, options?)` | checks a parsed body for trap form fields and replayed honeytokens |
+| `honeytokenGuard(engine, options?)` | the same function, named for an API route |
 | `dispatch(engine, res, result, ip, path)` | run the response for an evaluation |
 | `hardenHttpServer(server)` | timeouts and a connection cap |
 | `MAX_BODY_BYTES`, `mayHaveBody`, `parseQuery`, `pathOf`, `readBody` | request parsing for a front end of your own |
@@ -95,6 +98,7 @@ See [adapters](../integration/adapters.md).
 | --- | --- |
 | `defaultDetectors()` | the 23-detector default set |
 | `decoyPathDetector`, `defaultDecoyPaths` | |
+| `decoyPathsFor(seed)`, `decoySecrets(seed)`, `decoyHoneytokens(seed)`, `DEFAULT_DECOY_SEED` | the built-in decoys and their [seeded secrets](../detection/decoys.md#seeded-secrets) |
 | `payloadInjectionDetector`, `injectionSignatures` | |
 | `ssrfProbeDetector`, `nosqlInjectionDetector`, `prototypePollutionDetector`, `insecureDeserializationDetector`, `graphqlAbuseDetector`, `jwtWeaknessDetector`, `crlfInjectionDetector` | |
 | `webShellDetector`, `webShellPatterns` | |
@@ -102,8 +106,8 @@ See [adapters](../integration/adapters.md).
 | `sensitiveFileDetector`, `sensitiveFilePatterns` | |
 | `openRedirectDetector` | |
 | `suspiciousMethodDetector`, `defaultSuspiciousMethods` | |
-| `credentialBruteforceDetector`, `pathBruteforceDetector`, `rateSpikeDetector`, `repeatActorDetector` | |
-| `scannerSignatureDetector`, `attackToolUserAgentPatterns`, `scriptingClientUserAgentPatterns`, `scannerUserAgentPatterns` | |
+| `credentialBruteforceDetector`, `pathBruteforceDetector`, `rateSpikeDetector`, `repeatActorDetector`, `uaRotationDetector` | |
+| `scannerSignatureDetector`, `attackToolUserAgentPatterns`, `scriptingClientUserAgentPatterns`, `surveyScannerUserAgentPatterns`, `scannerUserAgentPatterns` | |
 | `clientAnomalyDetector` | |
 | `honeytokenDetector` | |
 | `trapDetector`, `DEFAULT_TRAP_PATHS`, `renderTrapLink`, `renderTrapField`, `trapRobotsEntries` | |
@@ -154,6 +158,7 @@ See [response actions](../responses/actions.md).
 | --- | --- |
 | `ManagementServer` | REST, WebSocket, webhooks; `listen()`, `publish(hit)`, `announce(anomaly)`, `broker`, `close()` |
 | `IncidentBroker` | publish and subscribe for incidents |
+| `MetricsListener` | serves only `/metrics`, counted from a broker; `listen()`, `text()`, `close()`. See [metrics](../operations/metrics.md#a-listener-for-metrics-only) |
 | `WebhookDispatcher` | webhook delivery on its own |
 | `listIncidents`, `getIncident`, `computeStats`, `computeIoc`, `computeSessions`, `computeActors` | the functions behind the endpoints |
 | `IncidentCounters`, `renderMetrics` | Prometheus |
@@ -203,6 +208,7 @@ See [protocols](../protocols/index.md).
 | `CONFIG_SEARCH_PATHS`, `SYSTEM_CONFIG_PATH`, `CONFIG_PATH_ENV` | |
 | `applyEnvOverrides` | |
 | `buildHoneypotConfig`, `buildDetectors`, `buildResponseActions`, `buildPolicy`, `buildAudit`, `buildDashboardOptions`, `buildDashboardSource` | |
+| `configuredDecoys(config)`, `policyNotices(config)` | the decoys a config serves; what in `[policy]` decides nothing |
 | `createStore`, `createBlocklist`, `createManagementServer`, `createSyslogSink`, `createPortScanSentinel`, `createSmtpHoneypot`, `createSshHoneypot`, `createFtpHoneypot`, `createTelnetHoneypot` | |
 | `planReload` | |
 | `ConfigError`, `Section`, `toRegExp` | the reader |

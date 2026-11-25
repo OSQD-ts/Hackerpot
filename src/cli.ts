@@ -11,9 +11,9 @@
  * `--explain`, `--print-config`) still work, so a container or a script written against
  * them keeps running.
  */
-import { buildDashboardOptions, buildDashboardSource, buildDetectors, ConfigError, loadConfig } from "./config/index.js";
+import { buildDashboardOptions, buildDashboardSource, buildDetectors, ConfigError, configuredDecoys, loadConfig } from "./config/index.js";
 import { startDashboard } from "./dashboard/index.js";
-import { DEFAULT_TRAP_PATHS, defaultDecoyPaths } from "./detectors/index.js";
+import { DEFAULT_TRAP_PATHS } from "./detectors/index.js";
 import { generateRobotsTxt } from "./robots.js";
 import { readStdin, runService, SERVICE_USAGE } from "./service.js";
 import { VERSION } from "./version.js";
@@ -198,8 +198,7 @@ function robots(argv: string[]): number {
   const sitemap = takeFlag(args, "sitemap");
   if (args.length > 0) throw new ConfigError(`robots: unexpected argument "${args[0]}"`);
   const trap = config.detectors.trap;
-  const decoyConfig = config.detectors["decoy-path"];
-  const decoys = [...decoyConfig.decoys, ...(decoyConfig.replaceDefaults ? [] : defaultDecoyPaths.filter((decoy) => !decoyConfig.disabled.includes(decoy.id)))];
+  const decoys = configuredDecoys(config);
   process.stdout.write(
     generateRobotsTxt({
       decoys,

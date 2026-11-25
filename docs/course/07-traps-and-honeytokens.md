@@ -157,12 +157,16 @@ const TOKEN = "AKIA_PANTRY_7Q2XK4";
 const dotenv = defaultDecoyPaths.find((d) => d.id === "dotenv");
 const planted = {
   ...dotenv,
-  payload: { ...dotenv.payload, body: `APP_ENV=production\nAWS_ACCESS_KEY_ID=${TOKEN}\nAWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY\n` },
+  payload: { ...dotenv.payload, body: `APP_ENV=production\nAWS_ACCESS_KEY_ID=${TOKEN}\nAWS_SECRET_ACCESS_KEY=Pantry/q9Xv2LmT8sKw4RzN7bYc1HdJ5fGe3UaV6o\n` },
 };
 
 const engine = new HoneypotEngine({
   detectors: [
-    ...defaultDetectors().map((d) => (d.id === "decoy-path" ? decoyPathDetector([planted, ...defaultDecoyPaths.filter((x) => x.id !== "dotenv")]) : d)),
+    // The default set already has a honeytoken detector, watching the built-in decoys' own secrets;
+    // this list replaces it with one that watches Pantry's token.
+    ...defaultDetectors()
+      .filter((d) => d.id !== "honeytoken")
+      .map((d) => (d.id === "decoy-path" ? decoyPathDetector([planted, ...defaultDecoyPaths.filter((x) => x.id !== "dotenv")]) : d)),
     honeytokenDetector({ tokens: [{ value: TOKEN, label: "decoy-env-aws-key" }] }),
   ],
 });
@@ -203,6 +207,6 @@ If Pantry wants proof to block at once, that is a policy decision, and you write
 
 - [Traps and honeytokens](../detection/traps-and-honeytokens.md) — wiring, TOML, planting well
 - [The proof guard](../concepts/the-guard.md#what-counts-as-proof) — the five kinds of proof
-- [Adapters](../integration/adapters.md#trap-forms) — `trapFormGuard` beside the other front ends
+- [Adapters](../integration/adapters.md#trap-forms-and-honeytokens-in-a-body) — `trapFormGuard` beside the other front ends
 
 Next: [Identity and crawler verification](08-identity.md).

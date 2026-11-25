@@ -127,7 +127,7 @@ describe("config parsing", () => {
     expect(config.server).toEqual({ host: "127.0.0.1", port: 8080, trustProxy: false });
     expect(config.logging.format).toBe("text");
     expect(config.logging.includeBody).toBe(true);
-    expect(config.policy).toEqual({ blockThreshold: 50, tarpitThreshold: 20, rules: [] });
+    expect(config.policy).toEqual({ blockThreshold: 50, tarpitThreshold: 20, explicitThresholds: ["block_threshold", "tarpit_threshold"], rules: [] });
   });
 
   it("rejects an unknown key rather than silently ignoring it", () => {
@@ -343,9 +343,11 @@ describe("building from config", () => {
     // A detector or action added to the library but not to the schema would be
     // unreachable from a config file; this fails the moment that happens.
     const config = defaultConfig();
-    // Opt-in detectors live in the schema but not in defaultDetectors(): honeytoken needs
-    // seeded values, crawler-verification makes DNS lookups, and a trap is only proof once it is hidden in your markup.
-    const optIn = new Set(["path-novelty", "marker-drift", "honeytoken", "crawler-verification", "trap"]);
+    // Opt-in detectors live in the schema but not in defaultDetectors(): crawler-verification makes
+    // DNS lookups, a trap is only proof once it is hidden in your markup, and ua-rotation would
+    // flag a shared address in front of real users. honeytoken is on by default now, watching
+    // the built-in decoys' planted secrets.
+    const optIn = new Set(["path-novelty", "marker-drift", "crawler-verification", "trap", "ua-rotation"]);
     expect(Object.keys(config.detectors).filter((id) => !optIn.has(id)).sort()).toEqual(defaultDetectors().map((d) => d.id).sort());
     expect(Object.keys(config.responses).sort()).toEqual(defaultResponseActions().map((a) => a.id).sort());
   });

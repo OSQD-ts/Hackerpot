@@ -112,7 +112,9 @@ jobs:
       # Set here and not committed yet: that waits until the package is on the registry.
       - name: Set the version
         if: steps.version.outputs.release == 'yes'
-        run: node scripts/set-version.mjs "${{ steps.version.outputs.version }}"
+        run: |
+          node scripts/set-version.mjs "${{ steps.version.outputs.version }}"
+          node scripts/cut-changelog.mjs "${{ steps.version.outputs.version }}"
 
       - name: Build
         if: steps.version.outputs.release == 'yes'
@@ -165,7 +167,7 @@ jobs:
           version="${{ steps.version.outputs.version }}"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add package.json package-lock.json src/version.ts
+          git add package.json package-lock.json src/version.ts CHANGELOG.md
           git commit -m "Release $version [skip ci]"
           landed=no
           for attempt in 1 2 3 4 5; do

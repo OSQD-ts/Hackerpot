@@ -47,7 +47,8 @@ Every factory also accepts `score` and `respondWith`, and every TOML section `en
 | [`client-anomaly`](#client-anomaly) | a browser User-Agent missing every browser header | headers | 4 | no | on |
 | [`rate-spike`](#rate-spike) | an abnormal request rate | headers | 4 | no | on |
 | [`repeat-actor`](#repeat-actor) | one fingerprint attacking from several addresses | headers | 7 | no | on |
-| [`honeytoken`](#honeytoken) | a seeded fake credential, replayed | body | 15 | **yes** | opt-in |
+| [`ua-rotation`](#ua-rotation) | one address presenting several User-Agents within seconds | headers | 5 | no | opt-in |
+| [`honeytoken`](#honeytoken) | a seeded fake credential, replayed | body | 15 | **yes** | on for the decoys' own secrets; your tokens opt-in |
 | [`trap`](#trap) | a hidden trap link, field or header | headers | 15 | **yes** | opt-in |
 | [`crawler-verification`](#crawler-verification) | a crawler claim that DNS or published ranges refute | headers | 10 | **yes** | opt-in |
 
@@ -71,8 +72,9 @@ decoyPathDetector()                       // the 40 built-in decoys
 decoyPathDetector([...defaultDecoyPaths, myDecoy])
 ```
 
-Everything about decoys — prefix matching, custom decoys, disabling built-ins, robots.txt —
-is on [the decoys page](decoys.md).
+The dotfile and VCS decoys match at any depth (`/laravel/.env`, `/backup/.git/config`), and the
+secrets they serve are generated per install from a seed. Everything about decoys — matching,
+seeded secrets, custom decoys, disabling built-ins, robots.txt — is on [the decoys page](decoys.md).
 
 ### `sensitive-file`
 
@@ -329,8 +331,9 @@ above.
 
 | Match | Proof |
 | --- | --- |
-| an attack tool naming itself: `sqlmap`, `nikto`, `nmap`, `masscan`, `zgrab`, `zmap`, `dirbuster`, `dirb`, `gobuster`, `feroxbuster`, `ffuf`, `wfuzz`, `nuclei`, `acunetix`, `nessus`, `openvas`, `qualys`, `arachni`, `w3af`, `metasploit`, `hydra`, `havij`, `burpsuite` (`attackToolUserAgentPatterns`) | **yes** |
-| a bare scripting client: `curl/`, `wget/`, `python-requests`, `Go-http-client`, `libwww-perl` (`scriptingClientUserAgentPatterns`) | no |
+| an attack tool naming itself: `sqlmap`, `nikto`, `nmap`, `masscan`, `zgrab`, `zmap`, `dirbuster`, `dirb`, `gobuster`, `feroxbuster`, `ffuf`, `wfuzz`, `nuclei`, `acunetix`, `nessus`, `openvas`, `qualys`, `arachni`, `w3af`, `metasploit`, `hydra`, `havij`, `burpsuite`, `wpscan`, `reconx` (`attackToolUserAgentPatterns`) | **yes** |
+| a bare scripting client: `curl/`, `wget/`, `python-requests`, `python-httpx`, `Go-http-client`, `libwww-perl` (`scriptingClientUserAgentPatterns`) | no |
+| an internet-wide survey scanner naming itself: `CensysInspect`, LeakIX's `l9explore` and `l9tcpid`, `Expanse`, `InternetMeasurement`, `ModatScanner` (`surveyScannerUserAgentPatterns`) | no |
 | a pattern you added | no |
 | no User-Agent at all (scores half) | no |
 
@@ -340,8 +343,9 @@ above.
 | `flagMissingUserAgent` | `flag_missing_user_agent` | `true` |
 
 A tool naming itself is its own statement of what it is. A scripting client is also every
-legitimate script and integration, which is why it scores modestly and never proves.
-`scannerUserAgentPatterns` is both lists, and is what the nginx generator reuses.
+legitimate script and integration, which is why it scores modestly and never proves. A survey
+scanner maps what is exposed rather than exploiting it, and some run for research, so it is recorded
+as suspicion. `scannerUserAgentPatterns` is every list, and is what the nginx generator reuses.
 
 ### `client-anomaly`
 
@@ -430,6 +434,26 @@ Safe in front of real users: the registry holds only addresses whose requests al
 scored, and the current address must be one of them. It confirms that suspicious addresses
 are one actor, and never manufactures suspicion. See [actors](../concepts/actors.md#cross-ip-correlation-repeat-actor).
 
+### `ua-rotation`
+
+**headers · per-address · 5 · not proof · opt-in**
+
+One address presenting several different User-Agents within seconds: a scanner rotating its
+User-Agent per request to look like several browsers. `repeat-actor` cannot see it, because it
+correlates one fingerprint across many addresses, not many User-Agents from one. A person does not
+switch browsers mid-second.
+
+| Option | TOML | Default |
+| --- | --- | --- |
+| `windowMs` | `window_ms` | `10000` |
+| `distinctThreshold` | `distinct_threshold` | `3`, at least 2 and at most 16 |
+| `maxAddresses` | `max_addresses` | `50000`, least recently seen dropped past it |
+
+Off by default and meant for a standalone trap: in front of real users a shared address (an office,
+a school, a carrier's NAT) carries several browsers at once, which is why the window stays short.
+The window is measured on request timestamps, so a replayed log is judged by when its requests
+happened.
+
 ### `path-novelty`
 
 **headers · correlating · 6 · not proof · opt-in · middleware only**
@@ -484,7 +508,7 @@ once, and it is never proof: a cookie can be copied, including out of somebody e
 
 ### `honeytoken`
 
-**body · per-request · 15 · proof · opt-in**
+**body · per-request · 15 · proof · on for the decoys' own secrets**
 
 A seeded fake credential, key or id replayed anywhere in the request: path, raw path, query
 values, every header, and the body. `Authorization` and `Proxy-Authorization` Basic values
@@ -493,7 +517,19 @@ are base64-decoded first, so a token replayed as a Basic password is caught. See
 
 | Option | TOML | Default |
 | --- | --- | --- |
-| `tokens` | `tokens` (strings, or tables with `value` and `label`) | required; listing any enables it |
+| `tokens` | `tokens` (strings, or tables with `value` and `label`) | the built-in decoys' secrets; listing your own adds them |
+
+The built-in decoys hand out generated secrets (see [seeded secrets](decoys.md#seeded-secrets)), and
+those secrets exist nowhere else, so a replay of one is proof too. The default detector set watches
+them (`honeytokenDetector({ tokens: decoyHoneytokens(DEFAULT_DECOY_SEED) })`), and a config file does
+through `[detectors.decoy-path] honeytokens = true`, merged with its own `tokens`. A
+`honeytokenDetector` of your own in `extraDetectors` **replaces** the default one, as any extra
+detector replaces the default sharing its id; keep `decoyHoneytokens(DEFAULT_DECOY_SEED)` in its list
+to go on watching the decoys' secrets.
+
+In middleware mode the body is read only for a request something already flagged, so a token in the
+body of an ordinary-looking API request is checked by `honeytokenGuard` after your body parser; see
+[adapters](../integration/adapters.md).
 
 ### `trap`
 

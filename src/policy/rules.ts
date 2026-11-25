@@ -27,6 +27,12 @@ export interface MatchSpec {
   detector?: string | readonly string[];
   /** Whether at least one detection is proof. `false` matches a request with none. */
   certain?: boolean;
+  /**
+   * Whether the detection that selected the response named one of its own (`respondWith`):
+   * a decoy's bait, a web shell's fake success. `true` is how a rule hands such requests to
+   * `"@detector"` without also swallowing every request that asked for nothing.
+   */
+  detectorResponds?: boolean;
   /** Bounds on what this request scored on its own. */
   minScore?: number;
   maxScore?: number;
@@ -108,6 +114,7 @@ export function compileMatch(spec: MatchSpec): (context: PolicyContext) => boole
     if (spec.minConfidence !== undefined && (context.confidence ?? 0) < spec.minConfidence) return false;
     if (spec.maxConfidence !== undefined && (context.confidence ?? 0) > spec.maxConfidence) return false;
     if (spec.certain !== undefined && context.detections.some((detection) => detection.certain === true) !== spec.certain) return false;
+    if (spec.detectorResponds !== undefined && (context.detection.respondWith !== undefined && context.detection.respondWith !== "") !== spec.detectorResponds) return false;
     if (methods !== undefined && !methods.has((context.method ?? "GET").toUpperCase())) return false;
     if (addresses !== undefined && !addresses.allows(context.ip)) return false;
     if (detectors !== undefined && !context.detections.some((detection) => detectors.has(detection.detector))) return false;

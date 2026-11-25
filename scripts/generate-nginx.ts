@@ -369,9 +369,15 @@ function buildHttpFile(opts: Options): string {
 // server {} context — guard + decoy locations
 // ---------------------------------------------------------------------------
 
-function decoyLocations(path: string | RegExp, id: string, method: string | undefined, match?: "exact" | "prefix"): string[] {
+function decoyLocations(path: string | RegExp, id: string, method: string | undefined, match?: "exact" | "prefix" | "anywhere"): string[] {
   const note = `  # ${id}${method && method !== "*" ? ` (${method})` : ""}`;
   const body = `{ return ${DIVERT_CODE}; }`;
+  if (typeof path === "string" && match === "anywhere") {
+    // As prefix, at any depth: scanners ask for /laravel/.env and /backup/.git/config once
+    // the root has been tried, and a root-anchored location never saw them.
+    const bare = path.replace(/\/+$/, "");
+    return [`location ~* ${toNginxRegex(`(?:^|/)${bare.slice(1).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?:[./]|$)`)} ${body}${note}`];
+  }
   if (typeof path === "string" && match === "prefix") {
     // The detector matches the path itself and anything under it at a `/` or `.`
     // boundary, ignoring case: one case-insensitive regex location says the same.
@@ -500,8 +506,8 @@ function buildServerFile(opts: Options): string {
 
   lines.push("# --- Decoy paths: a hit is a hit regardless of how well-behaved the client looks ---");
   // A prefix decoy becomes a regex location, so it belongs with the regex ones for priority.
-  const exact = defaultDecoyPaths.filter((d) => typeof d.path === "string" && d.match !== "prefix");
-  const regex = defaultDecoyPaths.filter((d) => typeof d.path !== "string" || d.match === "prefix");
+  const exact = defaultDecoyPaths.filter((d) => typeof d.path === "string" && (d.match ?? "exact") === "exact");
+  const regex = defaultDecoyPaths.filter((d) => typeof d.path !== "string" || (d.match ?? "exact") !== "exact");
   for (const decoy of exact) lines.push(...decoyLocations(decoy.path, decoy.id, decoy.method));
   lines.push("");
   lines.push("# Regex and prefix decoys — lower priority than the exact matches above, higher");

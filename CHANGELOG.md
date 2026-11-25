@@ -5,7 +5,89 @@ All notable changes to this project are documented here. The format follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Versions are published by
 [the release workflow](CONTRIBUTING.md#releasing).
 
+
 ## [Unreleased]
+
+### Changed
+
+- **The `standalone` preset uses `block_threshold` and `tarpit_threshold`.** Its last rule matched every
+  request, so the score ladder behind it was never consulted: `tarpit_threshold` had no effect, the
+  block line was a hard-coded 40 whatever `block_threshold` said, and the startup line printed both as
+  if they were active. Its rules are now `confirmed-block` (the block threshold), `proof-block`,
+  `detector-choice` (only when the detector named a response of its own, so bait is still served),
+  `repeat-tarpit` (the tarpit threshold) and `first-probe` (a plain 404). **Migration:** a standalone
+  deployment now tarpits an address past `tarpit_threshold` (15 by default) on requests that carry no
+  bait of their own, where it used to answer 404. To keep the old answers, set `tarpit_threshold` equal
+  to `block_threshold`.
+- **`protect-app` takes `tarpit_threshold` when the file sets it.** Left out, it keeps its own 25. The
+  presets are functions of the thresholds now (`standalone({ blockThreshold, tarpitThreshold })`,
+  `protectApp({ tarpitThreshold })`), and `PRESET_THRESHOLDS` says which one reads which.
+- **The shipped `hackerpot.toml` leaves `block_threshold` and `tarpit_threshold` commented out.** Set
+  there, they were handed to whichever preset was chosen; a copy of the reference file would have moved
+  `protect-app`'s tarpit line from 25 to 15.
+- **The built-in decoys serve seeded secrets.** The fake `.env`, `.aws/credentials` and `.git/config`
+  carried AWS's documentation key `AKIAIOSFODNN7EXAMPLE` and `github.com/example/example.git`, the same
+  in every install and the first thing a harvesting tool learns to skip. They are now generated from
+  `[detectors.decoy-path] seed` (random per start when unset): realistic, different per install, and
+  pointing at nobody else (the git remote is under `.internal`). `decoySecrets(seed)`,
+  `decoyPathsFor(seed)` and `DEFAULT_DECOY_SEED` expose them.
+- **Dotfile and VCS decoys match at any depth.** `/laravel/.env`, `/backup/.git/config`,
+  `/public/.git/HEAD` and `/blog/wp-config.php.bak` get the same bait as the root. A decoy's `match` takes
+  `"anywhere"` as well as `"exact"` and `"prefix"`, also from a file (`match = "anywhere"` on a
+  `[[detectors.decoy-path.decoys]]` with a `path`). The nginx generator emits depth-agnostic locations
+  for them.
+- **The file store redacts credentials before writing.** Authorization, Cookie, API-key and secret-named
+  headers, and secret-named form or JSON fields, are written as `[redacted]` and scrubbed from detection
+  summaries, as the dashboard has always shown them. `[store.file] redact` (default true),
+  `secret_headers`, `include_headers` and `include_body`; the startup line says `redacted` or
+  `UNREDACTED`. **Migration:** set `redact = false` to keep writing credentials verbatim.
+- **An extra detector replaces the default one with the same id** instead of running beside it, as
+  extra response actions already did. Two detectors with one id scored one request twice.
+- **The default detector set watches the built-in decoys' planted secrets** with a `honeytoken`
+  detector (they exist only in what the decoys hand out, so a replay is proof). With a config file the
+  same happens through `[detectors.decoy-path] honeytokens` (default true), merged with the file's own
+  `[detectors.honeytoken] tokens`. A `honeytokenDetector` of your own in `extraDetectors` replaces it:
+  keep `decoyHoneytokens(DEFAULT_DECOY_SEED)` in its list to go on watching them.
+- **`trapFormGuard` also checks a parsed body for honeytokens,** nested objects and JSON arrays
+  included, so a harvested token sent in the body of an API request that looks ordinary on its
+  headers is caught. Exported under that use's name too, as `honeytokenGuard`.
+
+### Added
+
+- **`[policy]` notices at startup.** A threshold the chosen preset does not read, or one shadowed by a
+  rule that matches every request, is named in a `warning` line (`policyNotices(config)`), at startup
+  and after a reload.
+- **`detectorResponds` in a rule's match** (`detector_responds` in `[[policy.rules]]`): whether the
+  detection named a response of its own, which is how a rule hands bait to `"@detector"` without
+  swallowing every other request.
+- **`[metrics]`: a listener that serves only `/metrics`.** No captured data and no API key, so
+  Prometheus can scrape it without `[management]`. `host`, `port` (9502), `path`, `allowed_clients`.
+  `MetricsListener` in the library.
+- **`hackerpot_refused_blocked_total`** and a `refused` log line, at most one a minute per address:
+  requests refused because their address was already blocked. They run no detector and record no
+  incident, so a block's effect was invisible. `engine.on("refused")`,
+  `engine.counters().refusedWhileBlocked`. `[logging] refusals`.
+- **`verdict` log lines for edge bans** (`[logging] verdicts`, `burst_hits`, `burst_window_ms`): one
+  stable line, `kind` then `ip` then `reason`, for each hit worth acting on at the edge: `proof`,
+  `block`, or `burst` (3 hits within 5 s by default, which a person cannot do). Example fail2ban filter
+  and jail, with the Docker `prerouting` caveat, in [edge bans](docs/operations/edge-bans.md).
+- **`[dashboard.controls]`** (`test_request`, `preview_policy`, `edit_policy`): the dashboard's controls
+  from the file, each off unless granted; `edit_policy` with `auth = "none"` is refused.
+- **`ua-rotation` detector** (opt-in): one address presenting several User-Agents within seconds.
+  Suspicion only, meant for a standalone trap.
+- **More scanner signatures.** ReconX and WPScan name exploitation tools (proof); Censys, LeakIX
+  (`l9explore`, `l9tcpid`), Expanse, InternetMeasurement and Modat are survey scanners
+  (`surveyScannerUserAgentPatterns`, suspicion only); `python-httpx` joins the scripting clients.
+- **Every key in the reference `hackerpot.toml`.** It claimed to list every default and lacked
+  `trusted_proxies`, `proxy_hops`, `forwarded_header`, `ignore_paths`, `ignore_path_patterns`,
+  `[responses.pass]`, `[detectors.path-novelty]`, `[detectors.marker-drift]`,
+  `webhook_global_max_per_minute` and the rule keys. A test now reads every key the schema asks for
+  and finds it in the file.
+- **The changelog is cut at release.** The publish workflow moves `[Unreleased]` into the version it
+  publishes (`scripts/cut-changelog.mjs`) and commits it with the release; earlier releases have been
+  split out below.
+
+## [0.3.0] - 2026-10-25
 
 ### Changed
 
@@ -23,6 +105,26 @@ All notable changes to this project are documented here. The format follows
   (`[server] trusted_proxies`) to have the header read only from your own proxies. Adapted from
   bothandlerjs, so both libraries resolve one request to one address. **Migration:** behind one proxy
   that overwrites the header nothing changes; behind several, list them in `trusted_proxies`.
+
+### Added
+
+- **`pass` response action** (`respondWith: "pass"`, `[responses.pass]`): record, score and alert,
+  then let the request continue to the application with `next()`, in every middleware adapter. A passed
+  request is never body-read, gets no probe marker, and teaches the site baseline from the
+  application's own answer. Standalone it answers a plain 404.
+- **`ignorePaths`** (`[engine] ignore_paths`, `ignore_path_patterns`): paths skipped before anything
+  else, with no detection, block check or record. A string ending in `/` is a prefix, any other string
+  the exact path, a RegExp tested as written, on the normalised path. Counted as a bypass with reason
+  `ignored-path`. The corpus and testing docs already pointed WordPress sites at this option; it now
+  exists. Adapted from bothandlerjs.
+- **`proxy: { trustProxy, trustedProxies, hops, header }`** (`[server] trusted_proxies`, `proxy_hops`,
+  `forwarded_header`; `TRUSTED_PROXIES`, `PROXY_HOPS`). An entry that is not an address or CIDR, an
+  empty list, a hop count below 1, and proxy settings left behind with `trust_proxy` off are refused at
+  startup.
+
+## [0.2.0] - 2026-10-25
+
+### Changed
 
 - **The dashboard is built from the OSQD UI kit (`@osqd/ui`), as bothandlerjs's is.** The kit's
   stylesheet is read at build time (a devDependency, like `@osqd/jql`) and stamped ahead of the
@@ -46,21 +148,19 @@ All notable changes to this project are documented here. The format follows
   [embedding](docs/operations/embedding.md#theming). The old names will be removed in a later
   release.
 
-### Added
+## [0.1.3] - 2026-10-13
 
-- **`pass` response action** (`respondWith: "pass"`, `[responses.pass]`): record, score and alert,
-  then let the request continue to the application with `next()`, in every middleware adapter. A passed
-  request is never body-read, gets no probe marker, and teaches the site baseline from the
-  application's own answer. Standalone it answers a plain 404.
-- **`ignorePaths`** (`[engine] ignore_paths`, `ignore_path_patterns`): paths skipped before anything
-  else, with no detection, block check or record. A string ending in `/` is a prefix, any other string
-  the exact path, a RegExp tested as written, on the normalised path. Counted as a bypass with reason
-  `ignored-path`. The corpus and testing docs already pointed WordPress sites at this option; it now
-  exists. Adapted from bothandlerjs.
-- **`proxy: { trustProxy, trustedProxies, hops, header }`** (`[server] trusted_proxies`, `proxy_hops`,
-  `forwarded_header`; `TRUSTED_PROXIES`, `PROXY_HOPS`). An entry that is not an address or CIDR, an
-  empty list, a hop count below 1, and proxy settings left behind with `trust_proxy` off are refused at
-  startup.
+No user-facing changes recorded.
+
+## [0.1.2] - 2026-10-13
+
+No user-facing changes recorded.
+
+## [0.1.1] - 2026-10-13
+
+The first tagged release. Everything recorded before it is listed here.
+
+### Added
 
 - **The dashboard is tested in a real browser.** `npm run test:browser` drives the page with
   Playwright under every engine in CI — the feed opens with a keyboard, filters and groups and

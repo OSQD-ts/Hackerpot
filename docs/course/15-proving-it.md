@@ -144,8 +144,10 @@ both the server and its tests import. `pantry/pantry-honeypot.mjs`:
 
 ```js
 import {
+  DEFAULT_DECOY_SEED,
   HoneypotEngine,
   crawlerVerificationDetector,
+  decoyHoneytokens,
   decoyPathDetector,
   defaultDecoyPaths,
   defaultDetectors,
@@ -165,8 +167,9 @@ export function pantryDetectors({ resolver, ranges, extra = {} } = {}) {
   const decoys = defaultDecoyPaths.filter((d) => !PANTRY.realRoutes.includes(d.id));
   return [
     crawlerVerificationDetector({ ...(resolver ? { resolver } : {}), ...(ranges ? { ranges } : {}) }),
-    ...defaultDetectors().map((d) => (d.id === "decoy-path" ? decoyPathDetector(decoys) : d)),
-    honeytokenDetector({ tokens: [...PANTRY.honeytokens, ...(extra.honeytokens ?? [])] }),
+    // The default honeytoken detector is replaced by Pantry's, which also keeps the decoys' own.
+    ...defaultDetectors().filter((d) => d.id !== "honeytoken").map((d) => (d.id === "decoy-path" ? decoyPathDetector(decoys) : d)),
+    honeytokenDetector({ tokens: [...PANTRY.honeytokens, ...(extra.honeytokens ?? []), ...decoyHoneytokens(DEFAULT_DECOY_SEED)] }),
     trapDetector({ paths: [PANTRY.trapPath, ...(extra.trapPaths ?? [])], formFields: [PANTRY.trapField, ...(extra.trapFields ?? [])] }),
   ];
 }

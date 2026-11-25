@@ -509,6 +509,15 @@ automatically somebody who may change what the honeypot does to the next request
 | `previewPolicy` | off | replay the incidents already on screen against a candidate rule set |
 | `editPolicy` | off | replace the running policy from the page |
 
+From the standalone service, grant them in the configuration file:
+
+```toml
+[dashboard.controls]
+test_request = true
+preview_policy = true
+edit_policy = false      # needs authentication; a SIGHUP reload puts the file's policy back
+```
+
 **Every control is off unless you turn it on** — the opposite of sections, which are on unless you
 turn them off. A section reveals something the dashboard already holds; a control reaches back into
 the engine, so silence has to mean no.

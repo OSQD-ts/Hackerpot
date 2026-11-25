@@ -5,6 +5,7 @@ import {
   buildDetectors,
   buildHoneypotConfig,
   buildPolicy,
+  policyNotices,
   buildResponseActions,
   createManagementServer,
   createPortScanSentinel,
@@ -19,6 +20,7 @@ import {
   ConfigError,
 } from "./config/index.js";
 import type { HackerpotConfig } from "./config/index.js";
+import { MetricsListener } from "./management/index.js";
 import type { ManagementServer } from "./management/index.js";
 import type { SyslogSink } from "./notify/syslog.js";
 import { formatTextLine } from "./internal/logfmt.js";
@@ -35,6 +37,7 @@ import { ServiceTokens } from "./service-tokens.js";
 import { buildDashboardOptions } from "./config/build.js";
 import { engineSource, startDashboard, type DashboardServer } from "./dashboard/index.js";
 import type { IntelConfig } from "./config/index.js";
+import { TtlLru } from "./internal/lru.js";
 import type { HoneypotHit } from "./types.js";
 
 /**
@@ -169,6 +172,61 @@ function hitEvent(config: HackerpotConfig, hit: HoneypotHit): Record<string, unk
   if (config.logging.includeHeaders) event["headers"] = hit.headers;
   if (config.logging.includeBody && hit.body !== undefined) event["body"] = hit.body;
   return event;
+}
+
+/** Why a hit is worth acting on at the edge. Ordered strongest first. */
+export type VerdictReason = "proof" | "block" | "burst";
+
+/**
+ * Decides which hits earn a `verdict` line: the stable, one-shape record an edge ban
+ * (fail2ban, a firewall script) can match without parsing the free-form hit line.
+ *
+ * - `proof`: a detection no legitimate client can produce (a replayed honeytoken, a tool
+ *   naming itself, a protocol violation);
+ * - `block`: the policy refused the address;
+ * - `burst`: `burstHits` hits from one address within `burstWindowMs`, which is machine speed:
+ *   a person typing bait addresses cannot do it, a script can. Reported once per window.
+ *
+ * Everything else is suspicion and stays a plain hit line, so a ban built on verdicts never
+ * acts on a single curious visitor.
+ */
+export class VerdictTracker {
+  private readonly bursts: TtlLru<number[]>;
+
+  constructor(
+    private readonly burstHits: number,
+    private readonly burstWindowMs: number,
+  ) {
+    this.bursts = new TtlLru<number[]>(50_000, Math.max(1, burstWindowMs));
+  }
+
+  judge(hit: HoneypotHit): { reason: VerdictReason; hits?: number } | undefined {
+    const at = Date.parse(hit.timestamp) || Date.now();
+    const recent = (this.bursts.get(hit.ip) ?? []).filter((time) => at - time < this.burstWindowMs);
+    recent.push(at);
+    const burst = recent.length >= this.burstHits;
+    // Reported once: the window starts over, so a long flood is one verdict per window, not one per hit.
+    this.bursts.set(hit.ip, burst ? [] : recent.slice(-this.burstHits));
+    if (hit.detections.some((detection) => detection.certain === true)) return { reason: "proof" };
+    if (hit.respondedWith === "block") return { reason: "block" };
+    if (burst) return { reason: "burst", hits: recent.length };
+    return undefined;
+  }
+}
+
+function verdictEvent(hit: HoneypotHit, verdict: { reason: VerdictReason; hits?: number }): Record<string, unknown> {
+  // ip second, right after kind and before anything attacker-controlled: a filter anchored on
+  // the start of the line can then never be fooled by a forged "ip" inside the path.
+  return {
+    kind: "verdict",
+    ip: hit.ip,
+    reason: verdict.reason,
+    ...(verdict.hits !== undefined ? { hits: verdict.hits } : {}),
+    hit: hit.id,
+    rule: hit.rule,
+    respondedWith: hit.respondedWith,
+    detectors: hit.detections.map((d) => d.detector),
+  };
 }
 
 /** Adds the confidence filter to a feed URL without clobbering an existing query. */
@@ -338,6 +396,7 @@ export async function runService(argv: string[]): Promise<void> {
   // The management server needs the store, and the engine needs an onHit that
   // feeds it — so the hit handler closes over a binding filled in just below.
   let management: ManagementServer | undefined;
+  let metricsListener: MetricsListener | undefined;
   let syslogSink: SyslogSink | undefined;
   /** Where incidents leave the process. Exists whether or not the management API does. */
   let notify: NotificationHub | undefined;
@@ -358,6 +417,13 @@ export async function runService(argv: string[]): Promise<void> {
    * written to prevent.
    */
   let running: HackerpotConfig = config;
+  // Rebuilt when a reload changes the burst settings; a verdict needs the running config.
+  let verdicts = new VerdictTracker(config.logging.burstHits, config.logging.burstWindowMs);
+  const logVerdict = (hit: HoneypotHit): void => {
+    if (!running.logging.verdicts) return;
+    const verdict = verdicts.judge(hit);
+    if (verdict) log(verdictEvent(hit, verdict));
+  };
 
   // Shared by every detector set this process builds, so a SIGHUP rebuild keeps the ranges fetched so far.
   const crawlerRanges = new CrawlerRanges();
@@ -367,6 +433,7 @@ export async function runService(argv: string[]): Promise<void> {
     config,
     (hit) => {
       log(hitEvent(running, hit));
+      logVerdict(hit);
       // One publish reaches every sink: the management feed and its counters, webhooks, and
       // syslog. Declared below and filled in before any listener binds — the store this
       // closure needs has to exist before the thing that consumes it can be constructed.
@@ -394,6 +461,11 @@ export async function runService(argv: string[]): Promise<void> {
 
   // Anything the engine announces about itself: a risky setting, an allowlist entry that
   // matches nothing, a part replaced on SIGHUP. Subscribed before anything can raise one.
+  // A refused request is not an incident, so without this a block's effect never showed in
+  // the log. Sampled by the engine to one line a minute per address.
+  server.engine.on("refused", (event) => {
+    if (running.logging.refusals) log({ kind: "refused", ip: event.ip, count: event.count, reason: "blocked" });
+  });
   server.engine.on("warning", (notice) => log({ kind: "warning", detail: notice.message, ...(notice.change ? { part: notice.change.part, by: notice.change.by } : {}) }));
 
   // Built before the management server, which shares its fan-out: one publish per incident,
@@ -407,6 +479,20 @@ export async function runService(argv: string[]): Promise<void> {
     active_blocks: (await server.engine.blocklist.size?.()) ?? 0,
     tracked_ips: server.engine.registry.size,
   }), () => server.engine.detectorFailures, notify.broker, () => server.engine.counters());
+
+  // Scraping without the management API: counters only, nothing captured, no key to hold.
+  if (config.metrics.enabled) {
+    metricsListener = new MetricsListener({
+      host: config.metrics.host,
+      port: config.metrics.port,
+      path: config.metrics.path,
+      allowedClients: config.metrics.allowedClients,
+      broker: notify.broker,
+      gauges: async () => ({ active_blocks: (await server.engine.blocklist.size?.()) ?? 0, tracked_ips: server.engine.registry.size }),
+      engineCounters: () => server.engine.counters(),
+      onError: (error) => log({ kind: "metrics-error", error: error.message }),
+    });
+  }
 
   // Anomalies go to the log and to every webhook that accepts them.
   server.engine.audit?.start(config.audit.intervalSeconds * 1000, (anomaly) => {
@@ -465,6 +551,7 @@ export async function runService(argv: string[]): Promise<void> {
   // log and reach the management API through exactly the same path as HTTP hits.
   const onProtocolHit = (hit: HoneypotHit): void => {
     log(hitEvent(running, hit));
+    logVerdict(hit);
     notify?.publish(hit);
     // So a dashboard in this process sees the whole deployment, not only HTTP.
     server.engine.publish(hit);
@@ -500,6 +587,7 @@ export async function runService(argv: string[]): Promise<void> {
       if (ftp) await ftp.close();
       if (telnet) await telnet.close();
       if (management) await management.close();
+      if (metricsListener) await metricsListener.close();
       if (dashboard) await dashboard.close();
       // Closes every sink it owns, syslog included.
       if (notify) await notify.close();
@@ -561,10 +649,14 @@ export async function runService(argv: string[]): Promise<void> {
         },
         { by: "SIGHUP" },
       );
+      for (const notice of policyNotices(next)) server.engine.warn(notice);
     }
     // Applied before anything can log: `running` carries include_headers/include_body to
     // the hit closures, `logFormat` carries the rendering choice to `log()`. Both are
     // `[logging]`, and both have to move together or the section is half-applied.
+    if (next.logging.burstHits !== running.logging.burstHits || next.logging.burstWindowMs !== running.logging.burstWindowMs) {
+      verdicts = new VerdictTracker(next.logging.burstHits, next.logging.burstWindowMs);
+    }
     running = next;
     logFormat = next.logging.format;
 
@@ -591,6 +683,7 @@ export async function runService(argv: string[]): Promise<void> {
   if (ftp) await ftp.listen();
   if (telnet) await telnet.listen();
   if (management) await management.listen();
+  if (metricsListener) await metricsListener.listen();
   // The dashboard reads this process's engine directly, so it needs no management API.
   // A dashboard beside the stack instead of inside it is `hackerpot dashboard`.
   if (config.dashboard.enabled) {
@@ -604,6 +697,10 @@ export async function runService(argv: string[]): Promise<void> {
   // rather than in the middle of an attack.
   syslogSink?.start();
   poller?.start();
+
+  // A threshold that decides nothing says so here, rather than sitting in the startup line
+  // beside the active ones looking like it does.
+  for (const notice of policyNotices(config)) server.engine.warn(notice);
 
   const weakTokens = new ServiceTokens(config.serviceTokens).weak;
   if (weakTokens.length > 0) {
@@ -634,6 +731,7 @@ export async function runService(argv: string[]): Promise<void> {
       telnet: telnet ? `${config.telnet.host}:${config.telnet.port}` : "off",
       syslog: syslogSink ? `${config.syslog.protocol}://${config.syslog.host}:${config.syslog.port} (${config.syslog.format})` : "off",
       management: management ? `${config.management.host}:${config.management.port}` : "off",
+      metrics: metricsListener ? `${config.metrics.host}:${config.metrics.port}${config.metrics.path}` : "off",
       dashboard: dashboard ? dashboard.url : "off",
       intel: poller ? `${config.intel.feeds.length} feed(s)${config.intel.enforce ? ", ENFORCING" : ""}` : "off",
       trustProxy: config.server.trustProxy,

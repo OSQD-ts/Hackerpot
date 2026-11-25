@@ -56,6 +56,8 @@ const EXPORTS = [
   "confidenceOf", "certaintyOf", "certaintyOfConfidence", "CERTAINTY_WEIGHT", "tierOf", "tierOfConfidence", "TIER_WEIGHT", "SUSPICION_CEILING",
   "MAX_PATH_CHARS", "MAX_IPS_PER_FINGERPRINT", "DEFAULT_MAX_EVENTS",
   "NotificationHub", "consoleNotifier", "notifyJsSink", "syslogNotifySink", "webhookNotifySink", "PRESETS", "PRESET_NAMES", "observe", "protectApp", "standalone",
+  "PRESET_THRESHOLDS", "policyNotices", "configuredDecoys", "DEFAULT_DECOY_SEED", "decoyHoneytokens", "decoyPathsFor", "decoySecrets",
+  "MetricsListener", "honeytokenGuard", "surveyScannerUserAgentPatterns", "uaRotationDetector",
 ];
 
 describe("the public API", () => {

@@ -6,8 +6,8 @@ import type { PolicyContext, ResponseDecision, ResponsePolicy } from "./types.js
 export type { PolicyContext, ResponseDecision, ResponsePolicy } from "./types.js";
 export { compileMatch, ladderPolicy, rulePolicy } from "./rules.js";
 export type { MatchSpec, Rule, RulePolicyOptions } from "./rules.js";
-export { PRESET_NAMES, PRESETS, observe, protectApp, standalone } from "./presets.js";
-export type { PresetName } from "./presets.js";
+export { PRESET_NAMES, PRESET_THRESHOLDS, PRESETS, observe, protectApp, standalone } from "./presets.js";
+export type { PresetName, PresetThresholds } from "./presets.js";
 
 /**
  * Default escalation policy. A confirmed persistent attacker (cumulative score

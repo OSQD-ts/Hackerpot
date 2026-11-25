@@ -23,7 +23,7 @@ import type { Rule } from "./rules.js";
  *
  * Standalone, where there is no application, a passed request is answered with a plain 404.
  */
-export function observe(): Rule[] {
+export function observe(_thresholds: PresetThresholds = {}): Rule[] {
   return [{ id: "observe-everything", match: {}, respondWith: "pass", reason: "Observation only: recorded and scored, then handed to the application untouched." }];
 }
 
@@ -34,7 +34,8 @@ export function observe(): Rule[] {
  * time rather than service. Nothing here refuses a request on a score alone, because in
  * front of real users a score is a guess and the person it is wrong about is a customer.
  */
-export function protectApp(): Rule[] {
+export function protectApp(thresholds: PresetThresholds = {}): Rule[] {
+  const tarpitAt = thresholds.tarpitThreshold ?? 25;
   return [
     {
       id: "proof-block",
@@ -55,7 +56,7 @@ export function protectApp(): Rule[] {
       respondWith: "tarpit",
       reason: "An exploitation attempt against the application: held, not refused, because the guess could be wrong and a slow page is recoverable.",
     },
-    { id: "persistent-tarpit", match: { minTotalScore: 25 }, respondWith: "tarpit", reason: "This address has kept probing. Slowed down rather than refused." },
+    { id: "persistent-tarpit", match: { minTotalScore: tarpitAt }, respondWith: "tarpit", reason: `This address has kept probing (running score ${tarpitAt} or more). Slowed down rather than refused.` },
     { id: "everything-else", match: {}, respondWith: "pass", reason: "Some signal, not enough to act on. Recorded, and answered by the application as normal." },
   ];
 }
@@ -67,21 +68,49 @@ export function protectApp(): Rule[] {
  * is to cost an attacker time and bandwidth, and to keep them talking long enough to record
  * what they are trying.
  */
-export function standalone(): Rule[] {
+export function standalone(thresholds: PresetThresholds = {}): Rule[] {
+  const blockAt = thresholds.blockThreshold ?? 40;
+  const tarpitAt = thresholds.tarpitThreshold ?? 15;
   return [
-    { id: "confirmed-block", match: { minTotalScore: 40 }, respondWith: "block", reason: "A confirmed, persistent attacker. Refused outright." },
+    { id: "confirmed-block", match: { minTotalScore: blockAt }, respondWith: "block", reason: `A confirmed, persistent attacker (running score ${blockAt} or more). Refused outright.` },
     { id: "proof-block", match: { certain: true }, respondWith: "block", reason: "Proof of automation or of a stolen credential being replayed." },
-    { id: "detector-choice", match: {}, respondWith: "@detector", fallbackAction: "", reason: "The detector's own response: bait for a decoy, a convincing failure for a web shell." },
-  ].map((rule) => (rule.fallbackAction === "" ? { ...rule, fallbackAction: undefined } : rule)) as Rule[];
+    // Only when the detector named a response: a catch-all here would answer every request and
+    // leave the tarpit rung below unreachable, which is how `tarpit_threshold` once did nothing.
+    { id: "detector-choice", match: { detectorResponds: true }, respondWith: "@detector", reason: "The detector's own response: bait for a decoy, a convincing failure for a web shell." },
+    { id: "repeat-tarpit", match: { minTotalScore: tarpitAt }, respondWith: "tarpit", reason: `This address keeps probing (running score ${tarpitAt} or more): held rather than answered at once.` },
+    { id: "first-probe", match: {}, respondWith: "not-found", reason: "A probe with no bait of its own: answered as though nothing is here." },
+  ];
+}
+
+/**
+ * The thresholds a preset is built from. `[policy] block_threshold` and `tarpit_threshold`
+ * arrive here when the file sets them, so a preset never silently overrides the numbers an
+ * operator wrote; a key left out keeps the preset's own default.
+ */
+export interface PresetThresholds {
+  /** Running score at which `standalone` blocks. Not used by `observe` or `protect-app`, which never block on a score. */
+  blockThreshold?: number;
+  /** Running score at which `standalone` (default 15) and `protect-app` (default 25) tarpit. Not used by `observe`. */
+  tarpitThreshold?: number;
 }
 
 export type PresetName = "observe" | "protect-app" | "standalone";
 
 /** The presets by name, for a config file and the command line. */
-export const PRESETS: Record<PresetName, () => Rule[]> = {
+export const PRESETS: Record<PresetName, (thresholds?: PresetThresholds) => Rule[]> = {
   observe,
   "protect-app": protectApp,
   standalone,
 };
 
 export const PRESET_NAMES: readonly PresetName[] = ["observe", "protect-app", "standalone"];
+
+/**
+ * Which of the configured thresholds a preset reads. The rest are printed at startup as unused,
+ * so a number in the file that decides nothing says so instead of looking active.
+ */
+export const PRESET_THRESHOLDS: Record<PresetName, ReadonlyArray<keyof PresetThresholds>> = {
+  observe: [],
+  "protect-app": ["tarpitThreshold"],
+  standalone: ["blockThreshold", "tarpitThreshold"],
+};

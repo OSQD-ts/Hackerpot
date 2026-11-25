@@ -142,7 +142,12 @@ export interface ProxyConfig {
 export interface HoneypotConfig {
   /** Detectors to run, in order. Defaults to the full built-in set. */
   detectors?: Detector[];
-  /** Extra detectors appended to the defaults (ignored if `detectors` is set). */
+  /**
+   * Extra detectors appended to the defaults (ignored if `detectors` is set). One sharing a
+   * default's id replaces it: a `honeytokenDetector` of your own replaces the default one that
+   * watches the built-in decoys' planted secrets, so include `decoyHoneytokens(DEFAULT_DECOY_SEED)`
+   * in its tokens to keep watching those too.
+   */
   extraDetectors?: Detector[];
   /** Response actions available to run, keyed by their id. Defaults to the full built-in set. */
   responseActions?: ResponseAction[];

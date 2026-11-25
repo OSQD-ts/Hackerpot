@@ -1,4 +1,4 @@
-// Types for the two release scripts, so tests can import them. The scripts stay plain
+// Types for the release scripts, so tests can import them. The scripts stay plain
 // .mjs because the publish workflow runs them with node before dependencies matter.
 
 declare module "*next-version.mjs" {
@@ -13,4 +13,8 @@ declare module "*next-version.mjs" {
 
 declare module "*set-version.mjs" {
   export function setVersion(root: string, version: string): void;
+}
+
+declare module "*cut-changelog.mjs" {
+  export function cutChangelog(text: string, version: string, date: string): string;
 }

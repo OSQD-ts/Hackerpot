@@ -22,13 +22,21 @@ export const attackToolUserAgentPatterns: RegExp[] = [
   /nuclei|acunetix|nessus|openvas|qualys|arachni|w3af/i,
   /metasploit|hydra|havij|nette tester/i,
   /burpsuite|burp collaborator/i,
+  /wpscan|reconx/i,
 ];
 
 /** Bare scripting HTTP clients: automation, but also every legitimate script and API integration, so a match is only suspicion. */
-export const scriptingClientUserAgentPatterns: RegExp[] = [/python-requests|go-http-client|libwww-perl|curl\/|wget\//i];
+export const scriptingClientUserAgentPatterns: RegExp[] = [/python-requests|python-httpx|go-http-client|libwww-perl|curl\/|wget\//i];
 
-/** Both lists. Exported so edge configs (e.g. the nginx generator) can reuse the same list. */
-export const scannerUserAgentPatterns: RegExp[] = [...attackToolUserAgentPatterns, ...scriptingClientUserAgentPatterns];
+/**
+ * Internet-wide survey and indexing scanners that name themselves (Censys, LeakIX). They map
+ * what is exposed rather than exploit it, and some are run for research, so a match is
+ * suspicion: worth recording, not proof of an attack.
+ */
+export const surveyScannerUserAgentPatterns: RegExp[] = [/censysinspect|l9explore|l9tcpid|expanse|internet-?measurement|modatscanner/i];
+
+/** Every list. Exported so edge configs (e.g. the nginx generator) can reuse the same list. */
+export const scannerUserAgentPatterns: RegExp[] = [...attackToolUserAgentPatterns, ...scriptingClientUserAgentPatterns, ...surveyScannerUserAgentPatterns];
 
 /**
  * Flags requests whose User-Agent identifies a security scanner or a bare

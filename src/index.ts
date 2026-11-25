@@ -1,6 +1,6 @@
 export { HoneypotEngine } from "./core.js";
 export type { BypassReason, ChangeContext, ChangeEvent, EvaluateOptions, EvaluationResult, HoneypotEngineEvents, Notice } from "./core.js";
-export { createMiddleware, dispatch, trapFormGuard } from "./adapters/node.js";
+export { createMiddleware, dispatch, honeytokenGuard, trapFormGuard } from "./adapters/node.js";
 export type { HoneypotMiddleware, MiddlewareOptions, NextFn } from "./adapters/node.js";
 export { koaHoneypot } from "./adapters/koa.js";
 export type { KoaHoneypotMiddleware, KoaLikeContext } from "./adapters/koa.js";

@@ -1,6 +1,8 @@
 export { ManagementServer } from "./server.js";
 export type { ManagementServerOptions } from "./server.js";
 export { IncidentBroker } from "./broker.js";
+export { MetricsListener } from "./metrics-listener.js";
+export type { MetricsListenerOptions } from "./metrics-listener.js";
 export { WebhookDispatcher } from "./webhooks.js";
 export { escapeDiscord, escapeSlack, renderAlert, renderAnomaly } from "./alerts.js";
 export type { AlertFormat, RenderedAlert } from "./alerts.js";

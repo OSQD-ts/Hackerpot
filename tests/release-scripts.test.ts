@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { baseVersion, bumpVersion, classify, declaredRelease, nextVersion } from "../scripts/next-version.mjs";
 import { setVersion } from "../scripts/set-version.mjs";
+import { cutChangelog } from "../scripts/cut-changelog.mjs";
 
 describe("next-version", () => {
   it.each([
@@ -70,5 +71,27 @@ describe("set-version", () => {
 
   it("refuses a version that is not semver", () => {
     expect(() => setVersion(repo(), "v1.2")).toThrow(/not a semver version/);
+  });
+});
+
+describe("cut-changelog", () => {
+  const changelog = "# Changelog\n\nIntro.\n\n## [Unreleased]\n\n### Added\n\n- A thing.\n\n## [0.1.0] - 2026-01-01\n\n### Added\n\n- The first thing.\n";
+
+  it("moves [Unreleased] into the release and leaves an empty heading for the next change", () => {
+    const cut = cutChangelog(changelog, "0.2.0", "2026-11-25");
+    expect(cut).toContain("## [Unreleased]\n\n## [0.2.0] - 2026-11-25\n\n### Added\n\n- A thing.\n\n## [0.1.0]");
+    expect(cut.indexOf("The first thing")).toBeGreaterThan(cut.indexOf("A thing"));
+  });
+
+  it("says so when a release recorded nothing", () => {
+    const empty = cutChangelog("# Changelog\n\n## [Unreleased]\n\n## [0.1.0] - 2026-01-01\n", "0.1.1", "2026-11-25");
+    expect(empty).toContain("## [0.1.1] - 2026-11-25\n\nNo user-facing changes recorded.");
+  });
+
+  it("refuses a version it already has, a bad version or date, and a file with no [Unreleased]", () => {
+    expect(() => cutChangelog(changelog, "0.1.0", "2026-11-25")).toThrow(/already/);
+    expect(() => cutChangelog(changelog, "next", "2026-11-25")).toThrow(/semver/);
+    expect(() => cutChangelog(changelog, "0.2.0", "25.11.2026")).toThrow(/date/);
+    expect(() => cutChangelog("# Changelog\n", "0.2.0", "2026-11-25")).toThrow(/Unreleased/);
   });
 });

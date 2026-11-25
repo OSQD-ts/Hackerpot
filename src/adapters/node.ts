@@ -247,21 +247,56 @@ export async function dispatch(
 /** A request whose body your framework has already parsed into `req.body`. */
 type ParsedBodyRequest = IncomingMessage & { body?: unknown };
 
+/** Most characters of a parsed body handed to the honeytoken detector. A token is short; a body need not be. */
+const MAX_PARSED_BODY_CHARS = 64 * 1024;
+
 /**
- * Checks a form's hidden trap fields after your body parser has run.
+ * Every string and number in a parsed body, one per line: what the honeytoken detector searches.
+ *
+ * The leaves rather than `JSON.stringify`, which escapes a quote or a backslash inside a value
+ * and so could hide a token that contains one. Bounded in depth and in length, because the
+ * object is whatever the client sent.
+ */
+function parsedBodyText(value: unknown): string {
+  const out: string[] = [];
+  let length = 0;
+  const walk = (node: unknown, depth: number): void => {
+    if (length >= MAX_PARSED_BODY_CHARS || depth > 32 || node === null || node === undefined) return;
+    if (typeof node === "string" || typeof node === "number") {
+      const text = String(node);
+      out.push(text);
+      length += text.length + 1;
+      return;
+    }
+    if (typeof node !== "object") return;
+    for (const child of Array.isArray(node) ? node : Object.values(node as Record<string, unknown>)) walk(child, depth + 1);
+  };
+  walk(value, 0);
+  return out.join("\n").slice(0, MAX_PARSED_BODY_CHARS);
+}
+
+/** The detectors a parsed body can add to what the middleware already judged on the headers. */
+const BODY_PROOF_DETECTORS = new Set(["trap", "honeytoken"]);
+
+/**
+ * Checks a parsed body for a form's hidden trap fields and for replayed honeytokens, after
+ * your body parser has run.
  *
  * The honeypot middleware sits in front of your routes and reads a body only for a request
  * something already flagged, so a hidden field in a POST form, the kind trap fields are put
- * on, is never seen there. Mount this on the form's route after your body parser:
+ * on, is never seen there, and neither is a harvested honeytoken sent in a JSON body to an
+ * API route that looks ordinary on its headers. Mount this on the route after your body parser:
  *
  * ```ts
  * app.post("/signup", express.urlencoded({ extended: false }), trapFormGuard(engine), signupHandler);
  * ```
  *
- * It runs the engine over the parsed fields (`RequestFacts.formFields`) without counting the
- * request a second time. If anything fires, the honeypot answers the request, as the
- * middleware would have; otherwise the request continues to your handler. Configure the
- * field names on the engine's `trapDetector({ formFields })`. Fails open, like the middleware.
+ * It runs the engine over the parsed fields (`RequestFacts.formFields`, and their values as
+ * the body for `honeytokenDetector`) without counting the request a second time. If a trap
+ * field or a honeytoken fires, the honeypot answers the request, as the middleware would
+ * have; otherwise the request continues to your handler. Configure the field names on the
+ * engine's `trapDetector({ formFields })` and the values on `honeytokenDetector({ tokens })`.
+ * A JSON array body is checked for honeytokens only. Fails open, like the middleware.
  */
 export function trapFormGuard(engine: HoneypotEngine, options: Pick<MiddlewareOptions, "blockRequiresProof" | "unprovenBlockFallback"> = {}): HoneypotMiddleware {
   const guard: GuardOptions = {
@@ -272,7 +307,7 @@ export function trapFormGuard(engine: HoneypotEngine, options: Pick<MiddlewareOp
     let continued = false;
     try {
       const fields = req.body;
-      if (fields === null || typeof fields !== "object" || Array.isArray(fields)) {
+      if (fields === null || typeof fields !== "object") {
         continued = true;
         next();
         return;
@@ -293,12 +328,14 @@ export function trapFormGuard(engine: HoneypotEngine, options: Pick<MiddlewareOp
         rawHeaders: req.rawHeaders,
         ip,
         httpVersion: req.httpVersion,
-        formFields: fields as Record<string, unknown>,
+        ...(Array.isArray(fields) ? {} : { formFields: fields as Record<string, unknown> }),
       };
+      const text = parsedBodyText(fields);
+      if (text !== "") facts.body = text;
       // The middleware in front already counted this request and judged it on its headers.
-      // Only a trap field can add anything here, so only the trap decides.
+      // Only a trap field or a honeytoken in the body can add proof here, so only they decide.
       const result = await engine.evaluate(facts, { trackActivity: false, recordHit: false, audit: false, ...guard });
-      if (!result.detections.some((detection) => detection.detector === "trap")) {
+      if (!result.detections.some((detection) => BODY_PROOF_DETECTORS.has(detection.detector))) {
         continued = true;
         next();
         return;
@@ -321,3 +358,9 @@ export function trapFormGuard(engine: HoneypotEngine, options: Pick<MiddlewareOp
     }
   };
 }
+
+/**
+ * `trapFormGuard` under the name of what it is used for on an API route: catching a
+ * harvested honeytoken sent in a parsed JSON or form body. The same function.
+ */
+export const honeytokenGuard: typeof trapFormGuard = trapFormGuard;

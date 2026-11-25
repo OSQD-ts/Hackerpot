@@ -113,7 +113,8 @@ directives at http level.
   suspicious methods, risky extensions and (best-effort) injection payloads in the URI, combined into one
   `$hp_flagged` variable.
 - **server context**: a `location` per decoy path (a case-insensitive regex location for prefix decoys,
-  both slash forms for exact ones), and a server-level `if ($hp_flagged)` for every other path. Both just
+  one that matches at any depth for the dotfile and VCS decoys, so `/laravel/.env` is diverted as
+  `/.env` is, and both slash forms for exact ones), and a server-level `if ($hp_flagged)` for every other path. Both just
   `return 418`, an internal marker that `error_page` turns into a jump to a single `@hackerpot` location.
   `return` is the one construct always safe inside `if`, the status never reaches the client, and the
   snippet sets no `proxy_*` at server level, so your own `location` blocks are left exactly as they were.

@@ -23,6 +23,7 @@ import type {
   MarkerDriftOptions,
   PathNoveltyOptions,
   RepeatActorOptions,
+  UaRotationOptions,
   ScannerSignatureOptions,
   SensitiveFileOptions,
   SsrfProbeOptions,
@@ -81,6 +82,14 @@ export interface LoggingConfig {
   includeHeaders: boolean;
   /** Include the (possibly truncated) request body of each hit in the log line. */
   includeBody: boolean;
+  /** Emit a `verdict` line for each hit that is ban-worthy: proof, a block, or a burst. */
+  verdicts: boolean;
+  /** Hits from one address within `burstWindowMs` that make a burst verdict. */
+  burstHits: number;
+  /** Window for `burstHits`, in ms. */
+  burstWindowMs: number;
+  /** Emit a `refused` line, at most once a minute per address, for requests refused while blocked. */
+  refusals: boolean;
 }
 
 export interface EngineConfig {
@@ -114,6 +123,7 @@ export interface PolicyRuleConfig {
   match: {
     detector?: string[] | undefined;
     certain?: boolean | undefined;
+    detectorResponds?: boolean | undefined;
     minScore?: number | undefined;
     maxScore?: number | undefined;
     minConfidence?: number | undefined;
@@ -161,6 +171,11 @@ export interface PolicyConfig {
   tarpitThreshold: number;
   /** A shipped rule set to start from, consulted after any rules written here. */
   preset?: PresetName | undefined;
+  /**
+   * The thresholds this file sets explicitly. A preset is built from these, and keeps its own
+   * default for any left out (`protect-app` tarpits at 25, not at the ladder's 15).
+   */
+  explicitThresholds?: Array<"block_threshold" | "tarpit_threshold"> | undefined;
   /** Rules, in order. The first that matches decides the response. */
   rules: PolicyRuleConfig[];
 }
@@ -179,6 +194,14 @@ export interface FileStoreConfig {
   compressArchives: boolean;
   /** Cap on per-IP scores held in memory; least-recently-updated are dropped past it. */
   maxScoreEntries: number;
+  /** Redact credential headers and secret-named body fields before a hit reaches the disk. */
+  redact: boolean;
+  /** Extra header names to redact, beyond the built-in credential list. */
+  secretHeaders: string[];
+  /** Write request headers at all. */
+  includeHeaders: boolean;
+  /** Write the request body at all. */
+  includeBody: boolean;
 }
 
 export interface RedisStoreConfig {
@@ -285,6 +308,13 @@ export interface DecoyPathConfig {
   /** Ids of built-in decoys to drop (ignored when `replaceDefaults` is set). */
   disabled: string[];
   decoys: DecoyPath[];
+  /**
+   * Seed for the secrets the built-in decoys serve (the fake `.env`, AWS credentials and git
+   * remote). Unset: random per process start, so the values change on every restart.
+   */
+  seed?: string | undefined;
+  /** Watch for the built-in decoys' planted secrets being replayed, as honeytokens. */
+  honeytokens: boolean;
 }
 
 export interface DetectorsConfig {
@@ -317,6 +347,7 @@ export interface DetectorsConfig {
   "scanner-signature": Toggle<ScannerSignatureOptions>;
   "client-anomaly": Toggle<ClientAnomalyOptions>;
   "repeat-actor": Toggle<RepeatActorOptions>;
+  "ua-rotation": Toggle<UaRotationOptions>;
   "path-novelty": Toggle<PathNoveltyOptions>;
   "marker-drift": Toggle<MarkerDriftOptions>;
   "rate-spike": Toggle<RateSpikeOptions>;
@@ -495,6 +526,16 @@ export interface ServiceTokensConfig {
   tokens: Record<string, string>;
 }
 
+export interface MetricsListenerConfig {
+  enabled: boolean;
+  host: string;
+  port: number;
+  /** The one path served. Everything else is a 404. */
+  path: string;
+  /** Addresses or ranges allowed to scrape. Empty allows any peer that can reach the bind. */
+  allowedClients: string[];
+}
+
 export interface DashboardServiceConfig {
   /** Serve the dashboard from the standalone service, reading this process's engine. */
   enabled: boolean;
@@ -513,6 +554,8 @@ export interface DashboardServiceConfig {
   maskIp: boolean;
   /** Section names switched off on the server. */
   hide: Array<"overview" | "incidents" | "statistics" | "sessions" | "actors" | "intel">;
+  /** What viewers may do, beyond reading. Each is off unless granted. See `DashboardControls`. */
+  controls: { testRequest: boolean; previewPolicy: boolean; editPolicy: boolean };
   /** For `hackerpot dashboard`: the management API to read, and its key. */
   managementUrl: string;
   managementApiKey: string;
@@ -553,6 +596,8 @@ export interface HackerpotConfig {
   /** Forward every incident to a syslog collector. Independent of the management API. */
   syslog: SyslogConfig;
   management: ManagementApiConfig;
+  /** A listener that serves only `/metrics`: no captured data, no API key. */
+  metrics: MetricsListenerConfig;
   /** The operator dashboard: served by `serve` when enabled, or on its own by `hackerpot dashboard`. */
   dashboard: DashboardServiceConfig;
 }
@@ -587,6 +632,12 @@ function parseDecoy(section: Section): DecoyPath {
   if (exact !== undefined && pattern !== undefined) section.fail(undefined, 'cannot set both "path" and "pattern"');
 
   const decoy: DecoyPath = { id, description, path: (pattern ?? exact)!, score: section.integer("score", 5) };
+  const match = section.string("match");
+  if (match !== undefined) {
+    if (match !== "exact" && match !== "prefix" && match !== "anywhere") section.fail("match", `must be "exact", "prefix" or "anywhere", got "${match}"`);
+    if (pattern !== undefined) section.fail("match", 'applies to "path" only; a "pattern" already says how it matches');
+    decoy.match = match;
+  }
   put(decoy, "method", section.string("method"));
   put(decoy, "respondWith", section.string("respond_with"));
 
@@ -609,7 +660,15 @@ function parseDecoyPaths(section: Section): DecoyPathConfig {
     replaceDefaults: section.boolean("replace_defaults", false),
     disabled: section.stringArray("disabled", []),
     decoys: (section.sections("decoys") ?? []).map(parseDecoy),
+    honeytokens: section.boolean("honeytokens", true),
   };
+  const seed = section.string("seed");
+  if (seed !== undefined) {
+    // Short enough to guess means the planted values can be computed by anybody who reads the
+    // source, and then they prove nothing when they come back.
+    if (seed.length < 16) section.fail("seed", "must be at least 16 characters from a random source (for example `openssl rand -hex 16`)");
+    config.seed = seed;
+  }
   const known = new Set(defaultDecoyPaths.map((decoy) => decoy.id));
   const unknown = config.disabled.filter((id) => !known.has(id));
   if (unknown.length > 0) section.fail("disabled", `names built-in decoys that do not exist: ${unknown.join(", ")}`);
@@ -853,6 +912,19 @@ function parseDetectors(section: Section): DetectorsConfig {
   const repeatActor = toggle(actor, true, actorOptions);
   actor.done();
 
+  const rotation = child(section, "ua-rotation");
+  const rotationOptions: UaRotationOptions = {};
+  put(rotationOptions, "windowMs", rotation.integer("window_ms"));
+  const rotationThreshold = rotation.integer("distinct_threshold");
+  put(rotationOptions, "distinctThreshold", rotationThreshold);
+  // The detector keeps at most 16 User-Agents per address: a threshold above that never fires.
+  capped(rotation, "distinct_threshold", rotationThreshold, 16, "the detector remembers only so many User-Agents per address");
+  if (rotationThreshold !== undefined && rotationThreshold < 2) rotation.fail("distinct_threshold", "must be at least 2: one User-Agent is not a rotation");
+  put(rotationOptions, "maxAddresses", rotation.integer("max_addresses"));
+  // Off by default: in front of real users a shared address carries several browsers at once.
+  const uaRotation = toggle(rotation, false, rotationOptions);
+  rotation.done();
+
   const rate = child(section, "rate-spike");
   const rateOptions: RateSpikeOptions = {};
   put(rateOptions, "windowMs", rate.integer("window_ms"));
@@ -888,6 +960,7 @@ function parseDetectors(section: Section): DetectorsConfig {
     "scanner-signature": scannerSignature,
     "client-anomaly": clientAnomaly,
     "repeat-actor": repeatActor,
+    "ua-rotation": uaRotation,
     "path-novelty": pathNovelty,
     "marker-drift": markerDrift,
     "rate-spike": rateSpike,
@@ -1357,6 +1430,7 @@ function parsePolicyRule(rule: Section, index: number): PolicyRuleConfig {
     match: {
       ...(rule.has("detector") ? { detector: rule.stringArray("detector", []) } : {}),
       ...(rule.has("certain") ? { certain: rule.boolean("certain") } : {}),
+      ...(rule.has("detector_responds") ? { detectorResponds: rule.boolean("detector_responds") } : {}),
       ...(rule.has("min_score") ? { minScore: rule.number("min_score") } : {}),
       ...(rule.has("max_score") ? { maxScore: rule.number("max_score") } : {}),
       ...(rule.has("min_confidence") ? { minConfidence: confidence(rule, "min_confidence") } : {}),
@@ -1423,7 +1497,13 @@ export function parseConfig(raw: Record<string, unknown>, source: string): Hacke
     startup: logging.boolean("startup", true),
     includeHeaders: logging.boolean("include_headers", false),
     includeBody: logging.boolean("include_body", false),
+    verdicts: logging.boolean("verdicts", true),
+    burstHits: logging.integer("burst_hits", 3),
+    burstWindowMs: logging.integer("burst_window_ms", 5_000),
+    refusals: logging.boolean("refusals", true),
   };
+  if (loggingConfig.burstHits < 2) logging.fail("burst_hits", "must be at least 2: one hit is not a burst (proof and blocks already have their own verdicts)");
+  if (loggingConfig.burstWindowMs < 1) logging.fail("burst_window_ms", "must be at least 1");
   logging.done();
 
   const engine = root.section("engine");
@@ -1452,10 +1532,12 @@ export function parseConfig(raw: Record<string, unknown>, source: string): Hacke
     if (ruleIds.has(rule.id)) policy.fail("rules", `has two rules with the id "${rule.id}"; an incident could not say which one decided`);
     ruleIds.add(rule.id);
   }
+  const explicitThresholds = (["block_threshold", "tarpit_threshold"] as const).filter((key) => policy.has(key));
   const policyConfig: PolicyConfig = {
     blockThreshold: policy.integer("block_threshold", 40),
     tarpitThreshold: policy.integer("tarpit_threshold", 15),
     ...(preset !== undefined ? { preset: preset as PresetName } : {}),
+    ...(explicitThresholds.length > 0 ? { explicitThresholds: [...explicitThresholds] } : {}),
     rules,
   };
   if (policyConfig.tarpitThreshold > policyConfig.blockThreshold) {
@@ -1516,6 +1598,10 @@ export function parseConfig(raw: Record<string, unknown>, source: string): Hacke
     maxArchiveAgeSeconds: fileSection.integer("max_archive_age_seconds", 0),
     compressArchives: fileSection.boolean("compress_archives", true),
     maxScoreEntries: fileSection.integer("max_score_entries", 100_000),
+    redact: fileSection.boolean("redact", true),
+    secretHeaders: fileSection.stringArray("secret_headers", []),
+    includeHeaders: fileSection.boolean("include_headers", true),
+    includeBody: fileSection.boolean("include_body", true),
   };
   if (fileConfig.enabled && fileConfig.path === "") fileSection.fail("path", "is required when the file store is enabled");
   // Rotation off plus archives kept is a contradiction the operator should hear about
@@ -1727,6 +1813,7 @@ export function parseConfig(raw: Record<string, unknown>, source: string): Hacke
   const syslog = parseSyslog(root.section("syslog"));
   const management = parseManagement(root.section("management"));
   const dashboard = parseDashboard(root.section("dashboard"));
+  const metrics = parseMetrics(root.section("metrics"));
 
   root.done();
 
@@ -1748,6 +1835,7 @@ export function parseConfig(raw: Record<string, unknown>, source: string): Hacke
   if (telnet.enabled) claim(telnet.port, "[telnet]");
   if (management.enabled) claim(management.port, "[management]");
   if (dashboard.enabled) claim(dashboard.port, "[dashboard]");
+  if (metrics.enabled) claim(metrics.port, "[metrics]");
 
   return {
     source,
@@ -1773,8 +1861,34 @@ export function parseConfig(raw: Record<string, unknown>, source: string): Hacke
     telnet,
     syslog,
     management,
+    metrics,
     dashboard,
   };
+}
+
+function parseMetrics(section: Section): MetricsListenerConfig {
+  const config: MetricsListenerConfig = {
+    enabled: section.boolean("enabled", false),
+    host: section.string("host", "127.0.0.1"),
+    port: section.port("port", 9502),
+    path: section.string("path", "/metrics"),
+    allowedClients: section.ipList("allowed_clients", []),
+  };
+  if (!config.path.startsWith("/")) section.fail("path", `"${config.path}" does not start with "/", so no request could ever reach it`);
+  section.done();
+  return config;
+}
+
+/** `[dashboard.controls]`: each power off unless the file grants it. */
+function parseDashboardControls(dashboard: Section): DashboardServiceConfig["controls"] {
+  const section = dashboard.section("controls");
+  const controls = {
+    testRequest: section.boolean("test_request", false),
+    previewPolicy: section.boolean("preview_policy", false),
+    editPolicy: section.boolean("edit_policy", false),
+  };
+  section.done();
+  return controls;
 }
 
 const DASHBOARD_SECTIONS = ["overview", "incidents", "statistics", "sessions", "actors", "intel"] as const;
@@ -1812,6 +1926,7 @@ function parseDashboard(section: Section): DashboardServiceConfig {
     redactCredentials: section.boolean("redact_credentials", true),
     maskIp: section.boolean("mask_ip", false),
     hide: hide as DashboardServiceConfig["hide"],
+    controls: parseDashboardControls(section),
     managementUrl: section.string("management_url", ""),
     managementApiKey: section.string("management_api_key", ""),
   };
@@ -1820,6 +1935,10 @@ function parseDashboard(section: Section): DashboardServiceConfig {
   // with the dashboard's own message after every other listener is already bound.
   if (config.enabled && !loopback && config.auth.kind === "default") {
     section.fail("auth", `is required when the dashboard binds ${config.host}: set username and password, a token, or auth = "none" if something in front of it authenticates`);
+  }
+  // Checked here as well as by the dashboard, so the file names the key at fault.
+  if (config.controls.editPolicy && config.auth.kind === "none") {
+    section.fail("controls", 'edit_policy needs authentication: it replaces the policy the honeypot runs, so it cannot be granted with auth = "none"');
   }
   if (config.auth.kind === "basic" && config.refusal !== "unauthorized") section.fail("refusal", "must be \"unauthorized\" with basic auth, or no browser could ever prompt for the password");
   section.done();

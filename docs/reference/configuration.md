@@ -97,6 +97,10 @@ the header would never be read.
 | `startup` | `true` | the one-line startup summary |
 | `include_headers` | `false` | request headers in each `hit` line; attacker-controlled and noisy |
 | `include_body` | `false` | the request body in each `hit` line |
+| `verdicts` | `true` | a `verdict` line (`kind`, then `ip`, then `reason`) for each hit worth an edge ban: `proof`, `block` or `burst`. See [edge bans](../operations/edge-bans.md) |
+| `burst_hits` | `3` | hits from one address within `burst_window_ms` that make a `burst` verdict; at least 2 |
+| `burst_window_ms` | `5000` | |
+| `refusals` | `true` | a `refused` line, at most once a minute per address, counting requests refused because the address is blocked |
 
 ## `[engine]`
 
@@ -142,6 +146,11 @@ See [scoring](../concepts/scoring.md#the-escalation-ladder).
 | `tarpit_threshold` | `15` | cumulative score past which unrouted detections are tarpitted; must not exceed `block_threshold` |
 | `preset` | – | a shipped rule set to start from: `observe`, `protect-app`, `standalone` |
 
+A threshold set here is handed to the preset: `standalone` reads both, `protect-app` only
+`tarpit_threshold` (its own default is 25, kept when the file sets none), `observe` neither. One the
+preset does not read, or one a catch-all rule leaves unreachable, is named in a `warning` line at
+startup. See [presets](../responses/policy.md#presets).
+
 ### `[[policy.rules]]`
 
 Rules are consulted in order and the first that matches decides the response. Your rules come first,
@@ -164,6 +173,7 @@ everything (which is how a last-resort rule is written).
 | --- | --- | --- |
 | `detector` | array | any of these detector ids fired |
 | `certain` | bool | whether at least one detection is [proof](../concepts/the-guard.md) |
+| `detector_responds` | bool | whether the detection named a response of its own (a decoy's bait, a fake shell); how a rule hands those to `"@detector"` without matching everything else |
 | `min_score` / `max_score` | number | what this request scored on its own |
 | `min_confidence` / `max_confidence` | 0–1 | how *strong* the evidence is, rather than how much of it; see [confidence](../concepts/scoring.md#confidence-how-strong-not-how-much) |
 | `min_total_score` / `max_total_score` | number | the address's cumulative score |
@@ -264,6 +274,10 @@ With no durable store enabled, `[store.memory]` is used. Enable several and they
 | `max_archive_age_seconds` | `0` | also prune archives older than this; `0` is off |
 | `compress_archives` | `true` | gzip rolled segments |
 | `max_score_entries` | `100000` | |
+| `redact` | `true` | write credential headers and secret-named form or JSON fields as `[redacted]`, and scrub them from detection summaries. Scanners send credentials, often somebody else's |
+| `secret_headers` | `[]` | header names to redact beyond the built-in list |
+| `include_headers` | `true` | write request headers at all |
+| `include_body` | `true` | write the request body at all |
 
 ### `[store.redis]`
 
@@ -343,7 +357,7 @@ is for scanning.
 
 | Section | Default | Own keys |
 | --- | --- | --- |
-| `[detectors.decoy-path]` | on | `replace_defaults` (false), `disabled` ([]), `[[detectors.decoy-path.decoys]]`; no `score` or `respond_with` |
+| `[detectors.decoy-path]` | on | `replace_defaults` (false), `disabled` ([]), `seed` (random per start; at least 16 characters), `honeytokens` (true), `[[detectors.decoy-path.decoys]]`; no `score` or `respond_with`. See [seeded secrets](../detection/decoys.md#seeded-secrets) |
 | `[detectors.payload-injection]` | on, 10 | `inspect_body` (true), `inspect_headers` |
 | `[detectors.ssrf-probe]` | on, 9 | `inspect_body`, `inspect_headers` |
 | `[detectors.nosql-injection]` | on, 9 | `inspect_body` |
@@ -369,7 +383,8 @@ is for scanning.
 | `[detectors.client-anomaly]` | on, 4 | `required_browser_headers` |
 | `[detectors.rate-spike]` | on, 4 | `window_ms` (10000), `request_threshold` (60) |
 | `[detectors.repeat-actor]` | on, 7 | `distinct_ip_threshold` (3), `window_ms` (600000) |
-| `[detectors.honeytoken]` | on when tokens are listed, 15 | `tokens`: strings, or `[[detectors.honeytoken.tokens]]` with `value` and `label` |
+| `[detectors.ua-rotation]` | **off**, 5 | `window_ms` (10000), `distinct_threshold` (3, 2–16), `max_addresses` (50000) |
+| `[detectors.honeytoken]` | on when tokens are listed, 15; the decoys' own secrets are watched regardless (`[detectors.decoy-path] honeytokens`) | `tokens`: strings, or `[[detectors.honeytoken.tokens]]` with `value` and `label` |
 
 **List-valued defaults are documented, not set.** In the shipped file, keys like `inspect_headers`,
 `params` and `methods` appear only as commented examples. The library owns the lists; a restated default in
@@ -383,6 +398,7 @@ A custom decoy:
 id = "internal-backup"               # required; one sharing a built-in id replaces it
 description = "Fake internal backup" # defaults to the id
 path = "/internal/backup.sql"        # or pattern = "^/internal/.*\\.sql$"; one, not both
+match = "exact"                      # "prefix" or "anywhere" (any depth); path only
 score = 9                            # default 5
 method = "GET"                       # optional
 respond_with = "large-payload"
@@ -544,6 +560,31 @@ The operator dashboard: served by `hackerpot serve` when enabled, reading the en
 | `hide` | `[]` | sections withheld on the server: `overview`, `incidents`, `statistics`, `sessions`, `actors`, `intel` |
 | `management_url` | `""` | for `hackerpot dashboard`: the management API to read |
 | `management_api_key` | `""` | its key; prefer `DASHBOARD_MANAGEMENT_API_KEY` |
+
+### `[dashboard.controls]`
+
+What viewers may do beyond reading. Each is off unless granted. See
+[the dashboard](../operations/dashboard.md).
+
+| Key | Default | |
+| --- | --- | --- |
+| `test_request` | `false` | run a pasted request through the detectors; a dry run, nothing recorded |
+| `preview_policy` | `false` | replay the incidents the page holds against a candidate rule set |
+| `edit_policy` | `false` | replace the running policy from the page; needs authentication (`auth = "none"` is an error). A SIGHUP reload puts the file's policy back |
+
+## `[metrics]`
+
+A listener that serves the Prometheus exposition at one path and nothing else: no captured data,
+no API key. See [metrics](../operations/metrics.md#a-listener-for-metrics-only). Changing it needs a
+restart.
+
+| Key | Default | |
+| --- | --- | --- |
+| `enabled` | `false` | |
+| `host` | `"127.0.0.1"` | |
+| `port` | `9502` | |
+| `path` | `"/metrics"` | must start with `/`; everything else is a 404 |
+| `allowed_clients` | `[]` | addresses or CIDRs allowed to scrape; others are disconnected unanswered. Empty allows any peer that reaches the bind |
 
 ---
 

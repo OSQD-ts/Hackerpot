@@ -19,8 +19,8 @@ new HoneypotEngine({ extraDetectors: [honeytokenDetector({ tokens: ["AKIA_FAKE"]
 new HoneypotEngine({ detectors: [...defaultDetectors(), trapDetector()] });              // replace it
 ```
 
-`detectors` replaces the set **entirely**; `extraDetectors` is appended to the defaults and
-is ignored when `detectors` is given.
+`detectors` replaces the set **entirely**; `extraDetectors` is appended to the defaults, an
+extra sharing a default's id replacing that default, and is ignored when `detectors` is given.
 
 ## Four kinds
 
@@ -40,21 +40,26 @@ They share the store, not the detector list.
 
 ## The default set
 
-`defaultDetectors()` returns 23 detectors, in this order:
+`defaultDetectors()` returns 24 detectors, in this order:
 
 ```
 decoy-path  payload-injection  ssrf-probe  nosql-injection  prototype-pollution
 insecure-deserialization  graphql-abuse  jwt-weakness  crlf-injection  web-shell
 header-anomaly  header-integrity  target-integrity  host-header-injection  sensitive-file
 open-redirect  suspicious-method  credential-bruteforce  path-bruteforce  scanner-signature
-client-anomaly  rate-spike  repeat-actor
+client-anomaly  rate-spike  repeat-actor  honeytoken
 ```
 
-Three more ship and are **opt-in**, each for a reason:
+The `honeytoken` here watches only the secrets the built-in decoys hand out
+([seeded secrets](decoys.md#seeded-secrets)). Tokens you planted yourself need a `honeytokenDetector`
+of your own, which replaces it.
+
+Three more ship and are **opt-in**, each for a reason (as are `path-novelty` and `marker-drift`, which
+need middleware mode):
 
 | Detector | Why it is off |
 | --- | --- |
-| `honeytoken` | it needs the token values you planted |
+| `ua-rotation` | in front of real users a shared address carries several browsers at once |
 | `trap` | a trap is proof only once you have hidden it in your markup and disallowed it in robots.txt |
 | `crawler-verification` | it makes DNS lookups, and optionally outbound HTTPS requests |
 

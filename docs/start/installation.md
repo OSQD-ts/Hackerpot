@@ -34,7 +34,7 @@ const { HoneypotEngine } = require("@osqd/hackerpot");     // CommonJS
 | Import path | What it holds |
 | --- | --- |
 | `@osqd/hackerpot` | Everything: the engine, detectors, responses, stores, protocol honeypots, management API, dashboard, config loader. |
-| `@osqd/hackerpot/adapters` | Only the ways to put the honeypot in front of an application: `createMiddleware`, `koaHoneypot`, `fastifyHoneypot`, `fetchHoneypot`, `withFetchHoneypot`, `trapFormGuard`, `createDashboardHandler`. Everything here is also exported from the root. |
+| `@osqd/hackerpot/adapters` | Only the ways to put the honeypot in front of an application: `createMiddleware`, `koaHoneypot`, `fastifyHoneypot`, `fetchHoneypot`, `withFetchHoneypot`, `trapFormGuard`, `honeytokenGuard`, `createDashboardHandler`. Everything here is also exported from the root. |
 | `@osqd/hackerpot/cli` | `main(argv)`, the command line as a function. |
 | `@osqd/hackerpot/corpus` | The labelled traffic corpus and the harness that runs it. See [the corpus](../testing/corpus.md). |
 | `@osqd/hackerpot/element` | `<hackerpot-dashboard>`, the dashboard as a custom element. See [embedding](../operations/embedding.md). |

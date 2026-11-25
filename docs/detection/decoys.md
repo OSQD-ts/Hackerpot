@@ -1,6 +1,7 @@
 # Decoys
 
-The forty built-in bait paths, prefix matching, decoys of your own, and robots.txt as a lure.
+The forty built-in bait paths, matching at the root or at any depth, the seeded secrets they serve,
+decoys of your own, and robots.txt as a lure.
 
 ← [Documentation](../index.md) · [Detection](index.md)
 
@@ -18,7 +19,7 @@ interface DecoyPath {
   id: string;
   description: string;                 // becomes the detection's summary
   path: string | RegExp;               // an exact path, or a pattern
-  match?: "exact" | "prefix";          // for a string path; default "exact"
+  match?: "exact" | "prefix" | "anywhere"; // for a string path; default "exact"
   method?: string;                     // only this method
   score: number;
   respondWith?: string;                // a response action id
@@ -37,6 +38,10 @@ type and body; `redirect` sends its `location`.
   dot, **at a `/` or `.` boundary only**, ignoring case. `/.env` covers `/.env.production`,
   `/.env/` and `/.ENV`; `/.git` covers `/.git/index`; and `/backup` does **not** match
   `/backup-your-data-a-guide`. Scanners probe both spellings, and some servers serve both.
+- With **`match: "anywhere"`** it matches as a prefix does, below any directory too: `/.env`
+  also covers `/laravel/.env`, `/backup/.env.local` and `/public/.env/`, still only at a `/` or
+  `.` boundary, so `/docs/.envelope` and `/x/.github/` do not match. Scanners ask for these once the
+  root has been tried. The dotfile and VCS decoys use it, and so does `wp-config`.
 - A **RegExp** is tested against the path. A `g` or `y` flag would otherwise make it match
   only every other request, so the detector strips that state.
 
@@ -45,18 +50,38 @@ Every match runs on the normalised path, so `//.env`, `/./.env` and `/%2eenv` ar
 
 ## The built-in set
 
-`defaultDecoyPaths`, forty entries. `P` marks a prefix match.
+`defaultDecoyPaths`, forty entries. `P` marks a prefix match, `A` a match at any depth.
 
 | Group | Decoys (id: path, score, response) |
 | --- | --- |
-| **Secrets** | `dotenv` `/.env` P 10 fake .env · `git-config` `/.git/config` 10 fake · `git-head` `/.git/HEAD` 8 fake · `aws-credentials` `/.aws/credentials` 10 fake · `ssh-key` `/.ssh/id_rsa` 10 · `docker-config` `/.docker/config.json` 8 · `git-dir` `/.git` P 9 · `aws-dir` `/.aws` P 9 · `ssh-dir` `/.ssh` P 9 · `package-credentials` `.npmrc` `.pypirc` `.netrc` `.git-credentials` 8 · `htpasswd` `/.htpasswd` P 8 · `shell-history` `.bash_history` and friends 7 |
+| **Secrets** | `dotenv` `/.env` A 10 fake .env · `git-config` `/.git/config` A 10 fake · `git-head` `/.git/HEAD` A 8 fake · `aws-credentials` `/.aws/credentials` A 10 fake · `ssh-key` `/.ssh/id_rsa` A 10 · `docker-config` `/.docker/config.json` A 8 · `git-dir` `/.git` A 9 · `aws-dir` `/.aws` A 9 · `ssh-dir` `/.ssh` A 9 · `package-credentials` `.npmrc` `.pypirc` `.netrc` `.git-credentials` at any depth 8 · `htpasswd` `/.htpasswd` A 8 · `shell-history` `.bash_history` and friends at any depth 7 |
 | **Panels** | `wp-login` `/wp-login.php` 5 fake login page · `wp-admin` `/wp-admin…` 5 redirect to wp-login · `xmlrpc` `/xmlrpc.php` 6 · `phpmyadmin` `/phpmyadmin`, `/pma`, `/adminer.php` 6 fake login · `admin-panel` `/admin`, `/administrator` 4 fake login |
-| **Frameworks and servers** | `spring-actuator-env` `/actuator/env` P 8 · `spring-actuator-health` 3 · `spring-actuator-heapdump` 9 · `spring-cloud-gateway-rce` `/actuator/gateway/routes` P 9 · `server-status` 5 · `go-pprof` `/debug/pprof` 7 · `laravel-telescope` 6 · `laravel-ignition-rce` P 10 · `phpunit-eval-rce` `/vendor/phpunit` P 10 · `php-info` 5 · `wp-config` P 7 · `couchdb-all-dbs` `/_all_dbs` 7 · `solr-admin` P 7 · `tomcat-manager` `/manager/html` P 7 · `jenkins-script-console` P 8 · `druid-indexer` P 8 · `geoserver` P 7 · `router-rce` `boaform`, LuCI, HNAP 8 · `fortinet-traversal` `/remote/fgt_lang` P 9 · `yii-debug` P 7 |
+| **Frameworks and servers** | `spring-actuator-env` `/actuator/env` P 8 · `spring-actuator-health` 3 · `spring-actuator-heapdump` 9 · `spring-cloud-gateway-rce` `/actuator/gateway/routes` P 9 · `server-status` 5 · `go-pprof` `/debug/pprof` 7 · `laravel-telescope` 6 · `laravel-ignition-rce` P 10 · `phpunit-eval-rce` `/vendor/phpunit` P 10 · `php-info` 5 · `wp-config` A 7 · `couchdb-all-dbs` `/_all_dbs` 7 · `solr-admin` P 7 · `tomcat-manager` `/manager/html` P 7 · `jenkins-script-console` P 8 · `druid-indexer` P 8 · `geoserver` P 7 · `router-rce` `boaform`, LuCI, HNAP 8 · `fortinet-traversal` `/remote/fgt_lang` P 9 · `yii-debug` P 7 |
 | **Generic** | `swagger` `/swagger`, `/api-docs`, `/openapi` 3 · `backup-archive` `/backup.zip`, `/db.sql`, `/dump.tar.gz` 7 · `config-file` `/config.json`, `.php`, `.yml` 5 |
 
 Every decoy without a fake payload answers `not-found`: the probe was the signal, and a flat
-404 reveals nothing. The fake `.env` and AWS credentials contain AWS's documented example
-key, never anything real.
+404 reveals nothing.
+
+## Seeded secrets
+
+The fake `.env`, `.aws/credentials` and `.git/config` carry values generated from a seed
+(`decoySecrets(seed)`): an `APP_KEY`, a database name, user and password, an AWS-shaped access key
+and secret, and a git remote. They used to be constants, AWS's documentation key
+`AKIAIOSFODNN7EXAMPLE` and `github.com/example/example.git`, identical in every install; a scanner
+that had met one HackerPot had met them all, and a well-known example key is the first thing a
+harvesting tool learns to skip.
+
+- **Different per install.** With no seed configured, `DEFAULT_DECOY_SEED` is random per process start,
+  so the values change on every restart. Set `[detectors.decoy-path] seed` (at least 16 random
+  characters, for example `openssl rand -hex 16`) to keep them stable, so a returning prober sees a
+  consistent file. In code, `decoyPathsFor(seed)` is the built-in set for a seed.
+- **Pointing at nobody else.** The database host is the loopback address and the git remote is under
+  `.internal`, a name reserved never to resolve on the public internet. An attacker following the
+  bait only ever reaches you, or nothing.
+- **Honeytokens by construction.** The values exist only in what the decoys hand out, so one coming
+  back is somebody using what they harvested. `decoyHoneytokens(seed)` lists the long ones, and they
+  are watched by default (`[detectors.decoy-path] honeytokens = true`); see
+  [honeytoken](detectors.md#honeytoken).
 
 ## Before you deploy: does your site serve any of these?
 
@@ -133,7 +158,8 @@ A decoy works best when probing it appears to succeed:
 - **`fake-data`** synthesises fresh fake secrets per hit: a `.env`, an AWS credentials file,
   a user table. Every response differs, so exfiltrated values are noise. Never seed it with
   real names or a domain you use; see [actions](../responses/actions.md#fake-data).
-- **A honeytoken in the payload.** Put a value in the fake `.env` and list it in
+- **A honeytoken in the payload.** The built-in decoys' [seeded secrets](#seeded-secrets) already are
+  honeytokens. For a decoy of your own, put a value in its payload and list it in
   `[detectors.honeytoken] tokens`. Whoever reads the file and later uses the key has proven
   what they are. See [honeytokens](traps-and-honeytokens.md#honeytokens).
 

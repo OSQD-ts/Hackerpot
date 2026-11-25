@@ -7,7 +7,7 @@ Express and Connect, Koa, Fastify, Fetch handlers, trap forms, and failing open.
 ---
 
 ```ts
-import { createMiddleware, fastifyHoneypot, koaHoneypot, trapFormGuard, withFetchHoneypot } from "@osqd/hackerpot/adapters";
+import { createMiddleware, fastifyHoneypot, honeytokenGuard, koaHoneypot, trapFormGuard, withFetchHoneypot } from "@osqd/hackerpot/adapters";
 
 app.use(createMiddleware(engine));                          // Express, Connect, node:http with next()
 koa.use(koaHoneypot(engine));                               // Koa: mount it first
@@ -137,7 +137,7 @@ What to know:
   `header-integrity` cannot see repeated headers.
 - **Node built-ins are required.** Edge runtimes without them are not supported.
 
-## Trap forms
+## Trap forms and honeytokens in a body
 
 A hidden trap field in a POST form arrives in the body, which the middleware reads only for requests
 something already flagged. `trapFormGuard(engine)` checks it after your parser:
@@ -145,6 +145,17 @@ something already flagged. `trapFormGuard(engine)` checks it after your parser:
 ```ts
 app.post("/signup", express.urlencoded({ extended: false }), trapFormGuard(engine), signup);
 ```
+
+The same guard runs the honeytoken detector over the parsed body's values, nested objects and JSON
+arrays included, so a harvested token sent in the body of an API request that looks ordinary on its
+headers is caught. Under the name of that use:
+
+```ts
+app.post("/api/settings", express.json(), honeytokenGuard(engine), saveSettings);
+```
+
+Only a trap field or a honeytoken decides here: the middleware in front already judged the request on
+its headers and counted it.
 
 See [traps](../detection/traps-and-honeytokens.md#trapformguard).
 
