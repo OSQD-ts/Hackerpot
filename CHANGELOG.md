@@ -8,6 +8,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-25
+
 ### Changed
 
 - **The `standalone` preset uses `block_threshold` and `tarpit_threshold`.** Its last rule matched every
